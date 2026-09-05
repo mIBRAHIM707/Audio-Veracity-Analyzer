@@ -1,0 +1,42 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Node / dashboard
+node_modules/
+dist/
+.vite/
+
+# Data, models, audio (live on volumes, never in git)
+data/raw/
+data/processed/
+*.wav
+*.mp3
+*.amr
+*.gsm
+*.onnx
+*.pt
+*.pth
+*.ckpt
+mlruns/
+
+# Secrets and local config
+.env
+.env.*
+*.pem
+*.key
+
+# Claude Code local state
+.claude/settings.local.json
+
+# OS / editor
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
