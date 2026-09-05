@@ -40,3 +40,6 @@ mlruns/
 Thumbs.db
 .vscode/
 .idea/
+
+# BMAD per-user settings (name, skill level); each teammate keeps their own
+_bmad/**/config.user.toml
