@@ -335,7 +335,9 @@ inference:
 ## 9. Repository Layout
 
 ```
-FYP/
+Audio-Veracity-Analyzer/
+├── CLAUDE.md                 # Claude Code project instructions
+├── .claude/                  # shared Claude Code settings and skills
 ├── prd.md
 ├── architecture.md
 ├── data/                     # manifests + scripts only; audio lives on a data volume
