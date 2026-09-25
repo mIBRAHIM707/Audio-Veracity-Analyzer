@@ -45,6 +45,14 @@ None yet. Add build, test, lint, and run commands here as soon as they exist (PR
 
 ## Workflow
 
-- Branch from `main` and open a PR. Don't push directly to `main`. The full branch policy is PRD task 0.1 (TBD).
-- Never commit audio, datasets, model weights, `.env`, or keys. `.gitignore` covers these.
-- `/ava-teach <concept>` explains any design decision from the docs (`/ava-teach curriculum` lists them all).
+Every change is tracked as a GitHub issue, so the history of what was built and fixed lives in issues and PRs.
+
+1. **Issue first.** Every feature, task, and bug gets an issue before work starts. Use the templates in `.github/ISSUE_TEMPLATE/` (`gh issue create --template bug.md` or `feature.md`) and cite the PRD requirement or task ID. If you notice an unrelated bug mid-task, open a separate issue for it rather than fixing it in the current PR.
+2. **Branch** from `main` as `<type>/<issue>-<slug>`, e.g. `feat/14-vad-gate`, `fix/21-amr-decode`. Types: `feat`, `fix`, `docs`, `test`, `chore`.
+3. **Commit** with the same type prefix: `feat: add Silero VAD gate`.
+4. **PR** into `main` using the template. The body must say `Closes #<issue>` so merging closes the issue. Keep it to one issue per PR where practical.
+5. **Review** is optional. Merge once you're satisfied, and request a review for risky or cross-workstream changes.
+
+Never push directly to `main`. Never commit audio, datasets, model weights, `.env`, or keys; `.gitignore` covers these.
+
+`/ava-teach <concept>` explains any design decision from the docs (`/ava-teach curriculum` lists them all). Put personal, machine-specific notes in `CLAUDE.local.md` (gitignored).

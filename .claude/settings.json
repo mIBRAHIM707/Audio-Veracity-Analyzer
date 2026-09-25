@@ -7,7 +7,10 @@
       "Read(./**/*.pem)",
       "Read(./**/*.key)",
       "Read(./data/raw/**)",
-      "Read(./data/processed/**)"
+      "Read(./data/processed/**)",
+      "Bash(git push origin main)",
+      "Bash(git push origin main *)",
+      "Bash(git push origin HEAD:main*)"
     ]
   }
 }
