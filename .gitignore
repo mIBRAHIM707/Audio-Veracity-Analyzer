@@ -34,6 +34,8 @@ mlruns/
 
 # Claude Code local state
 .claude/settings.local.json
+CLAUDE.local.md
+.claude/worktrees/
 
 # OS / editor
 .DS_Store
