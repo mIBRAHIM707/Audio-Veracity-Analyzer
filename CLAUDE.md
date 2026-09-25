@@ -53,6 +53,8 @@ Every change is tracked as a GitHub issue, so the history of what was built and 
 4. **PR** into `main` using the template. The body must say `Closes #<issue>` so merging closes the issue. Keep it to one issue per PR where practical.
 5. **Review** is optional. Merge once you're satisfied, and request a review for risky or cross-workstream changes.
 
+No AI attribution anywhere: no `Co-Authored-By: Claude` trailers, "Generated with Claude Code" lines, or similar in commits, PRs, issues, comments, or files.
+
 Never push directly to `main`. Never commit audio, datasets, model weights, `.env`, or keys; `.gitignore` covers these.
 
 `/ava-teach <concept>` explains any design decision from the docs (`/ava-teach curriculum` lists them all). Put personal, machine-specific notes in `CLAUDE.local.md` (gitignored).
