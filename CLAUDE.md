@@ -47,7 +47,7 @@ None yet. Add build, test, lint, and run commands here as soon as they exist (PR
 
 Every change is tracked as a GitHub issue, so the history of what was built and fixed lives in issues and PRs.
 
-1. **Issue first.** Every feature, task, and bug gets an issue before work starts. Use the templates in `.github/ISSUE_TEMPLATE/` (`gh issue create --template bug.md` or `feature.md`) and cite the PRD requirement or task ID. If you notice an unrelated bug mid-task, open a separate issue for it rather than fixing it in the current PR.
+1. **Issue first.** Every feature, task, and bug gets an issue before work starts. Use the templates in `.github/ISSUE_TEMPLATE/` (`gh issue create --template bug.md` or `feature.md`) and cite the PRD requirement or task ID. If you notice an unrelated bug mid-task, open a separate issue for it rather than fixing it in the current PR. Put each issue in its phase milestone (`Phase 0: Setup` … `Phase 5: Final Evaluation and Report`) and give it a workstream label (`ws-a-data`, `ws-b-model`, `ws-c-telephony`, `ws-d-platform`). PRD §8 tasks are titled `[N.M] <task>`. Phases 0–1 already have issues, and each later phase gets its issues when it starts.
 2. **Branch** from `main` as `<type>/<issue>-<slug>`, e.g. `feat/14-vad-gate`, `fix/21-amr-decode`. Types: `feat`, `fix`, `docs`, `test`, `chore`.
 3. **Commit** with the same type prefix: `feat: add Silero VAD gate`.
 4. **PR** into `main` using the template. The body must say `Closes #<issue>` so merging closes the issue. Keep it to one issue per PR where practical.
