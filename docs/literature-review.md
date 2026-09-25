@@ -307,3 +307,73 @@ Not suitable: CosyVoice 3, Qwen3-TTS, Chatterbox (no Urdu/Punjabi; Chatterbox al
 - Code-switching quality of each generator.
 - IndicSynth per-language hours; RTCFake and SpeechFake language lists.
 - Whether the reference CPU supports VNNI (for INT8).
+
+---
+
+# Part B: Novelty, product, live calls and Punjabi data (round 2, 2026-09-26)
+
+## 10. Answering "you just fine-tuned a model"
+- The ASVspoof 5 organisers write that architectural innovation "may be reaching a bottleneck" and that progress now comes from data design. [arXiv 2601.03944](https://arxiv.org/abs/2601.03944)
+- Delgado et al. (ICASSP 2026) find that better data helps detection more than bigger models. [arXiv 2509.26471](https://arxiv.org/abs/2509.26471)
+- So AVA's contribution is **the dataset, evaluation under real deployment conditions, the decision layer, and the live system**. The pretrained model is a component, not the contribution.
+
+## 11. Novelty angles (ranked)
+
+| # | Angle | Evidence it is an open gap | Effort | Deliverable |
+|---|---|---|---|---|
+| 1 | **Calibrated early-decision detection on narrowband calls.** Score as the call grows, alert only when confident, report error at a threshold fixed before testing. | The closest work is a non-peer-reviewed English wideband preprint (Semjonovs 2026, [doi](https://doi.org/10.21203/rs.3.rs-10257178/v1)): 0.8–29% EER across codecs, and a clean-fit calibrator gave 3–3.5× the error on harsh channels. RTCFake ([2604.23742](https://arxiv.org/abs/2604.23742)) has no streaming decisions. Zhou & Wang ([2606.21584](https://arxiv.org/abs/2606.21584)) show fixed thresholds failing badly on new data. | Low–medium | Error vs seconds-to-decision curve, median time-to-alert per codec, HTER and Cllr at a fixed threshold |
+| 2 | **Per-dialect false-alarm audit on genuine speech** (Majhi, other Punjabi dialects, Urdu, code-switched) | Kwok et al. ([2509.09204](https://arxiv.org/abs/2509.09204)): error swings with the type of genuine speech. ParlaSpoof-BR ([2607.28770](https://arxiv.org/abs/2607.28770)): inconsistent decisions across a population. IndicSynth is Indian and synthetic-only; CSALT uses only Tacotron and VITS. | Low | False-alarm rate per dialect, and the worst/best group ratio |
+| 3 | **Analyst timeline with spliced-fake localisation** | Roy ([2609.10051](https://arxiv.org/abs/2609.10051)): training-free localisation, not tested on phone calls. Firc et al. ([2608.17585](https://arxiv.org/abs/2608.17585)): real inputs are sometimes partly fake, and raw scores mean nothing to users. Šalko et al. ([2608.19959](https://arxiv.org/abs/2608.19959)): listeners missed a single fake sentence 77% of the time. | Medium | Localisation score on codec'd Urdu/Punjabi calls; dashboard timeline |
+| 4 | **Human vs AVA vs human+AVA listening study** | Müller & Choong ([2605.26136](https://arxiv.org/abs/2605.26136)): humans 64–69% accurate vs detector 94.5%. Mai et al. ([PLOS ONE 2023](https://journals.plos.org/plosone/article?id=10.1371/journal.pone.0285333)): 73%. CSALT Urdu: human AUC 0.63. Nothing exists for codec'd Urdu/Punjabi calls. | Low | ~30–60 listeners, 40 clips, accuracy and time per decision |
+| 5 | **Speaker-aware detection (SASV):** "is this the enrolled customer AND a real human?" | SASV 2022 ([2203.14732](https://arxiv.org/abs/2203.14732)): SASV-EER 23.83% → 0.13%. Multiplying the two probabilities needs no training ([2202.05253](https://arxiv.org/abs/2202.05253)). ECAPA model: [speechbrain/spkrec-ecapa-voxceleb](https://huggingface.co/speechbrain/spkrec-ecapa-voxceleb) (Apache-2.0). No Urdu/Punjabi phone-call results exist. | Low–medium | SASV-EER with and without enrollment on clones of enrolled speakers |
+
+Skip continual learning for new generators (high effort; future work). Before claiming "first Urdu", read "Deepfake Audio Detection in Low-Resource Languages: A Case Study of Urdu" ([IEEE 11355476](https://ieeexplore.ieee.org/document/11355476/), UNVERIFIED). Only claim "first" for the **combination** of Pakistani Punjabi, telephony and dialect-level results.
+
+## 12. Pakistan motivation (updated figures)
+
+| Claim | Figure | Source |
+|---|---|---|
+| Phone-fraud losses | **Rs 8.32bn lost by 227,757 victims, 2024–2026**; most cases were WhatsApp hacking or calls posing as bank/institution staff (NCCIA) | [Express Tribune, 11 Sep 2026](https://tribune.com.pk/story/2628638/pakistanis-lose-rs832b-to-cyber-fraud) |
+| Call centres | 1,000+ PSEB-registered, plus ~500 outside PSEB | [Business Recorder, 7 Jul 2026](https://www.brecorder.com/news/amp/40428933) |
+| Call-centre exports | $328M in FY25 (SBP) | [ProPakistani, 19 Aug 2025](https://propakistani.pk/2025/08/19/call-centers-in-pakistan-fetch-over-320-million-export-earnings-in-fy25/) |
+| Scam losses | $9.3B, 2.5% of GDP (a **survey estimate**, GASA/Feedzai 2025) | [Profit, 21 Oct 2025](https://profit.pakistantoday.com.pk/2025/10/21/pakistan-loses-over-9-billion-to-financial-scams-annually-2-5-of-gdp-says-global-anti-scam-report/) |
+| Voice cloning of Pakistani figures | PTI cloned Imran Khan's voice with ElevenLabs (Dec 2023) | [Dawn](https://www.dawn.com/news/1798919) |
+| Regulation trend | Punjab's draft Performers' Digital Identity and AI Protection Act 2026 covers unauthorised voice cloning | [ARY, 12 Jun 2026](https://arynews.tv/ai-voice-face-cloning-of-artists-ban-in-punjab) |
+
+**No documented Pakistani voice-clone fraud case was found.** Frame it this way: phone impersonation is already the main fraud method, and voice cloning makes it scale. Don't claim known cases.
+
+## 13. Industry products
+- **Pindrop Pulse:** SaaS; integrates with Amazon Connect, Genesys (SIPREC/premises options), Five9 and others; about 2 s to a liveness score.
+- **ValidSoft Voice Verity:** on-prem option, 8 kHz G.711, at least 2 s of speech.
+- **Reality Defender:** on-prem on NVIDIA.
+- **Resemble Detect:** explanations of which artifacts drove the score; air-gapped option.
+- **Modulate Velma** (Mar 2026): segment-level scores.
+- **AWS ended Amazon Connect Voice ID** on 20 May 2026 ([docs](https://docs.aws.amazon.com/connect/latest/adminguide/amazonconnect-voiceid-end-of-support.html)). Voice biometrics alone is being abandoned, and deepfake detection is becoming its own layer.
+- **No vendor publishes Urdu or Punjabi results.**
+- **For AVA:** a rolling score, a first verdict within seconds, segment-level evidence, CPU-only on-prem, and published per-language and per-codec numbers.
+
+## 14. Live-call integration (simplified)
+- **Asterisk has no native SIPREC client** ([community thread](https://community.asterisk.org/t/about-a-siprec-implementation/104937)).
+- **Use ARI instead.** A `snoopChannel` (passive tap) feeds a mixing bridge, which feeds `externalMedia` ([Channels REST API](https://docs.asterisk.org/Latest_API/API_Documentation/Asterisk_REST_Interface/Channels_REST_API/)) over [AudioSocket](https://docs.asterisk.org/Configuration/Channel-Drivers/AudioSocket/) (TCP) or WebSocket. **Asterisk decodes the codec and Python receives plain 16-bit PCM**, so there is no RTP or codec decoding in Python.
+- **Reusable code:** [hkjarral/Asterisk-AI-Voice-Agent](https://github.com/hkjarral/Asterisk-AI-Voice-Agent) (MIT, Python 3.11, ARI + AudioSocket/ExternalMedia/WebSocket). Reuse its transport layer only; it answers calls rather than tapping them.
+- **AMR-NB cannot be transcoded live in stock Asterisk.** Evaluate AMR-NB offline via FFmpeg, and demo live calls with G.711/GSM.
+- **SIPREC becomes a documented stretch path:** jambonz as the SRS ([guide](https://docs.jambonz.org/guides/features/siprec-server)), with its `listen` verb sending the same PCM over WebSocket to the same Python receiver. Kamailio+rtpengine and FreeSWITCH mod_siprec are young or buggy.
+- **Python 3.13 removed `audioop`.** Use `audioop-lts` or PyAV/FFmpeg for offline decoding.
+
+## 15. Genuine Pakistani Punjabi and Urdu data
+- **Meta Omnilingual ASR corpus `pnb_Arab`** (Western Punjabi, Shahmukhi, CC-BY-4.0), the best open find: [HF](https://huggingface.co/datasets/facebook/omnilingual-asr-corpus), [paper](https://arxiv.org/pdf/2511.09690). Designed as ~10 speakers × 1 h of spontaneous speech; actual hours and dialect UNVERIFIED. Also has `phr_Arab` (Potwari) and `hno_Arab` (Hindko).
+- **Pakistan Multilingual Speech Corpus** (Habib University, 2026, CC-BY-4.0): ~35k clips in 7 languages including Punjabi and Saraiki ([Zenodo](https://zenodo.org/records/19323537)). Punjabi share UNVERIFIED.
+- **Common Voice has no Shahmukhi Punjabi.** The pnb request has been blocked since 2022 ([issue](https://github.com/common-voice/common-voice/issues/3734)).
+- **LDC2017S14:** Western Punjabi 38.8 h (207 calls), Urdu 22.9 h, 8 kHz ([catalog](https://catalog.ldc.upenn.edu/LDC2017S14)). The fee is UNVERIFIED. It is **free through the [LDC Data Scholarship](https://www.ldc.upenn.edu/language-resources/data/data-scholarships)**: deadline 15 Jan 2027, needs a 2-page proposal and a supervisor letter.
+- **ELRA Urdu corpora cost €15,600–18,000.** Not feasible.
+- **Crowdsourcing norms:**
+  - Kathbath paid INR 500–1000 per recorded hour and scored every clip on accuracy, volume and noise ([2208.11761](https://ar5iv.labs.arxiv.org/html/2208.11761)).
+  - Vaani capped each speaker at 15 min and used image and question prompts ([2603.28714](https://arxiv.org/html/2603.28714v1)).
+  - One well-connected community promoter raised Pashto Common Voice participation about 108× ([2603.27021](https://arxiv.org/html/2603.27021v1)).
+- **Speaker-identity shortcut:** detectors use speaker identity as a cue; misclassified clips show 29–52× higher identity sensitivity ([2607.21820](https://arxiv.org/html/2607.21820v1)). Generate fakes **from the same genuine speakers**, and keep splits speaker-disjoint.
+- **Voice conversion cannot add genuine speakers**, because its output is fake by definition. Use it only to vary the fake side.
+- **WhatsApp voice notes:** compression only on genuine clips teaches "compressed = real". Record WAV, or pass fakes through the same codec.
+- **Proposed numbers** (~50k clips × 4.5 s ≈ 62 h; ~45% genuine):
+  - Urdu genuine: ~11k clips from Common Voice (capped at 30 clips per speaker) plus UrduSpeech after a rights check.
+  - Punjabi genuine: ~11k clips from Omnilingual pnb plus **your own 60–80 speakers × 10–12 min**. Paying about PKR 1,000–1,500 per session totals roughly PKR 60–120k (an estimate).
+  - LDC2017S14 as a separate telephone test set.
