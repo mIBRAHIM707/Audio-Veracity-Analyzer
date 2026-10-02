@@ -1,16 +1,43 @@
 # AVA: Acoustic Veracity Analyzer — Product Requirements Document
 
-Real-time audio deepfake detection for Urdu and Punjabi in telecom and call center pipelines.
+Real-time audio deepfake detection for Urdu and Punjabi in bank and call-centre telephony.
 
 | Field | Value |
 |---|---|
-| Version | 0.1 (draft) |
-| Date | 2026-09-04 |
-| Source | Project Scope Document v1.0 (GIKI FCSE, BS Software Engineering) |
+| Version | 0.2 (draft) |
+| Date | 2026-10-01 |
+| Supersedes | v0.1 of 2026-09-04 |
+| Source | Project Scope Document v1.0 (GIKI FCSE, BS Software Engineering); Research Update and Proposed Direction, 26 Sep 2026; Title Defence deck, 29 Sep 2026 |
 | Team | Ayesha (2023143), Ibrahim (2023446), Ilsa (2023258), Tughral (2023532) |
 | Supervisor | Prof. Dr. Ghulam Abbas |
 | Co-Supervisor | Dr. Khurram Khan Jadoon |
+| Companion | [architecture.md](architecture.md) (v0.1; ADR-1, ADR-2, ADR-4, ADR-10, ADR-11 are superseded by this version and must be revised before v1.0 freeze) |
 | Status | Draft for supervisor review |
+
+---
+
+## What this document asks of you
+
+- **Supervisor:** sign off on the decisions in §4 (especially D4 model, D5 generators, D7 telephony path) and the provisional targets in §6; answer the two questions you own in §10 (Q2 PTCL, Q5 replay attacks); confirm who grants ethics approval (Q6).
+- **Team:** assign a named owner to each workstream (§8) and each open question (§10) by 8 October; treat every P0 requirement as a GitHub issue.
+- **Everyone:** this version replaces v0.1. Where the two disagree, this one is correct. Do not quote the old model, generator list, or compliance wording.
+
+## Changes since v0.1
+
+| Change | Why | Sections touched |
+|---|---|---|
+| Backbone is **AntiDeepfake MMS-300M** with an **SLS** head, 7 to 8 layers; XLS-R + SLS is the fallback; DuaBiMamba is dropped | Brief §5; deck slides 6 and 7. A model already post-trained for deepfake detection is a better start, and the Mamba head's gain does not justify its CPU and export cost | D4, A3, FR-M1, FR-M2, FR-M8, tasks 2.4 to 2.7, R1, R2, §11 |
+| Generators are **OmniVoice, Seed-VC, RVC, MMS-TTS**, with **Fish Audio S2 held out**; XTTSv2 removed; ElevenLabs only with written permission | Brief §5 and §9: XTTSv2 supports neither language; ElevenLabs terms ban detector training | §1.1, D5, FR-D2, FR-D3, FR-D8, tasks 0.5, 1.4, R5 |
+| Primary live-call path is the **Asterisk passive tap**; SIPREC becomes a stretch goal | Brief §5; deck slide 6. Asterisk has no SIPREC client | D7, FR-T1 to FR-T7, BO-4, tasks 0.7, 3.x, R4, Q3 |
+| AMR-NB decoded in the **file path only**; live AMR-NB is P2 | Stock Asterisk cannot negotiate AMR-NB | A2, FR-I1, task 5.3 |
+| Dataset is **~50,000 original clips** (3 to 6 s, ~60 h) from Common Voice Urdu, Meta Omnilingual Shahmukhi Punjabi, Habib University, CSALT-LUMS, UrduSpeech (rights pending) and **60 to 80 recorded speakers**; Common Voice pa-PK removed (it does not exist) | Brief §6; deck slide 8 | FR-D1, FR-D2, FR-D7, BO-2, task 1.2, R3, Q1 |
+| **Fakes are made from the same consented speakers** who contribute genuine clips; pipeline parity and leakage probes are required | Brief §6.4 and §6.8; deck slide 8 | FR-D11, FR-D12, A4 |
+| **Ethics approval, consent content, release policy, licence register, budget** added as requirements | Brief §10 and §11; none existed in v0.1 | FR-E1 to FR-E6, §8.3, R9, R11, Q6 |
+| **Three research questions** (time-to-confidence, per-dialect false alarms, humans versus AVA) added as goals with requirements | Deck slide 9; brief §4 | RQ-A, RQ-B, RQ-C, FR-M9, FR-M10, FR-S1, tasks 2.x and 5.x |
+| **Compliance wording corrected**: CTDISR-2025 binds telecom licensees and is motivation; the Personal Data Protection Bill is an unpassed draft | Brief §9 | §1.1, BO-5, §6.4, BO-5 evidence |
+| **Metrics corrected**: min t-DCF replaced (needs a speaker-verification system AVA excludes); RTF defined; first-verdict arithmetic fixed; sample sizes and confidence intervals required | Review of v0.1 | FR-M5, §6.1, §6.2, task 5.3 |
+| **Timeline rebaselined from 1 October 2026**; Phase 0 extended to 15 October | Phase 0 exit gate was unmet on its paper end date | §8 |
+| Detailed decision rationale moved to Appendix A; decisions D5 to D15 given IDs; references and limitations added | Structure review | §4, §1.4, §12, Appendix A |
 
 ---
 
@@ -18,380 +45,360 @@ Real-time audio deepfake detection for Urdu and Punjabi in telecom and call cent
 
 ### 1.1 Problem
 
-Pakistan's call center and BPO sector (1,000+ registered centers, $328M+ FY2024-25 export revenue) authenticates callers largely on assumed voice identity. Commodity voice cloning (ElevenLabs, Coqui XTTSv2, RVC) now supports Urdu and Punjabi natively and works from seconds of reference audio, making live telephonic impersonation cheap and practical.
+Pakistan's banks, telecom operators and BPO call centres (1,000+ registered centres, $328M call-centre exports in FY2024-25 [14]) authenticate callers largely on assumed voice identity. Phone impersonation is already the country's leading fraud route: NCCIA reports 227,757 victims and Rs 8.32 billion lost in 2024 to 2026, mostly to callers posing as bank staff in their own voices [13]. Commodity voice cloning now works from about ten seconds of reference audio and supports Urdu, so a fraudster can go from pretending to be a role to sounding like a specific customer. Deepfake calls into contact centres rose from one every two days in 2023 to seven per day in 2024, a 1,337% increase, in US industry data [15]. No Pakistani voice-clone fraud case is documented yet; the motivation rests on the scale of phone impersonation and the maturity of the tools.
 
 Existing detectors fail here for three reasons:
 
-1. **Linguistic mismatch.** Models trained on English/Western phonetic baselines misread native Urdu/Punjabi phonetics and code-switching as vocoder artifacts, producing high false-positive rates.
-2. **Codec blindness.** GSM 06.10 and AMR-NB band-limit audio to under 4 kHz (8 kHz sample rate) and heavily compress it, destroying the high-frequency cues most detectors rely on.
-3. **Regulatory non-compliance.** Pindrop, Nuance Gatekeeper, and similar platforms route audio through foreign cloud infrastructure, which CTDISR-2025 prohibits for citizen voice biometrics.
+1. **Linguistic mismatch.** Models trained on English/Western phonetic baselines misread native Urdu/Punjabi phonetics and code-switching as vocoder artifacts. A standard detector evaluated on Urdu deepfakes scored about 50% error, chance level [6].
+2. **Codec blindness.** GSM 06.10 and AMR-NB band-limit audio to under 4 kHz (8 kHz sample rate) and heavily compress it, destroying the high-frequency cues most detectors rely on. Narrowband codec conditions are the hardest in the ASVspoof benchmarks [4][5].
+3. **Deployment mismatch.** Pindrop, Nuance Gatekeeper and similar platforms route audio through foreign cloud infrastructure and publish no results for Urdu or Punjabi. Pakistani telecom licensees must keep call data in-country under CTDISR-2025 [16], so a detector they can adopt has to run on their premises.
 
 ### 1.2 Product
 
-AVA is an on-premises, edge-deployable detection engine that passively monitors forked call audio (SIPREC) and classifies each live call as **genuine** or **AI-synthesized** in near real-time, raising alerts for human fraud analysts without touching the call path. It is trained on a purpose-built corpus of genuine and synthetic Urdu and Punjabi speech degraded with realistic telephony codecs.
+AVA is an on-premises, CPU-only detection engine that passively receives a forked copy of live call audio, classifies each call as **genuine** or **AI-synthesized** in near real-time, and raises advisory alerts for human fraud analysts without touching the call path. It is trained on a purpose-built corpus of genuine and synthetic Urdu and Pakistani Punjabi speech degraded with realistic telephony codecs.
 
 ### 1.3 Vision
 
-For telecom operators, banks, and BPO call centers in Pakistan handling high-stakes Urdu/Punjabi interactions, AVA is a real-time, edge-deployable B2B audio deepfake detection platform that identifies AI-synthesized speech in live telephonic sessions and generates immediate fraud alerts, without disrupting call traffic and without any foreign cloud dependency.
+For banks and call centres in Pakistan handling high-stakes Urdu and Punjabi calls, AVA is a research prototype of an edge-deployable audio deepfake detector that identifies AI-synthesized speech in live telephonic sessions and generates immediate fraud alerts, without disrupting call traffic and without any foreign cloud dependency. Deployment inside a telecom operator's own network, where CTDISR-2025 applies directly, is future work.
+
+### 1.4 Limitations
+
+These are stated here, in the model card (FR-M12) and on the dashboard (FR-U1) so that nobody reads AVA as something it is not.
+
+- AVA flags **likely synthetic speech**. An alert is not proof of fraudulent intent, and the absence of an alert does not verify the caller.
+- AVA does **not** detect human impersonators speaking in their own voice, which is the majority of the fraud counted in §1.1.
+- AVA does **not** verify identity. It is not a voice biometric.
+- Targets in §6 are provisional until the first baseline run and will be revised in v0.3 with measured values.
 
 ---
 
-## 2. Goals and Non-Goals
+## 2. Goals and non-goals
 
-### 2.1 Goals (mapped to scope objectives)
+### 2.1 Objectives (from the scope document, plus additions marked)
 
-| ID | Goal | Scope ref |
+| ID | Objective | Acceptance evidence (see §7) |
 |---|---|---|
-| G1 | Minimize Equal Error Rate (EER) on a held-out Urdu/Punjabi telephony test set, benchmarked against AASIST and RawNet2 baselines | BO-1 |
-| G2 | Build a representative genuine + synthetic Urdu/Punjabi corpus with telephony codec augmentation | BO-2 |
-| G3 | Deliver a near real-time streaming inference pipeline on CPU-only edge hardware via ONNX Runtime | BO-3 |
-| G4 | Validate end-to-end in a simulated SIPREC pipeline with Asterisk PBX as proxy Session Border Controller | BO-4 |
-| G5 | Architect for CTDISR-2025 and PDPB 2023 compliance: fully on-premises, zero foreign egress | BO-5 |
-| G6 | Demonstrate robustness on at least two regional variants: Standard Urdu and Majhi Punjabi | BO-6 |
-| G7 | Package as Docker containers orchestrated by Kubernetes for portability across local edge hardware | BO-7 |
-| G8 | Provide an analyst-facing dashboard with live verdicts and alerts, plus a batch upload mode for offline analysis | Decision D1, D2 |
+| BO-1 | Minimize EER on a held-out Urdu/Punjabi telephony test set, benchmarked against AASIST, RawNet2 and XLS-R+AASIST baselines trained on the same data | Evaluation report with EER, minDCF and FAR tables and confidence intervals |
+| BO-2 | Build a representative genuine + synthetic Urdu and Pakistani Punjabi corpus with telephony codec augmentation, about 50,000 original clips | Datasheet, manifest, statistics |
+| BO-3 | Deliver a near real-time streaming inference pipeline on CPU-only edge hardware via ONNX Runtime | Benchmark log on the reference box |
+| BO-4 | Validate end-to-end on live calls through an Asterisk lab PBX with a passive audio tap | Recorded live demo; e2e test in CI |
+| BO-5 | Architect for on-premises, zero-egress operation so a licensee bound by CTDISR-2025 could deploy it; align with the draft Personal Data Protection Bill's principles | Egress test with outbound network blocked |
+| BO-6 | Demonstrate robustness on Standard Urdu and Majhi Punjabi, and measure false alarms on Pothwari, Saraiki and other dialects | Per-language and per-dialect tables |
+| BO-7 | Package as Docker containers orchestrated by Kubernetes for portability across local edge hardware | Clean k3s deploy; docker compose for dev |
+| BO-8 (added in PRD) | Analyst dashboard with live verdicts, a per-window timeline, alerts, and a batch upload mode | Demo |
+| RQ-A (added) | **How fast can we be sure?** Report accuracy as a function of evidence length over GSM and AMR phone audio | Time-versus-accuracy curve per codec (FR-M9) |
+| RQ-B (added) | **Does it wrongly accuse real speakers?** Report the false-alarm rate per dialect | Per-dialect FAR table with intervals (FR-M10) |
+| RQ-C (added) | **Humans versus AVA.** Compare Pakistani listeners, AVA, and listeners helped by AVA on the same clips | Listening-study results (FR-S1) |
 
-### 2.2 Non-Goals (explicitly out of scope)
+### 2.2 Non-goals (explicitly out of scope)
 
-- Video, multimodal, or text deepfake detection.
-- Manipulation localization (splice timestamps) or generator attribution (which tool made it).
+- Video, image or text deepfake detection.
+- Sample-accurate splice localization or generator attribution (which tool made it). The per-window score timeline (2 s resolution) **is** in scope.
 - Integration into live, production telecom networks (e.g. PTCL's active infrastructure).
-- Detection for English or languages other than Standard Urdu and Majhi Punjabi.
-- Speaker identification or biometric voice authentication. AVA detects synthesis artifacts, not identity.
-- Replay attack detection (physical-access spoofing) as a primary objective; it may be included in evaluation if time permits.
+- Detection for English or languages other than Urdu and Punjabi. Detection is trained on Standard Urdu and Majhi Punjabi; other Punjabi dialects are evaluated for false alarms, not optimized for.
+- Speaker identification or biometric voice authentication. AVA detects synthesis artifacts, not identity. A caller-versus-enrolled-voice check is a stretch goal only (D15).
+- Replay attack detection as a primary objective; it may be included in evaluation if time permits (Q5).
 - Automatic call termination or any active intervention in the call path. AVA is passive and advisory.
+- Public release of the dataset or model by default (FR-E4).
 
 ---
 
-## 3. Users and Stakeholders
+## 3. Users and stakeholders
 
 ### 3.1 Personas
 
 | Persona | Description | Primary needs |
 |---|---|---|
-| **Fraud analyst** (primary end user) | Works in a call center or telecom security operations team. Monitors multiple concurrent calls. | Clear real-time alerts, low false positives, enough context to act (call ID, agent, confidence trend, audio snippet). |
+| **Fraud analyst** (primary end user) | Works in a bank or call-centre security team. Monitors multiple concurrent calls. | Clear real-time alerts, low false positives, context to act (call ID, agent, confidence trend, which seconds looked fake, optional audio snippet). |
 | **Security operations lead** | Owns fraud KPIs and tooling. Configures thresholds and reviews history. | Tunable sensitivity, audit logs, exportable reports, integration hooks. |
-| **Telecom / PBX engineer** | Deploys and maintains the system on-prem. | Simple container deployment, SIPREC configuration guidance, health metrics, no internet dependency. |
-| **Compliance officer** | Ensures PTA / PDPB adherence. | Proof of data locality, retention controls, access logs. |
+| **Telecom / PBX engineer** | Deploys and maintains the system on-prem. | Simple container deployment, PBX tap configuration guidance, health metrics, no internet dependency. |
+| **Compliance officer** | Ensures data-localization and privacy obligations are met. | Proof of data locality, retention controls, access logs. |
 | **ML engineer** (project team) | Trains, evaluates, and exports models. | Reproducible data pipeline, evaluation harness, export tooling. |
+| **Recorded speaker** (data subject) | Volunteers or is paid to record speech that is also used to make fakes. | Clear consent, anonymity, the right to withdraw, no public release without re-consent. |
 
 ### 3.2 Stakeholders
 
 | Role | Stakeholder |
 |---|---|
 | Sponsor | GIKI |
-| Developers | Ayesha, Ibrahim, Ilsa, Tughral |
-| Supervisor / Co-supervisor | Prof. Dr. Ghulam Abbas / Dr. Khurram Khan Jadoon |
 | Evaluation | SDP Assessment Committee, FCSE |
-| Prospective industry partner | PTCL or equivalent (subject to MOU) |
+| Ethics approval | GIKI ORIC or the body named by the FYP coordinator (Q6) |
+| Prospective industry partner | PTCL or equivalent (subject to MOU, Q2) |
 | Regulators (context only) | PTA, NCCIA |
-| Data partners | LUMS CSALT Lab (Urdu), Mozilla Common Voice |
+| Data sources | Mozilla Common Voice (Urdu), Meta Omnilingual ASR Corpus (pnb_Arab), Habib University, CSALT-LUMS, UrduSpeech (rights pending), LDC (scholarship pending), team-recorded speakers |
 
 ---
 
-## 4. Key Decisions and Assumptions
+## 4. Decisions and assumptions
 
-These were settled during PRD drafting and constrain the architecture.
+One decision per row with its one-sentence reason. Appendix A carries the alternatives considered and the longer argument. Each ID is citable from issues, the SRS and the architecture.
 
-| ID | Decision | Rationale |
+| ID | Decision | Why, in one sentence |
 |---|---|---|
-| D1 | **Serving:** Python FastAPI service wrapping ONNX Runtime; REST for control/batch, WebSocket for live events; React dashboard for analysts. | Fast to build, easy to containerize, Python-native ML tooling. |
-| D2 | **Batch mode is in scope** alongside live SIPREC streaming. | Cheap to add, essential for demos and evaluation, lets analysts re-check recordings. |
-| D3 | **Edge target is CPU-only.** No GPU assumed at inference time. Training may use GPUs (lab or rented, with no citizen data leaving country). | Reflects realistic call center hardware; forces a disciplined latency budget. |
-| D4 | **Synthesis stack is fixed:** ElevenLabs (API), Coqui XTTSv2, RVC voice conversion, and at least one open TTS (Meta MMS-TTS Urdu; a Punjabi open TTS if available, otherwise XTTSv2 cross-lingual). | Gives concrete acceptance criteria and generator diversity. |
-| A1 | Reference CPU box for all latency/throughput targets: **8 physical cores (16 threads), 32 GB RAM, x86-64 with AVX2/AVX-512**. | Typical of a mid-range on-prem server or workstation. |
-| A2 | Telephony audio arrives at **8 kHz, mono**, in G.711 (μ-law/A-law), GSM 06.10, or AMR-NB. AVA upsamples to 16 kHz for the backbone. | Matches Pakistani network codecs stated in scope. |
-| A3 | XLS-R 300M is the default backbone. If it cannot meet the CPU budget after INT8 quantization and layer pruning, a smaller backbone (XLS-R with truncated layers, or wav2vec2-base multilingual) is the fallback. | CPU-only constraint. Flagged as the primary technical risk (R1). |
-| A4 | Speaker-disjoint splits are mandatory; no speaker appears in more than one of train/dev/test. | Prevents identity leakage inflating results. |
+| D1 | **Serving:** Python FastAPI service wrapping ONNX Runtime; REST for control and batch, WebSocket for live events; React dashboard | Keeps the API in the ML language so batch and live share one code path, and the live board needs push updates every 2 s. |
+| D2 | **Batch mode is in scope** alongside live calls | A file is a call without the phone line; it costs little and lets us demo and evaluate without the PBX. |
+| D3 | **Edge target is CPU-only.** No GPU at inference time; training may use GPUs under the data rule in D13 | Real call centres run ordinary servers; a GPU requirement would mean "buy new hardware". |
+| D4 | **Model:** AntiDeepfake MMS-300M [2] post-trained weights, truncated to about 7 to 8 transformer layers chosen by a sweep, with an SLS (sensitive layer selection) classification head [3]; fallback is XLS-R 300M with the same SLS head | A model already post-trained on 74k hours of deepfake data in 100+ languages is a better starting point at no extra cost, and the field reports that progress now comes from data rather than new head designs [4]. |
+| D5 | **Synthesis stack is fixed:** OmniVoice (zero-shot cloning, Urdu and Pakistani Punjabi), Seed-VC and RVC (voice conversion), MMS-TTS (TTS, Urdu; Punjabi subject to the smoke test), with **Fish Audio S2 held out** as the unseen tool; ElevenLabs is used only if written research permission is obtained (Q7) | Named tools give testable acceptance criteria; the four cover cloning, conversion and TTS; XTTSv2 supports neither language and ElevenLabs' terms ban detector training. |
+| D6 | **Dataset target:** about 50,000 original clips of 3 to 6 s (about 60 h), roughly 45% genuine and 55% synthetic, split evenly between Urdu and Pakistani Punjabi; codec copies are not counted | "Diverse" cannot be checked; a clip count of originals can, and codec copies of one clip are not new data. |
+| D7 | **Live-call ingestion:** Asterisk passive tap (ARI snoop channel plus ExternalMedia, or equivalent) delivering plain RTP to AVA is the primary path; a SIPREC Recording Server exercised through jambonz as the SIPREC client is a stretch goal | Asterisk has no SIPREC client, so the tap is the only path the lab can drive; SIPREC remains the production-equivalent interface. |
+| D8 | **Codecs:** G.711 and GSM 06.10 are exercised live; AMR-NB is exercised on recorded files and replayed captures | Stock Asterisk cannot negotiate AMR-NB. |
+| D9 | **Windows:** 4 s windows every 2 s of speech; a provisional verdict after the first window, a state change only after two | 4 s is the crop length detectors are trained on; 2 s keeps it live; two windows before any state change avoids greeting-phase alarms. |
+| D10 | **Alerting:** EMA smoothing and a three-state machine with separate enter and exit thresholds, all in config | One noisy window must not flip an alarm on and off; the operating point is a business choice that differs between a bank and a BPO. |
+| D11 | **Fakes come from the same speakers as genuine clips**, and both classes go through one processing script | Otherwise the model can learn "this voice is real" or "this silence pattern is fake" instead of what synthesis sounds like. |
+| D12 | **No raw audio retained by default**; alert snippets are opt-in, bounded and TTL-limited | Less stored voice data is less to protect and less to explain. |
+| D13 | **Data locality rule:** raw and consented audio stay on university-controlled storage in Pakistan; rented GPUs may process public-licence data, or consented data only if the consent form names off-site processing and the provider region is in-country | One rule, enforceable, consistent with the privacy story. |
+| D14 | **Dataset release policy:** no public release of audio or speaker-level manifests by default; internal and examiner access only; any later release needs re-consent | The consent form must say this from day one. |
+| D15 | **Caller-versus-enrolled-voice check** is a stretch goal only | It matches real bank fraud but is a biometric with its own consent regime; out of scope unless everything else is done. |
 
-### 4.1 Reasoning behind each decision
-
-**The short version.** One plain sentence per product decision. Technology choices (model, ONNX, SIPREC, FastAPI, React, databases, Kubernetes) are explained the same way in [architecture.md §10.0](architecture.md#100-the-short-version).
-
-| Decision | Why, in plain words |
-|---|---|
-| **Dashboard + WebSocket API** | Analysts need to *see* an alert. A log line or webhook is invisible in a demo and useless without more tooling. |
-| **Batch upload included** | A file is just a call without the phone line. It costs almost nothing, and it lets us demo and test the model even if the phone lab is not ready. |
-| **CPU only** | Real call centers have normal servers. If we required a GPU, "edge deployable" would secretly mean "buy new hardware". |
-| **Fixed list of fake generators** | "Diverse fakes" cannot be checked. "1,500 clips per generator per language" can. |
-| **8-core reference machine** | A latency target means nothing without saying which machine it is measured on. |
-| **8 kHz phone audio, upsampled to 16 kHz** | Pakistani networks send narrowband audio. The model wants 16 kHz. We convert the same way in training and in production so nothing surprises the model. |
-| **XLS-R with a named fallback** | Naming the plan B now means switching later is not a scope change. |
-| **No speaker in two splits** | Otherwise the model can pass the test by memorizing voices instead of learning what fake sounds like. |
-| **Hold one generator out of training** | Fraudsters will use tools we never trained on. Testing on an unseen tool is the only honest generalization number. |
-| **Measure code-switching separately** | The scope claims we fix false alarms on mixed Urdu/English speech. We have to measure that subset to claim it. |
-| **Passive, alert-only** | If we sat in the call path and crashed, calls would drop. If we blocked calls automatically, a false alarm would cut off a real customer. |
-| **4 s windows, 2 s apart, wait for two** | 4 s is enough audio to judge. 2 s keeps it feeling live. Waiting for two windows avoids alarms during "hello, how are you". |
-| **Alert with smoothing and on/off thresholds** | One noisy score should not flip the alarm on and off every 2 s. Analysts would learn to ignore it. |
-| **No audio stored by default** | Less stored voice data means less risk and a shorter conversation with the regulator. Storing snippets is opt-in and auto-deletes. |
-| **Prove zero internet, do not just claim it** | A network rule plus a test with the internet blocked is evidence. A sentence in a document is not. |
-| **Two user roles only** | Someone tunes thresholds, someone watches calls. Anything richer is real product work with no marks attached. |
-| **Retrain the baselines on our data** | Quoting English benchmark numbers is not a comparison. Our whole point is that those numbers do not transfer. |
-| **Model work is P0, dashboard extras are P1/P2** | The project is graded on detection accuracy. A pretty dashboard on a weak model fails. |
-| **Numeric targets are provisional** | They exist to force early measurement. They get revised once we have real numbers. |
-
-**The detailed version** follows for each decision.
-
-**D1: FastAPI service + WebSocket + React dashboard.**
-The scope's vision statement promises "immediate fraud alerts for human security analysts". An alert that lands only in a log file or a webhook is not demonstrable to an SDP panel and not usable by the primary persona without further tooling. A thin dashboard is the cheapest way to make the product's value visible. FastAPI keeps the API in the same language as the ML stack so batch analysis reuses the streaming code path; WebSocket is needed because the live board updates every 2 s per call. Alternatives rejected: webhook/SIEM-only (no visible product, pushes integration work onto the customer), gRPC (browsers cannot consume it natively and the event rate is tiny).
-
-**D2: Batch mode in scope.**
-Batch analysis costs almost nothing beyond the streaming pipeline, since a file is just an RTP stream without the network. It gives three things streaming cannot: a repeatable evaluation harness against known files, a demo that works without a working PBX, and an analyst workflow for re-checking recordings after the fact. It also de-risks the SDP timeline: if telephony integration slips, the model can still be shown working. Rejected alternative: streaming only, which would leave the product undemonstrable until Phase 3 completes.
-
-**D3: CPU-only edge target.**
-The scope claims "edge deployable" as the core differentiator against cloud vendors. Pakistani call centers run commodity x86 servers, not GPU boxes, so a GPU requirement would quietly convert "edge" into "buy new hardware", weakening the product argument. Committing to CPU forces the latency budget to be engineered honestly (quantization, layer truncation, micro-batching) rather than hidden behind a GPU. It also simplifies containers (no CUDA driver matching) and makes BO-7 portability a real claim. The cost is risk R1, which is mitigated by early benchmarking and a fallback backbone. Rejected: single-GPU workstation (unrepresentative of deployment), cloud GPU VM (contradicts the data-localization story even if in-country).
-
-**D4: Fixed synthesis stack.**
-"Diverse synthetic speech" is not testable; "at least 1,500 utterances per language from each of ElevenLabs, XTTSv2, RVC, and MMS-TTS" is. The four generators were chosen to cover the three acoustically distinct attack families fraudsters actually use: commercial zero-shot cloning (ElevenLabs), open-source zero-shot cloning (XTTSv2), real-time voice conversion (RVC), and conventional neural TTS (MMS-TTS, which is also fully local and free for volume). Naming them also makes the held-out-generator test (FR-D8) meaningful. Rejected: leaving the stack general, which would defer a decision the dataset phase cannot start without.
-
-**A1: Reference hardware of 8 cores / 32 GB.**
-Every latency and concurrency target in §6.1 is meaningless without a stated machine. 8 physical cores is a floor for a small on-prem server and is achievable on a lab workstation for benchmarking. Choosing a modest box keeps the targets honest; if the model meets them here it will exceed them on real servers.
-
-**A2: 8 kHz narrowband input, upsampled to 16 kHz.**
-The scope identifies GSM 06.10 and AMR-NB as the dominant Pakistani codecs, all narrowband. XLS-R expects 16 kHz, so upsampling is unavoidable; the important design rule is that training data goes through the identical 8 kHz → 16 kHz path so there is no train/serve mismatch. Wideband (G.722, Opus) support is not excluded but is not the design center.
-
-**A3: XLS-R 300M default with a declared fallback.**
-Naming the fallback in the PRD, not just in a risk table, means the team can switch without a scope change if Phase 2 benchmarks fail. See ADR-1 for why XLS-R at all.
-
-**A4: Speaker-disjoint splits.**
-With few speakers per language, a random split lets the model learn speaker identity as a proxy for the label (every synthetic clip of speaker X is fake, every genuine clip of speaker Y is real). Reported EER would then be optimistic and would collapse on new callers, exactly the population the product faces. Speaker-disjoint splitting is standard in ASVspoof and is required to make BO-1 numbers credible.
-
-**Held-out generator partition (FR-D8).**
-A detector trained and tested on the same generators learns generator fingerprints, not synthesis in general. Fraudsters will use tools the team never trained on. Reporting an unseen-attack EER separately, and setting a looser target for it (§6.2), is the only honest measure of generalization and the most defensible number in front of the panel.
-
-**Code-switching partition (FR-D4) and per-language gap target.**
-The scope's first claimed failure of existing detectors is false positives on code-switched Urdu/Punjabi. If AVA does not measure that subset separately, it cannot claim to have fixed it. The ≤ 2-point Urdu/Punjabi gap target operationalizes BO-6.
-
-**Passive-only, advisory-only (FR-T5, non-goal on call termination).**
-Placing AVA in the media path would let it block calls but would also mean AVA failure drops calls, which no operator will accept from a student prototype or a first-generation product. Advisory alerts to a human analyst also keep a person accountable for any action taken on a false positive, which matters for PDPB fairness. This decision drives the SIPREC choice (ADR-4).
-
-**4 s window, 2 s hop, minimum two windows before a verdict.**
-4 s matches the crop length anti-spoofing models are trained and benchmarked on; shorter windows degrade EER sharply, longer ones delay the first verdict. A 2 s hop gives 50% overlap for smoother scores at half the compute of scoring every second. Requiring two windows (≈ 6 s of speech) before any verdict trades a few seconds of latency for far fewer greeting-phase false alerts, which is the right trade for an advisory system. See ADR-11.
-
-**Hysteresis alert state machine (FR-I7).**
-A single threshold makes an alert flap on and off with every noisy window, training analysts to ignore it. Separate enter/exit thresholds and a "suspicious" intermediate state give a stable signal and a chance for analysts to watch a borderline call before committing attention.
-
-**No raw audio retained by default (FR-O6).**
-PDPB's data minimization principle and CTDISR's treatment of voice as biometric data both push toward storing as little audio as possible. Scores and metadata are sufficient for the analyst workflow; a bounded, TTL-limited snippet is offered only as an opt-in for evidence preservation. Defaulting to off also makes the compliance conversation with an operator far shorter.
-
-**Zero egress enforced, not assumed (FR-O4, §6.3).**
-The scope's regulatory argument rests on data never leaving the premises. A policy statement is not evidence; a Kubernetes NetworkPolicy plus a CI test that runs the system with outbound traffic blocked turns the claim into something the panel and a compliance officer can verify.
-
-**Two roles, local users only (FR-U7).**
-A fraud desk needs at least the distinction between people who tune thresholds and people who watch calls. Anything richer (SSO, per-team scoping) is real product work with no SDP payoff and is deferred to P2.
-
-**Baselines trained on the same data (FR-M4).**
-Quoting published AASIST/RawNet2 numbers from English ASVspoof would not be a comparison; the entire thesis is that those numbers do not transfer to Urdu/Punjabi telephony. Retraining the baselines on the AVA dataset is the only way to show the backbone and head actually help, and it is what BO-1's "benchmarked against published ASVspoof baselines" requires to be meaningful.
-
-**Priority scheme (P0/P1/P2) weighted toward model evidence.**
-BO-1 and BO-2 are what the project is judged on; a beautiful dashboard with a mediocre model fails the SDP. P0 therefore covers dataset, model, streaming pipeline, SIPREC integration, and a minimal dashboard; history views, feedback loops, webhooks, and SSO are P1/P2 so they can be cut without weakening the core claim (R8).
-
-**Provisional numeric targets (§6.1, §6.2).**
-Targets such as EER ≤ 5% and RTF ≤ 0.5 are set from published SSL-based results on ASVspoof 2021 DF and from rough CPU throughput estimates for a 12-layer XLS-R at INT8. They exist to force early measurement, not as promises; the PRD explicitly schedules their revision once the first baseline runs produce evidence.
+| ID | Assumption | Rationale |
+|---|---|---|
+| A1 | Reference CPU box for all latency and throughput targets: **8 physical cores (16 threads), 32 GB RAM, x86-64 with AVX2 or AVX-512**; the exact CPU model and whether it supports VNNI are recorded in the benchmark log once task 0.8 completes | A latency target means nothing without the machine it is measured on. |
+| A2 | Telephony audio arrives at **8 kHz, mono**, in G.711 μ-law or A-law, GSM 06.10, or AMR-NB; AVA upsamples to 16 kHz for the backbone through the same `ingest` module used in training | Matches Pakistani network codecs; identical conditioning avoids train/serve mismatch. |
+| A3 | If the D4 model cannot meet the CPU budget after INT8 quantization and layer truncation, the fallback order is: fewer layers, then XLS-R 300M + SLS, then hop 2 s to 4 s, then concurrency target 8 to 4, then revise §6.1 with evidence by end of January 2027 | Naming the whole fallback ladder now means no step is a scope change. |
+| A4 | **Speaker-disjoint splits** are mandatory, and each speaker's genuine and synthetic clips land in the same split | Prevents identity leakage inflating results. |
+| A5 | The Phase 0 exit gate is reviewed on **15 October 2026**; the schedule in §8 is measured from 1 October 2026 | The v0.1 Phase 0 end date passed with its gate unmet. |
 
 ---
 
-## 5. Functional Requirements
+## 5. Functional requirements
 
-Requirement priorities: **P0** = must have for SDP completion, **P1** = should have, **P2** = nice to have.
+Priorities: **P0** = must have for SDP completion, **P1** = should have, **P2** = nice to have. Every P0 requirement becomes a GitHub issue with a named owner.
 
 ### 5.1 Dataset (FR-D)
 
 | ID | Requirement | Priority |
 |---|---|---|
-| FR-D1 | Collect genuine Urdu and Majhi Punjabi speech from: LUMS CSALT Urdu corpus, Mozilla Common Voice (ur, pa-PK), and team-recorded spontaneous conversational speech (with informed consent forms). | P0 |
-| FR-D2 | Generate synthetic speech for both languages using every generator in D4. Each generator must contribute at least 1,500 utterances per language, covering at least 20 distinct target voices. | P0 |
-| FR-D3 | Include voice-conversion attacks (RVC) applied to genuine recordings, not only text-to-speech. | P0 |
-| FR-D4 | Include code-switched utterances (Urdu/Punjabi with embedded English) in both genuine and synthetic partitions; at least 15% of each partition. | P0 |
-| FR-D5 | Apply telephony augmentation to every utterance: resample to 8 kHz, encode/decode through GSM 06.10, AMR-NB (4.75, 7.4, 12.2 kbps), G.711, and a VoIP path (Opus at 8-16 kbps or G.729), with randomized packet loss (0-5%) and jitter. | P0 |
-| FR-D6 | Add environmental augmentation: additive noise (call center babble, street, vehicle) at 0-20 dB SNR, and room impulse responses for handset/speakerphone. | P1 |
-| FR-D7 | Produce speaker-disjoint train/dev/test splits with a manifest (CSV/JSONL) recording speaker ID, language, dialect, generator, codec chain, SNR, and license. | P0 |
-| FR-D8 | Hold out one full generator from training as an **unseen-attack** test partition. | P0 |
-| FR-D9 | Document the dataset (datasheet: sources, consent, licenses, statistics). | P0 |
-| FR-D10 | All raw audio is stored on-premises / team-controlled storage; ElevenLabs is used only with synthetic text prompts and team-consented reference voices, never customer or third-party citizen audio. | P0 |
+| FR-D1 | Collect genuine speech from: **Urdu**: Mozilla Common Voice Urdu (validated set, capped at 30 clips per speaker), UrduSpeech (only after a rights check, Q8), the CSALT-LUMS Urdu deepfake corpus (genuine partition, from its public GitHub release), and the Urdu part of team recording sessions. **Pakistani Punjabi**: Meta Omnilingual ASR Corpus pnb_Arab (Shahmukhi), the Habib University Punjabi corpus (subject to access, Q8), and team-recorded speakers (FR-D4). **Other dialects, test only**: Pothwari, Saraiki and Hindko from Common Voice and Meta Omnilingual. Each source's licence and permitted uses are recorded in the licence register (FR-E5). | P0 |
+| FR-D2 | Generate synthetic speech for both languages with every training generator in D5. Target per language: about 12,000 synthetic clips across the training generators, plus about 1,500 clips from the held-out generator for test only. The manifest records tool, version, source speaker and prompt text for every synthetic clip. | P0 |
+| FR-D3 | Include voice-conversion attacks (Seed-VC and RVC applied to genuine recordings, at least 10 consented target voices), not only text-to-speech. Voice conversion is the main source of Punjabi fakes because it preserves the speaker's accent. | P0 |
+| FR-D4 | Record **60 to 80 Pakistani Punjabi speakers**, about half women and half men, mostly Majhi with some from other regions, in sessions of 10 to 12 minutes: Part A read speech (20 to 30 sentences in Shahmukhi Punjabi and Urdu, some code-switched), Part B free speech (prompts that provoke natural code-switching), Part C a role-play call to a bank about a blocked card. Recording is over a real call into the Asterisk lab or with a web recorder that saves WAV; WhatsApp voice notes are not accepted. Each speaker gets an anonymous ID and a short demographic form (age band, gender, home district, dialect, languages, phone model). | P0 |
+| FR-D5 | Include **code-switched** utterances (Urdu or Punjabi with embedded English) in both genuine and synthetic partitions, at least 15% of each. A clip is code-switched if its transcript (prompt text for TTS and recordings; the sentence field for public corpora) contains at least one English content word; the manifest carries a `code_switched` boolean set by this rule and spot-checked on 100 clips. | P0 |
+| FR-D6 | Apply telephony augmentation to every clip: resample to 8 kHz, then encode and decode through G.711, GSM 06.10, AMR-NB (4.75, 7.4, 12.2 kbps) and a VoIP path (Opus at 8 to 16 kbps or G.729), with randomized packet loss (0 to 5%) and jitter. The chain is recorded per clip. Codec copies are stored but not counted toward D6's clip total. | P0 |
+| FR-D7 | Add environmental augmentation: additive noise (call-centre babble, street, vehicle) at 0 to 20 dB SNR, and room impulse responses for handset and speakerphone. | P1 |
+| FR-D8 | Produce **speaker-disjoint** 70/10/20 train/dev/test splits with a manifest (CSV or JSONL) recording clip ID, speaker ID, language, dialect, genuine/synthetic, generator, source clip, prompt, codec chain, SNR, duration, split and licence. A script asserts zero speaker overlap and that each speaker's genuine and synthetic clips share a split. Test partitions: (a) in-domain, (b) held-out generator, (c) held-out dialects (Pothwari, Saraiki, Hindko, and any dialect with too few speakers for training), (d) real phone-call genuine set (LDC2017S14 if the scholarship is granted, otherwise lab call recordings). | P0 |
+| FR-D9 | Hold out **Fish Audio S2** entirely from train and dev as the unseen-attack partition. The held-out generator must produce intelligible speech in both languages (checked in the Phase 0 smoke test) and must be absent from the documented training sources of the D4 checkpoint; if either check fails, a different generator is held out and the choice is recorded. | P0 |
+| FR-D10 | Document the dataset in a datasheet: sources, consent, licences, speaker and dialect statistics, generator statistics, codec statistics, known gaps. | P0 |
+| FR-D11 | **Same-speaker rule.** Every synthetic clip's target voice is a consented speaker who also contributes genuine clips; TTS and cloning tools are prompted with that speaker's reference audio; stock voices are not used. Speakers who consent to recording but not to cloning contribute genuine audio to the test split only (FR-E2). | P0 |
+| FR-D12 | **Pipeline parity and leakage control.** Genuine and synthetic clips pass through one script: trim silence, cut to 3 to 6 s, loudness-normalize, resample, codec chain, quality checks, manifest row. Per-partition distributions of duration, leading and trailing silence and loudness are reported and must overlap. Two leakage probes, a silence-only classifier and a duration-only classifier, are trained and must score near 50% EER. | P0 |
+| FR-D13 | **Quality checks** on every clip: length, silence ratio, loudness, a noise score, a language check that it is Urdu or Punjabi; synthetic clips also get an ASR check that the words came out right. The team listens to a random 5% of each batch; if more than 10% of a batch fails, the whole batch is re-checked. | P0 |
+| FR-D14 | Versions: `ava-data-v0` (public data only plus the first synthetic batch, early October) so model work starts immediately; `ava-data-v1` (adds team recordings and their fakes, mid-December). | P0 |
+| FR-D15 | Phase 0 **generator smoke test**: 20 Punjabi and 20 code-switched prompts per tool in D5, listened to and scored for intelligibility and language correctness, with a pass/fail rule and a named owner. A tool that fails on a language is not used for that language. | P0 |
 
-### 5.2 Detection Model (FR-M)
-
-| ID | Requirement | Priority |
-|---|---|---|
-| FR-M1 | Backbone: XLS-R (multilingual self-supervised) fine-tuned on the AVA dataset. | P0 |
-| FR-M2 | Classification head: Dual-Column Bidirectional Mamba (DuaBiMamba) operating on layer-weighted XLS-R hidden states. | P0 |
-| FR-M3 | Output: per-window synthesis probability in [0,1] plus a calibrated confidence. | P0 |
-| FR-M4 | Train and report two published baselines on the same data: AASIST and RawNet2. | P0 |
-| FR-M5 | Report EER and min t-DCF on: (a) full test set, (b) per language, (c) per codec, (d) unseen-generator partition, (e) code-switched subset. | P0 |
-| FR-M6 | Score calibration (temperature scaling or Platt) on the dev set so that thresholds are meaningful for analysts. | P1 |
-| FR-M7 | Export the full model to ONNX, validate numerical parity with PyTorch (max abs diff < 1e-3 on 100 samples), and apply INT8 dynamic quantization. | P0 |
-| FR-M8 | Ablation: XLS-R + simple MLP head vs. XLS-R + DuaBiMamba, to justify the head. | P1 |
-| FR-M9 | Model card documenting training data, metrics, known failure modes, and intended use. | P0 |
-
-### 5.3 Streaming Inference Pipeline (FR-I)
+### 5.2 Ethics and data governance (FR-E)
 
 | ID | Requirement | Priority |
 |---|---|---|
-| FR-I1 | Accept forked RTP audio per call leg (caller and agent) and decode G.711 μ/A-law, GSM 06.10, and AMR-NB. | P0 |
-| FR-I2 | Maintain a jitter buffer and reassemble audio in order; tolerate up to 5% packet loss with concealment (zero-fill or last-packet repeat). | P0 |
-| FR-I3 | Resample to 16 kHz and apply voice activity detection; only speech windows are scored. | P0 |
-| FR-I4 | Score sliding windows of 4 s with a 2 s hop (configurable). | P0 |
-| FR-I5 | Aggregate window scores per call leg using exponential moving average plus a minimum-evidence rule (at least N speech windows before first verdict). | P0 |
-| FR-I6 | Emit a first provisional verdict within 6 s of speech onset and update at each hop. | P0 |
-| FR-I7 | Alert state machine with hysteresis: `monitoring -> suspicious -> alert` with separate enter/exit thresholds to prevent flapping. | P0 |
-| FR-I8 | Score only the caller leg by default; scoring the agent leg is configurable. | P1 |
-| FR-I9 | Handle at least 8 concurrent calls on the reference CPU box (A1) within latency targets. | P0 |
-| FR-I10 | Degrade gracefully: if inference falls behind, drop hops (increase stride) rather than queue unboundedly, and expose a "degraded" flag. | P1 |
+| FR-E1 | **Ethics approval** from GIKI ORIC, or the body the FYP coordinator names (Q6), is obtained before the first recording session. The approval reference is recorded in the datasheet. The application covers recording, voice cloning, and the listening study (FR-S1). | P0 |
+| FR-E2 | **Consent form** signed before recording, stating: what is recorded and why; a separate tick-box for cloning the speaker's voice; storage location and deletion date; the right to withdraw, with deletion of the speaker's clips and every fake made from them; separate tick-boxes for internal use, sharing with examiners, and public release; off-site processing if D13 permits it; payment terms; "voluntary, no effect on grades". Forms are stored offline, separately from audio, linked only by speaker ID. | P0 |
+| FR-E3 | **Data locality** per D13. Raw audio, consent forms and speaker-level manifests live on university-controlled storage or an encrypted drive with one backup, never in any repository. | P0 |
+| FR-E4 | **Release policy** per D14: no public release of audio, speaker-level manifests or models trained on consented voices by default. | P0 |
+| FR-E5 | **Licence register** covering every pretrained weight, generator, corpus and tool, stating permitted uses (train, redistribute data, redistribute model, commercial). The datasheet and model card carry the resulting restriction (expected: research and non-commercial use only, since MMS-derived weights and MMS-TTS are CC-BY-NC). | P0 |
+| FR-E6 | **Repository guard.** The public repository never contains audio, consent forms, personal manifests or model checkpoints trained on consented voices; enforced by `.gitignore`, a pre-commit hook blocking audio extensions and files over 1 MB, and a CI check. | P0 |
 
-### 5.4 Telephony Integration (FR-T)
+### 5.3 Detection model (FR-M)
 
 | ID | Requirement | Priority |
 |---|---|---|
-| FR-T1 | Provide a simulated telephony lab: Asterisk PBX acting as proxy SBC, two or more SIP softphone endpoints, and a call generator (SIPp or scripted originations) that can play genuine and synthetic audio files into calls. | P0 |
-| FR-T2 | Implement a SIPREC Recording Server (SRS) that accepts SIPREC INVITEs (RFC 7865/7866), parses recording metadata (participants, call ID), negotiates SDP, and receives the two forked RTP streams. | P0 |
-| FR-T3 | Provide an alternative ingestion path via Asterisk ARI `ExternalMedia` channels (plain RTP to a host:port) as a fallback if native Asterisk SIPREC forking proves unreliable. | P1 |
-| FR-T4 | Map recording sessions to call metadata (call ID, from/to, timestamps) and expose this to the dashboard. | P0 |
-| FR-T5 | AVA must never be in the media path; failure of AVA must not affect the call. | P0 |
-| FR-T6 | Support session teardown (BYE) and cleanup of all per-call state within 5 s. | P0 |
+| FR-M1 | Backbone: AntiDeepfake MMS-300M post-trained weights (D4), converted to a Hugging Face or ONNX-exportable format if needed, truncated to the layer count chosen in task 2.4 (sweep over 4, 6, 7, 8, 10, 12 kept layers), fine-tuned on `ava-data-v1`. | P0 |
+| FR-M2 | Classification head: SLS (sensitive layer selection) over the retained layers' hidden states, feeding a small classifier. The layer sweep is run with the SLS head, not a placeholder. | P0 |
+| FR-M3 | Output: per-window synthesis probability in [0, 1] plus a 256-d embedding, with calibration applied (FR-M6). | P0 |
+| FR-M4 | Train and report three baselines on the same manifests, augmentation and splits: AASIST, RawNet2 (raw-waveform) and XLS-R + AASIST with RawBoost (SSL baseline). | P0 |
+| FR-M5 | Report EER, minDCF (ASVspoof 5 DF-track cost) and FAR at the operating point where FRR = 5%, each with 95% bootstrap confidence intervals, on: (a) full test set, (b) per language, (c) per codec, (d) held-out generator partition, (e) code-switched subset, (f) held-out dialects, (g) real phone-call set. | P0 |
+| FR-M6 | Score calibration (temperature scaling) on the dev set; Expected Calibration Error at or below 0.05; reliability diagram in the evaluation report. | P0 |
+| FR-M7 | Export to ONNX (opset 17, static 64,000-sample input, dynamic batch), validate numerical parity with PyTorch (max abs logit diff below 1e-3 on 100 windows), apply INT8 dynamic quantization, and re-measure dev EER. If INT8 loses more than 0.3 EER points, try static quantization, then ship FP32 with latency re-benchmarked. | P0 |
+| FR-M8 | Ablation: SLS head versus mean-pool + MLP head on the same truncated backbone, to justify the head. | P1 |
+| FR-M9 | **RQ-A.** Report EER and FAR as a function of evidence length (1, 2, 3, 4 and 6 windows of speech) per codec (G.711 and GSM live; AMR-NB on files), as a curve with intervals. The minimum-evidence rule N in FR-I5 is chosen from this curve and the chosen point is recorded. | P0 |
+| FR-M10 | **RQ-B.** Report FAR at the deployed operating point per dialect (Majhi, Pothwari, Saraiki, Hindko, Standard Urdu, code-switched) on dialect-held-out genuine sets. A dialect is reported only if it has at least 10 speakers and 500 genuine clips; otherwise it is listed as "insufficient data". | P0 |
+| FR-M11 | Offline evaluation scores one zero-padded window per clip (clips are 3 to 6 s). The minimum-evidence rule is evaluated only on the live-call campaign and on concatenated clips of at least 8 s. | P0 |
+| FR-M12 | Model card documenting training data, metrics, known failure modes, the licence restriction from FR-E5, and the limitation text from §1.4. | P0 |
 
-### 5.5 API and Batch Mode (FR-A)
-
-| ID | Requirement | Priority |
-|---|---|---|
-| FR-A1 | `POST /v1/analyze` accepts a WAV/MP3/AMR/GSM file (up to 10 min) and returns overall verdict, confidence, per-window timeline, language hint, and processing time. | P0 |
-| FR-A2 | `GET /v1/calls` and `GET /v1/calls/{id}` list active and historical calls with current state, score trend, and alerts. | P0 |
-| FR-A3 | `WS /v1/events` streams live events: `call.started`, `score.updated`, `alert.raised`, `alert.cleared`, `call.ended`, `system.health`. | P0 |
-| FR-A4 | `GET /v1/alerts` with filters (time range, state, min confidence) and CSV export. | P1 |
-| FR-A5 | `POST /v1/alerts/{id}/feedback` lets analysts mark true/false positive, stored for future retraining. | P1 |
-| FR-A6 | `GET /healthz`, `GET /readyz`, `GET /metrics` (Prometheus format). | P0 |
-| FR-A7 | Configuration endpoint (or config file + reload) for thresholds, window size, hop, and leg selection. | P1 |
-| FR-A8 | Optional outbound webhook on `alert.raised` to an on-prem SIEM/ticketing endpoint (configurable, disabled by default). | P2 |
-| FR-A9 | OpenAPI 3 specification auto-generated and served at `/docs`. | P0 |
-
-### 5.6 Analyst Dashboard (FR-U)
+### 5.4 Streaming inference pipeline (FR-I)
 
 | ID | Requirement | Priority |
 |---|---|---|
-| FR-U1 | Live call board: one card per active call showing call ID, duration, current state (monitoring/suspicious/alert), confidence, and a sparkline of score over time. | P0 |
-| FR-U2 | Alert feed with sound/visual notification on new alerts. | P0 |
-| FR-U3 | Call detail view: full score timeline, per-window scores, codec detected, and playback of retained audio snippets (if retention enabled). | P1 |
-| FR-U4 | Batch upload page: drag-and-drop file, show verdict and timeline. | P0 |
-| FR-U5 | History and search over past calls and alerts. | P1 |
-| FR-U6 | Settings page for thresholds and retention (admin role only). | P1 |
-| FR-U7 | Login with username/password; two roles: `analyst` (read, feedback) and `admin` (settings). | P1 |
-| FR-U8 | Works offline: no CDN fonts, scripts, or telemetry. All assets bundled. | P0 |
+| FR-I1 | Accept forked RTP audio per call and decode G.711 μ-law and A-law and GSM 06.10 live. Decode AMR-NB (all eight modes, mode switching, SID/DTX, both RFC 4867 payload formats) in the file path and from replayed RTP captures; live AMR-NB is P2 and depends on an Asterisk AMR module. SDP offers with only unsupported codecs are rejected and logged; comfort-noise and telephone-event payloads are ignored. | P0 |
+| FR-I2 | Maintain a jitter buffer and reassemble audio in order; tolerate up to 5% packet loss with concealment. A window with more than 10% concealed samples is not scored and the call shows `quality=low`; sustained loss above 5% emits a `system.health` event. | P0 |
+| FR-I3 | Resample to 16 kHz with the shared `ingest` module and apply voice activity detection; windows are built over speech only, scored when at least 2.5 s is speech; a tail shorter than a window at call end is zero-padded and marked partial. A call with no detected speech shows `state=no_speech`. | P0 |
+| FR-I4 | Score sliding windows of 4 s with a 2 s hop (configurable). Configuration is validated: 0 < exit < enter ≤ 1, 0 < hop ≤ window, window equals the model card's window. Reloads apply to calls started after the reload. | P0 |
+| FR-I5 | Aggregate window scores per call with an exponential moving average and a minimum-evidence rule: a provisional score after the first window; no state change until N windows (default 2, set from FR-M9). A call or file that ends with fewer than N speech windows reports `verdict=undetermined`, never genuine. | P0 |
+| FR-I6 | Emit a provisional verdict within **6 s of speech onset plus the p95 window latency** (target ≤ 7.5 s on the reference box) and update at each hop. The target applies only when not in degraded mode; `score.updated` carries the degraded flag and effective stride. | P0 |
+| FR-I7 | Alert state machine with hysteresis: `monitoring → suspicious → alert` with separate enter and exit thresholds. All transitions are defined, including `alert → suspicious`, `suspicious → monitoring`, and re-alert after clearing; each `alert.raised` gets a new alert ID. A call that ends in `suspicious` or `alert` persists its final state and the alert is listed as `ended_open`. | P0 |
+| FR-I8 | Score only the caller direction by default. Agent-direction scoring is configurable, starts only after a human agent answers (IVR prompts excluded), and when enabled the call state is the more severe of the two directions with the driving direction shown. On the tap path the agent direction needs a second snoop channel and is P2. "Caller" means the remote party by call direction, not SIP From. | P1 |
+| FR-I9 | Handle at least 8 concurrent calls on the reference box within latency targets. Above the configured maximum, new sessions are refused with a `system.health` event while the call itself continues. Batch jobs use at most 25% of inference capacity while live calls are active. | P0 |
+| FR-I10 | Degrade gracefully: if inference falls behind, increase stride rather than queue unboundedly; cap the stride at 4× hop, beyond which the call shows `state=unmonitored`; clear degraded mode only after 30 s under budget. | P1 |
+| FR-I11 | Call cleanup drains or cancels in-flight windows; late results for an unknown call ID are discarded. Scores and state are flushed to PostgreSQL every hop so a scorer restart resumes from persisted state. | P0 |
 
-### 5.7 Deployment and Operations (FR-O)
+### 5.5 Telephony integration (FR-T)
 
 | ID | Requirement | Priority |
 |---|---|---|
-| FR-O1 | Every service ships as a Docker image built from a reproducible Dockerfile; images are pinned by digest. | P0 |
-| FR-O2 | Kubernetes manifests (k3s single node for the demo) deploy all services with health probes, resource requests/limits, and persistent volumes. | P0 |
-| FR-O3 | A `docker compose` file provides a one-command developer setup. | P0 |
-| FR-O4 | Kubernetes `NetworkPolicy` denies all egress from AVA pods except to in-cluster services and the PBX network. | P0 |
-| FR-O5 | Structured JSON logs; Prometheus metrics (latency per stage, queue depth, active calls, alerts/min); Grafana dashboard. | P1 |
-| FR-O6 | Configurable audio retention: default is **no raw audio stored**; optional retention of alert snippets (max 30 s) with a TTL. | P0 |
-| FR-O7 | Model artifacts are loaded from a local volume; no model download at runtime. | P0 |
-| FR-O8 | Deployment guide covering hardware, PBX SIPREC configuration, and compliance checklist. | P0 |
+| FR-T1 | Provide a simulated telephony lab: Asterisk PBX, two or more SIP softphone endpoints, and a call generator (SIPp or scripted originations) that can play genuine and synthetic audio files into calls, with codec forcing for G.711 and GSM. | P0 |
+| FR-T2 | **Passive tap (primary).** An ARI application attaches a snoop channel to each call and streams the caller direction as plain RTP (ExternalMedia or equivalent) to AVA. Call start and end come from ARI events (StasisStart, StasisEnd or ChannelHangupRequest); call ID, from and to come from ARI channel fields. A tap socket with no packets for 30 s is torn down with `call.ended reason=timeout`. | P0 |
+| FR-T3 | Map tapped sessions to call metadata (call ID, from, to, timestamps, codec) and expose it to the dashboard. | P0 |
+| FR-T4 | AVA must never be in the media path; failure of AVA must not affect the call. The deployment guide requires the PBX's recording-failure policy to be "continue the call", and the e2e test asserts a call survives AVA being stopped. | P0 |
+| FR-T5 | Support session teardown and cleanup of all per-call state within 5 s of the end event. | P0 |
+| FR-T6 | **SIPREC (stretch).** A SIPREC Recording Server (RFC 7865/7866) that accepts INVITEs, parses metadata, negotiates SDP and receives two forked streams, exercised with jambonz as the SIPREC client. Shares the RTP receiver with FR-T2. | P2 |
+| FR-T7 | If neither the snoop tap nor ExternalMedia delivers forked RTP in the Phase 0 spike, the fallback is MixMonitor or chan_spy to a named pipe, then FreeSWITCH; if all fail, Phase 3 starts batch-only and FR-T2 drops to P1 with a dated review. | P0 |
+
+### 5.6 API and batch mode (FR-A)
+
+| ID | Requirement | Priority |
+|---|---|---|
+| FR-A1 | `POST /v1/analyze` accepts a WAV, MP3, AMR or GSM file up to 10 minutes and 100 MB; returns overall verdict, confidence, per-window timeline, language hint, codec detected and processing time. Rejects oversize with 413 and undecodable with 422; downmixes stereo; resamples any input to 8 kHz and then through the shared `ingest` path; wideband sources are flagged `out_of_domain`. Synchronous for files up to 60 s; longer files return 202 with a job ID. | P0 |
+| FR-A2 | `GET /v1/jobs/{id}` returns `queued`, `running`, `done` or `failed` with the result when done. | P0 |
+| FR-A3 | `GET /v1/calls` and `GET /v1/calls/{id}` list active and historical calls with state, score trend and alerts; in-memory timelines keep the last 30 minutes at full resolution and downsample older points, with full history in PostgreSQL. | P0 |
+| FR-A4 | `WS /v1/events` streams `call.started`, `score.updated`, `alert.raised`, `alert.cleared`, `call.ended` (with final state and reason), `system.health`. | P0 |
+| FR-A5 | A language-identification stage produces the language hint; if the language is not Urdu or Punjabi the verdict is marked `out_of_domain` and no alert is raised. | P1 |
+| FR-A6 | `GET /v1/alerts` with filters (time range, state, minimum confidence) and CSV export. | P1 |
+| FR-A7 | `POST /v1/alerts/{id}/feedback` lets analysts mark true or false positive; stores the label with per-window scores and embeddings. Retraining from feedback requires snippet retention to be on and is documented as such. | P1 |
+| FR-A8 | `GET /healthz`, `GET /readyz` (performs a warm-up inference), `GET /metrics` (Prometheus format). | P0 |
+| FR-A9 | Configuration endpoint, or config file plus reload, for thresholds, window, hop and direction selection, validated per FR-I4. Without FR-U7 the endpoint is disabled and only file plus reload is available. | P1 |
+| FR-A10 | Optional outbound webhook on `alert.raised` to an on-prem endpoint, disabled by default; when enabled, the network policy adds one egress rule to that host and port only; delivery is retried three times and failures are logged. | P2 |
+| FR-A11 | OpenAPI 3 specification auto-generated and served at `/docs`. | P0 |
+
+### 5.7 Analyst dashboard (FR-U)
+
+| ID | Requirement | Priority |
+|---|---|---|
+| FR-U1 | Live call board: one card per active call with call ID, duration, state (`monitoring`, `suspicious`, `alert`, `no_speech`, `unmonitored`), confidence, a sparkline of score over time, the quality and degraded flags, and the limitation text from §1.4 visible in the interface. | P0 |
+| FR-U2 | Alert feed with sound and visual notification on new alerts. | P0 |
+| FR-U3 | Per-window score timeline for every call and file, highlighting which seconds scored as synthetic (2 s resolution). | P0 |
+| FR-U4 | Batch upload page: drag-and-drop file, poll the job, show verdict and timeline. | P0 |
+| FR-U5 | Call detail view with codec detected and playback of retained snippets if retention is on; an expired or missing snippet shows a clear message. | P1 |
+| FR-U6 | History and search over past calls and alerts. | P1 |
+| FR-U7 | Login with username and password; two roles: `analyst` (read, feedback) and `admin` (settings); settings page for thresholds and retention. | P1 |
+| FR-U8 | Works offline: no CDN fonts, scripts or telemetry; all assets bundled. | P0 |
+
+### 5.8 Listening study (FR-S)
+
+| ID | Requirement | Priority |
+|---|---|---|
+| FR-S1 | **RQ-C.** A listening study with at least 30 Pakistani participants, 40 balanced clips (speaker-disjoint from training, reserved in Phase 1), three conditions: listeners alone, AVA alone, listeners shown AVA's score. Report accuracy per condition with intervals. Protocol and consent are covered by FR-E1. | P1 |
+
+### 5.9 Deployment and operations (FR-O)
+
+| ID | Requirement | Priority |
+|---|---|---|
+| FR-O1 | Every service ships as a Docker image from a reproducible Dockerfile; a `docker compose` file gives a one-command developer setup. | P0 |
+| FR-O2 | Kubernetes manifests (k3s single node for the demo) deploy all services with health probes, resource limits and persistent volumes. | P0 |
+| FR-O3 | Kubernetes `NetworkPolicy` denies all egress from AVA pods except to in-cluster services and the PBX network; a CI test runs the stack with outbound DNS and HTTP blocked and asserts the e2e test still passes. | P0 |
+| FR-O4 | Model artifacts load from a local volume; no model download at runtime; startup fails loudly if a model or its card is missing or disagrees with config. | P0 |
+| FR-O5 | Configurable audio retention: default **no raw audio stored**. When on: a 30 s ring buffer per scored direction, one snippet per alert ID persisted at `alert.raised`, AES-256-GCM at rest, TTL cleanup (default 7 days); toggling applies to calls started after the change; switching off purges existing snippets within one cleanup run; write failures never block the alert. | P0 |
+| FR-O6 | Structured JSON logs; Prometheus metrics (latency per stage, queue depth, active calls, alerts per minute, dropped windows); Grafana dashboard. | P1 |
+| FR-O7 | Images pinned by digest; hashed pip requirements; SBOM generated in CI. | P1 |
+| FR-O8 | Deployment guide covering hardware, PBX tap configuration, the recording-failure policy (FR-T4), upgrade, backup, and the security controls in §6.3. | P0 |
 
 ---
 
-## 6. Non-Functional Requirements
+## 6. Non-functional requirements
 
 ### 6.1 Performance (reference box A1, CPU-only)
 
+Definitions: **RTF** (real-time factor) is inference seconds per second of audio for a single worker with 4 threads at batch 1, so per-window latency equals RTF × 4 s. Targets are provisional until the first benchmark (task 2.11) and will be revised with evidence.
+
 | Metric | Target | Stretch |
 |---|---|---|
-| Per-window inference latency (4 s window, INT8 ONNX, 4 threads) | ≤ 1.5 s p95 | ≤ 0.8 s |
-| Real-time factor per call leg | ≤ 0.5 | ≤ 0.25 |
-| Time to first provisional verdict from speech onset | ≤ 6 s | ≤ 4 s |
-| Verdict update cadence | every 2 s | — |
-| Concurrent calls per reference box | ≥ 8 | ≥ 16 |
-| Batch: 60 s file end-to-end | ≤ 10 s | ≤ 5 s |
+| Per-window inference latency (4 s window, INT8 ONNX, 4 threads, batch 1), p95 | ≤ 1.5 s | ≤ 0.8 s |
+| RTF per call (same conditions) | ≤ 0.375 | ≤ 0.2 |
+| Time to first provisional verdict from speech onset (not degraded) | ≤ 6 s of speech + p95 latency (≤ 7.5 s) | ≤ 4 s + p95 |
+| Verdict update cadence | every 2 s of speech | — |
+| Concurrent calls per reference box (with micro-batching) | ≥ 8 | ≥ 16 |
+| Batch: 60 s file end-to-end (batch size 8, 16 threads) | ≤ 10 s | ≤ 5 s |
 | Memory per inference worker | ≤ 2 GB | — |
 | Dashboard event latency (score emitted to UI) | ≤ 500 ms | — |
 
 ### 6.2 Detection quality
 
+Every number is reported with a 95% bootstrap confidence interval. Gap targets are met when the interval of the gap includes the target.
+
 | Metric | Target |
 |---|---|
-| EER on full held-out telephony test set | ≤ 5% (stretch ≤ 3%) |
-| EER on unseen-generator partition | ≤ 12% |
-| EER on code-switched subset | within 2 points of full-set EER |
+| EER on the full held-out telephony test set | ≤ 5% (stretch ≤ 3%) |
+| EER on the held-out-generator partition | ≤ 12% |
+| EER on the code-switched subset | within 2 points of the full-set EER |
 | EER gap between Urdu and Punjabi | ≤ 2 points |
-| Relative improvement over best baseline (AASIST/RawNet2) on telephony test set | ≥ 30% relative EER reduction |
-| False alert rate at operating point (genuine calls flagged) | ≤ 3% of genuine calls in the simulated lab |
+| AVA versus best baseline (AASIST, RawNet2, XLS-R+AASIST) | AVA EER ≤ best baseline EER on the telephony set and on the held-out-generator partition, with non-overlapping intervals; otherwise reported and explained |
+| False alert rate at the operating point in the live lab | ≤ 3% of genuine calls, measured on at least 100 genuine and 100 synthetic calls per live codec |
+| Per-dialect FAR (RQ-B) | Reported with intervals for every dialect meeting the FR-M10 floor; no target, the measurement is the contribution |
+| Expected Calibration Error on dev after temperature scaling | ≤ 0.05 |
 
-Targets are provisional until the first baseline run; they will be revised in v0.2 with evidence.
+Targets are provisional until the first baseline run; they will be revised in v0.3 with evidence.
 
 ### 6.3 Security and privacy
 
-- No network egress from inference, ingestion, or storage services (enforced by NetworkPolicy and verified by test).
-- TLS between dashboard and API; SIPREC signaling over TLS and SRTP media are P2 (lab uses plain SIP/RTP).
+- No network egress from inference, ingestion or storage services (enforced by NetworkPolicy and verified by test).
+- TLS between dashboard and API. SIP-TLS and SRTP apply only if FR-T6 is built and are P2.
 - Secrets via Kubernetes Secrets; no credentials in images.
-- Audio is processed in memory and discarded by default; retention is opt-in, bounded, and TTL-enforced.
-- Role-based access; all analyst actions and setting changes written to an audit log.
-- No third-party analytics, fonts, or telemetry in any component.
+- Audio is processed in memory and discarded by default; retention is opt-in, bounded and TTL-enforced (FR-O5).
+- Role-based access and an audit log for logins, setting changes, feedback and exports, if FR-U7 is delivered; otherwise settings are file-only and the audit log records `actor=system`.
+- No third-party analytics, fonts or telemetry in any component.
+- Raw audio, consent forms and speaker-level manifests never enter a repository (FR-E6).
 
-### 6.4 Compliance mapping
+### 6.4 Regulatory motivation and design alignment
 
-| Regulation | Requirement | AVA measure |
+AVA is a research prototype. These regulations do not bind the project; they bind the organizations that would deploy it, and they explain the design choices.
+
+| Instrument | What it requires of a deployer | AVA design response |
 |---|---|---|
-| CTDISR-2025 | In-country data localization; no citizen voice data to foreign servers | Fully on-prem; egress denied; models bundled |
-| CTDISR-2025 | Security of critical telecom infrastructure | Passive tap only; PBX unaffected by AVA failure |
-| PDPB 2023 | Purpose limitation, data minimization | No raw audio retained by default; only scores and metadata |
-| PDPB 2023 | Access control and accountability | RBAC + audit log |
-| PDPB 2023 | Consent for data collection | Consent forms for team-recorded corpus; licensed public corpora only |
+| CTDISR-2025 (PTA, notified 29 Oct 2025) [16] | Telecom licensees keep critical telecom data, including call data, inside Pakistan; protect critical infrastructure | Fully on-premises; egress denied and tested; models bundled; passive tap so PBX is unaffected by AVA failure |
+| Draft Personal Data Protection Bill (unpassed) | Purpose limitation, data minimization, consent, access control, accountability | No raw audio retained by default; consent with cloning opt-in; RBAC and audit log (FR-U7); release policy (D14) |
+| HEC research-ethics requirements | Institutional review for human-subjects research | Ethics approval before recording (FR-E1) |
 
 ### 6.5 Reliability and maintainability
 
-- Any single service restart must not lose in-progress call metadata (persisted to PostgreSQL) though in-flight windows may be dropped.
-- Code coverage ≥ 70% on ingestion, scoring, and API modules; end-to-end test that plays a known synthetic file through Asterisk and asserts an alert.
-- Reproducible training: pinned dependencies, seeded runs, config-as-code, experiment tracking (MLflow, local).
+- Any single service restart must not lose in-progress call state: scores and state flush to PostgreSQL every hop (FR-I11); in-flight windows may be dropped.
+- Code coverage ≥ 70% on ingestion, scoring and API modules; an end-to-end test that plays a known synthetic file through Asterisk and asserts an alert, and a genuine file and asserts none.
+- Reproducible training: pinned dependencies, seeded runs, config-as-code, local MLflow tracking.
+- Reproducible dataset: all collection, generation and processing scripts in the repository's `data/` folder; the dataset can be rebuilt from sources and the manifest.
 
 ### 6.6 Usability
 
-- Analyst can identify a flagged call and its confidence within 3 seconds of glancing at the live board.
-- Dashboard renders correctly on 1366×768 and 1920×1080.
+- An analyst can identify a flagged call and its confidence within 3 seconds of glancing at the live board.
+- The dashboard renders correctly at 1366×768 and 1920×1080.
 
 ---
 
-## 7. Acceptance Criteria by Objective
+## 7. Acceptance criteria by objective
 
 | Objective | Acceptance evidence |
 |---|---|
-| BO-1 | Evaluation report with EER/min t-DCF tables for AVA, AASIST, RawNet2 on the identical test set; AVA meets §6.2 targets or the report explains the gap. |
-| BO-2 | Dataset datasheet, manifest, and statistics: ≥ 20 h genuine and ≥ 20 h synthetic per language after augmentation; all D4 generators represented. |
-| BO-3 | Benchmark log on the reference box showing §6.1 latency and concurrency targets with the INT8 ONNX model. |
-| BO-4 | Recorded demo: call placed through Asterisk, SIPREC fork received, live verdict shown on dashboard; e2e test passes in CI. |
-| BO-5 | Egress test (all outbound connections blocked, system still functions) and compliance checklist signed off by supervisor. |
-| BO-6 | Per-language EER table for Standard Urdu and Majhi Punjabi within §6.2 gap. |
-| BO-7 | `kubectl apply` on a clean k3s node brings up the full stack; `docker compose up` works for dev. |
+| BO-1 | Evaluation report with EER, minDCF and FAR tables and intervals for AVA, AASIST, RawNet2 and XLS-R+AASIST on the identical test set; §6.2 targets met or the gap explained. |
+| BO-2 | Datasheet, manifest and statistics: about 11,000 genuine and 12,000 synthetic original clips per language plus the held-out partition; every D5 training generator represented; 60 to 80 recorded Punjabi speakers; zero speaker overlap across splits, checked by script. |
+| BO-3 | Benchmark log on the reference box showing §6.1 latency and concurrency with the INT8 ONNX model, with the CPU model named. |
+| BO-4 | Recorded demo: a call placed through Asterisk, tapped audio received, live verdict and timeline on the dashboard; e2e test passes in CI. |
+| BO-5 | Egress test passes with all outbound connections blocked; §6.4 alignment table reviewed by the supervisor. |
+| BO-6 | Per-language EER table for Urdu and Majhi Punjabi within the §6.2 gap; per-dialect FAR table (FR-M10). |
+| BO-7 | `kubectl apply` on a clean k3s node brings up the full stack; `docker compose up` works for development. |
+| BO-8 | Live board, timeline, alert feed and batch upload shown in the demo. |
+| RQ-A | Time-versus-accuracy curve per codec in the evaluation report (FR-M9). |
+| RQ-B | Per-dialect FAR table with intervals (FR-M10). |
+| RQ-C | Listening-study results per condition (FR-S1), or a documented reason it was not run. |
 
 ---
 
-## 8. Phased Work Breakdown
+## 8. Phased work breakdown
 
-The work is divided into six phases. Each phase lists its tasks with the requirement IDs they satisfy, its deliverables, and an **exit gate** that must pass before dependent work in the next phase begins. Dates assume the SDP runs September 2026 through May 2027.
-
-Four parallel **workstreams** run through the phases, one per team member (assignment to be agreed by the team):
+Six phases, measured from 1 October 2026. Four workstreams run through them, one per team member; **owners are to be named by 8 October (Q9)**.
 
 | Workstream | Scope |
 |---|---|
-| **WS-A Data** | Corpus collection, synthesis, augmentation, manifests, datasheet |
-| **WS-B Model** | Baselines, AVA model, evaluation, export, quantization, benchmarking |
-| **WS-C Telephony + Pipeline** | Asterisk lab, SIPREC server, ingest, scorer, streaming inference |
-| **WS-D API + Dashboard + Deployment** | FastAPI, WebSocket, React dashboard, batch mode, Docker/k3s, observability, compliance evidence |
-
-Every member also contributes to the final report and evaluation.
+| **WS-A Data** | Corpus collection, recordings, consent, synthesis, augmentation, manifests, datasheet, listening study |
+| **WS-B Model** | Baselines, AVA model, evaluation, calibration, export, quantization, benchmarking |
+| **WS-C Telephony + Pipeline** | Asterisk lab, tap, ingest, scorer, streaming inference, SIPREC stretch |
+| **WS-D API + Dashboard + Deployment** | FastAPI, WebSocket, React dashboard, batch mode, Docker and k3s, observability, egress evidence |
 
 ```mermaid
 gantt
-    title AVA phase plan (tentative)
+    title AVA phase plan v0.2 (rebaselined 1 Oct 2026)
     dateFormat  YYYY-MM-DD
     axisFormat  %b %y
     section Phase 0
-    Setup                       :p0, 2026-09-01, 2026-09-21
+    Setup                       :p0, 2026-10-01, 2026-10-15
     section Phase 1
-    Dataset                     :p1, 2026-09-15, 2026-11-30
+    Dataset                     :p1, 2026-10-01, 2026-12-15
     section Phase 2
-    Model                       :p2, 2026-11-01, 2027-02-15
+    Model                       :p2, 2026-10-15, 2027-02-15
     section Phase 3
     Pipeline + Integration      :p3, 2027-01-05, 2027-03-20
     section Phase 4
@@ -400,177 +407,147 @@ gantt
     Evaluation + Report         :p5, 2027-04-10, 2027-05-25
 ```
 
----
-
-### Phase 0: Setup (early to mid Sep 2026, about 3 weeks)
-
-**Goal.** Everything the team needs to start Phases 1 and 3 in parallel.
+### Phase 0: Setup (1 to 15 October 2026)
 
 | # | Task | Workstream | Satisfies |
 |---|---|---|---|
-| 0.1 | Repository, branch policy, issue tracker, CI skeleton (lint, unit tests) | WS-D | §6.5 |
-| 0.2 | Developer environment: Python 3.11, `ffmpeg` with libgsm / opencore-amr / opus, pre-commit, `docker compose` skeleton | WS-D | FR-O3 |
-| 0.3 | PRD and architecture sign-off with supervisors; freeze v1.0 of both | All | — |
-| 0.4 | Data access: request LUMS CSALT corpus, confirm Common Voice ur / pa-PK licenses, draft consent form for team recordings | WS-A | FR-D1, FR-D9, Q1 |
-| 0.5 | Account setup: ElevenLabs API key with a budget cap; download XTTSv2, RVC, MMS-TTS weights | WS-A | FR-D2 |
-| 0.6 | Training compute decision: lab GPU vs. rented VM; data-handling rule for what may leave premises | WS-B | Q4 |
-| 0.7 | Choose Asterisk version; spike test whether native SIPREC forking works, otherwise confirm ARI ExternalMedia | WS-C | FR-T1, FR-T3, Q3 |
-| 0.8 | Reference CPU box identified and benchmarked with a dummy ONNX model | WS-B | A1 |
+| 0.1 | Repository with issue-driven workflow, CI skeleton (lint, unit tests), pre-commit audio guard | WS-D | §6.5, FR-E6 |
+| 0.2 | Developer environment: Python 3.11, ffmpeg with libgsm, opencore-amr and opus, `docker compose` skeleton | WS-D | FR-O1 |
+| 0.3 | Supervisor review of this PRD v0.2; architecture.md ADRs revised to match (ADR-1, 2, 4, 10, 11); freeze v1.0 of both only after both agree | All | — |
+| 0.4 | Ethics application to ORIC (or the named body); consent form drafted per FR-E2; data-handling and release policy written | WS-A | FR-E1, FR-E2, FR-E4, Q6 |
+| 0.5 | Public data download: Common Voice Urdu, Meta Omnilingual pnb_Arab, CSALT-LUMS; rights requests to UrduSpeech and Habib University; licence register started | WS-A | FR-D1, FR-E5, Q8 |
+| 0.6 | Generator setup and smoke test: OmniVoice, Seed-VC, RVC, MMS-TTS, Fish Audio S2 on 20 Punjabi and 20 code-switched prompts each; ElevenLabs permission email sent | WS-A | FR-D15, D5, Q7 |
+| 0.7 | AntiDeepfake MMS-300M checkpoint obtained, licence recorded, converted to an exportable format; a dummy forward pass runs on CPU | WS-B | FR-M1, R2 |
+| 0.8 | Training compute decision (lab GPU or rented, under D13) | WS-B | Q4 |
+| 0.9 | Asterisk version chosen; spike: snoop + ExternalMedia tap delivers caller RTP to a test listener; if not, FR-T7 fallbacks tried in order | WS-C | FR-T2, FR-T7, Q3 |
+| 0.10 | Reference CPU box identified, CPU model and flags recorded, benchmarked with a dummy ONNX model | WS-B | A1 |
+| 0.11 | Budget confirmed for speaker payments and tooling (§8.3); workstream owners named | All | §8.3, Q9 |
 
-**Deliverables.** Repo with CI; compose skeleton; signed-off PRD and architecture; data license status sheet; consent form; Asterisk spike report.
+**Exit gate (reviewed 15 October).** Ethics application submitted; consent form reviewed by supervisor; at least one genuine corpus per language downloaded; every D5 generator passes the smoke test for at least one language and Fish Audio S2 for both; checkpoint runs on CPU; tap spike delivers forked RTP; reference box available; owners named.
 
-**Exit gate.** Consent form approved; at least one genuine corpus accessible; Asterisk spike shows a forked RTP stream reaching a test listener by either path; reference box available.
-
----
-
-### Phase 1: Dataset (mid Sep to end Nov 2026, about 10 weeks)
-
-**Goal.** A speaker-disjoint, telephony-augmented Urdu/Punjabi corpus with genuine and synthetic partitions, documented and versioned.
+### Phase 1: Dataset (1 October to 15 December 2026)
 
 | # | Task | Workstream | Satisfies |
 |---|---|---|---|
-| 1.1 | Ingest CSALT Urdu and Common Voice ur / pa-PK; normalize to 16 kHz mono WAV; capture speaker IDs and licenses in a raw manifest | WS-A | FR-D1 |
-| 1.2 | Team-recorded spontaneous conversational speech in Standard Urdu and Majhi Punjabi (target ≥ 30 speakers, ≥ 5 h) with consent; prompts that provoke code-switching | WS-A | FR-D1, FR-D4 |
-| 1.3 | Text prompt sets in Urdu and Punjabi, including code-switched sentences, for TTS generators | WS-A | FR-D2, FR-D4 |
-| 1.4 | Generate synthetic speech: ElevenLabs, XTTSv2, MMS-TTS Urdu (and a Punjabi open TTS if found); ≥ 1,500 utterances per generator per language, ≥ 20 target voices | WS-A | FR-D2 |
-| 1.5 | RVC voice conversion applied to genuine recordings (train ≥ 10 RVC target voices from consented speakers) | WS-A | FR-D3 |
-| 1.6 | Augmentation pipeline: 8 kHz downsample, codec chains (G.711, GSM 06.10, AMR-NB at 4.75 / 7.4 / 12.2, Opus or G.729), packet loss 0 to 5%, jitter; chain recorded per utterance | WS-A + WS-C | FR-D5 |
-| 1.7 | Environmental augmentation: noise at 0 to 20 dB SNR, handset and speakerphone RIRs | WS-A | FR-D6 |
-| 1.8 | Shared conditioning module (`ingest`): resample 8 to 16 kHz with soxr, peak-normalize; used identically by augmentation and runtime | WS-C | A2, FR-I3 |
-| 1.9 | Speaker-disjoint 70/10/20 split; one generator held out; manifest JSONL with speaker, language, dialect, generator, codec chain, SNR, license | WS-A | FR-D7, FR-D8, A4 |
-| 1.10 | Dataset statistics and datasheet | WS-A | FR-D9 |
-| 1.11 | Data-handling audit: no third-party citizen audio sent to ElevenLabs; all raw audio on team-controlled storage | WS-A | FR-D10 |
+| 1.1 | Ingest public corpora; normalize to 16 kHz mono WAV; capture speaker IDs, dialect and licences in a raw manifest; cap Common Voice at 30 clips per speaker | WS-A | FR-D1 |
+| 1.2 | `ava-data-v0`: public data plus the first synthetic batch, released by mid-October so WS-B can start | WS-A | FR-D14 |
+| 1.3 | Text prompt sets in Urdu and Shahmukhi Punjabi, including code-switched sentences, for TTS, cloning and the recording sessions | WS-A | FR-D2, FR-D5 |
+| 1.4 | Recruit 60 to 80 Punjabi speakers (families, GIKI and Lahore student societies, community contacts); schedule sessions after ethics approval | WS-A | FR-D4, FR-E1 |
+| 1.5 | Recording sessions per FR-D4 (October to November), over the Asterisk lab or the web recorder; consent and demographic forms stored offline | WS-A + WS-C | FR-D4, FR-E2, FR-E3 |
+| 1.6 | Synthetic generation as recordings arrive: OmniVoice cloning from each consented speaker's reference audio; Seed-VC and RVC conversion from genuine recordings; MMS-TTS for Urdu volume; Fish Audio S2 test-only batch | WS-A | FR-D2, FR-D3, FR-D9, FR-D11 |
+| 1.7 | One processing script for both classes: trim, cut to 3 to 6 s, loudness, resample, codec chains with packet loss and jitter, quality checks, manifest row | WS-A + WS-C | FR-D6, FR-D12, FR-D13 |
+| 1.8 | Environmental augmentation: noise at 0 to 20 dB SNR, handset and speakerphone RIRs | WS-A | FR-D7 |
+| 1.9 | Shared conditioning module (`ingest`): resample 8 to 16 kHz with soxr, peak-normalize; used identically by augmentation and runtime | WS-C | A2, FR-I3 |
+| 1.10 | Speaker-disjoint 70/10/20 split with same-speaker assertion; held-out generator, held-out dialect and real-call test partitions; leakage probes | WS-A | FR-D8, FR-D9, FR-D12, A4 |
+| 1.11 | Reserve a 40-clip speaker-disjoint stimulus set for the listening study | WS-A | FR-S1 |
+| 1.12 | Dataset statistics and datasheet; licence register completed | WS-A | FR-D10, FR-E5 |
+| 1.13 | Data-handling audit: no consented audio sent to any external service without consent; all raw audio on controlled storage; repository guard passing | WS-A | FR-E3, FR-E6 |
 
-**Deliverables.** Versioned dataset `ava-data-v1` on the data volume; manifests; augmentation scripts; datasheet; per-partition statistics table.
+**Deliverables.** `ava-data-v0` (mid-October) and `ava-data-v1` (mid-December); manifests; scripts; datasheet; statistics.
 
-**Exit gate.** ≥ 20 h genuine and ≥ 20 h synthetic per language after augmentation; every D4 generator represented; held-out generator partition present; zero speaker overlap across splits (checked by script); datasheet reviewed by supervisor.
+**Exit gate.** About 11,000 genuine and 12,000 synthetic original clips per language, with the shortfall reported honestly if Punjabi genuine falls short (floor: 8,000 genuine Punjabi clips with the gap explained); every D5 training generator represented; held-out partition present for both languages; zero speaker overlap; leakage probes near 50% EER; datasheet reviewed by supervisor.
 
-**Early start.** WS-B begins baseline training on an interim `ava-data-v0` (CSALT plus the first XTTSv2 batch) from week 5 so Phase 2 is not blocked.
-
----
-
-### Phase 2: Model (Nov 2026 to mid Feb 2027, about 14 weeks)
-
-**Goal.** A trained, evaluated, exported, and CPU-benchmarked AVA model, with baselines on identical data.
+### Phase 2: Model (15 October 2026 to 15 February 2027)
 
 | # | Task | Workstream | Satisfies |
 |---|---|---|---|
-| 2.1 | Training harness: PyTorch + HF Transformers, config-as-code, seeded runs, local MLflow tracking | WS-B | §6.5 |
-| 2.2 | Evaluation harness: EER, min t-DCF, per-language / per-codec / per-generator / code-switched subsets | WS-B | FR-M5 |
-| 2.3 | Train and evaluate AASIST and RawNet2 on `ava-data-v1` | WS-B | FR-M4 |
-| 2.4 | XLS-R layer sweep (6 / 9 / 12 / 18 / 24 kept layers) with an MLP head to pick the truncation point for the CPU budget | WS-B | A3, R1 |
-| 2.5 | Implement DuaBiMamba head with attentive statistics pooling; reference sequential-scan kernel for export parity | WS-B | FR-M2, R2 |
-| 2.6 | Train AVA (truncated XLS-R + DuaBiMamba) with codec, noise, and RawBoost augmentation; tune LR schedule and loss weighting | WS-B | FR-M1, FR-M2, FR-M3 |
-| 2.7 | Ablation: MLP head vs. DuaBiMamba; BiGRU head as fallback comparison | WS-B | FR-M8 |
-| 2.8 | Score calibration on the dev set (temperature scaling) | WS-B | FR-M6 |
-| 2.9 | ONNX export (opset 17, static 64,000-sample input, dynamic batch); parity test on 100 windows | WS-B | FR-M7 |
-| 2.10 | INT8 dynamic quantization; re-evaluate dev EER (accept ≤ 0.3-point loss) | WS-B | FR-M7 |
-| 2.11 | CPU benchmark on reference box: p95 window latency, RTF, memory, batch sizes 1 to 4 | WS-B | §6.1, BO-3 |
-| 2.12 | Model card and `model_card.json` (version, window, sample rate, calibration temperature) | WS-B | FR-M9 |
-| 2.13 | Evaluation report v1 | WS-B | BO-1 |
+| 2.1 | Training harness: PyTorch + HF Transformers, config-as-code, seeded runs, local MLflow | WS-B | §6.5 |
+| 2.2 | Evaluation harness: EER, minDCF, FAR at FRR = 5%, bootstrap intervals, all FR-M5 subsets, ECE | WS-B | FR-M5, FR-M6 |
+| 2.3 | Train and evaluate AASIST, RawNet2 and XLS-R+AASIST+RawBoost on `ava-data-v0` then `v1` | WS-B | FR-M4 |
+| 2.4 | Layer sweep on AntiDeepfake MMS-300M with the SLS head: keep 4, 6, 7, 8, 10, 12 layers; pick the cut from accuracy versus CPU cost | WS-B | FR-M1, FR-M2, A3, R1 |
+| 2.5 | Fine-tune AVA (truncated backbone + SLS) with codec, noise and RawBoost augmentation; tune schedule and loss | WS-B | FR-M1 to FR-M3 |
+| 2.6 | Ablation: SLS versus mean-pool MLP head | WS-B | FR-M8 |
+| 2.7 | Calibration on dev (temperature scaling); ECE and reliability diagram | WS-B | FR-M6 |
+| 2.8 | ONNX export, parity test, INT8 quantization with the FR-M7 fallback ladder | WS-B | FR-M7 |
+| 2.9 | Time-versus-evidence curves per codec on the dev set; choose N for FR-I5 | WS-B | FR-M9 |
+| 2.10 | CPU benchmark on the reference box: p95 latency, RTF, memory, batch sizes 1 to 8; CPU model recorded | WS-B | §6.1, BO-3 |
+| 2.11 | Model card with licence restriction and limitation text | WS-B | FR-M12, FR-E5 |
+| 2.12 | Evaluation report v1 | WS-B | BO-1 |
 
-**Deliverables.** `ava-v1.onnx` plus model card; baseline checkpoints; evaluation report v1 with all subset tables; benchmark log.
+**Benchmark gate (15 January 2027).** INT8 model meets p95 ≤ 1.5 s per window and RTF ≤ 0.375 on the reference box. If not, walk the A3 fallback ladder before Phase 3 integration proceeds further.
 
-**Benchmark gate (mid Jan 2027).** INT8 model meets p95 ≤ 1.5 s per window and RTF ≤ 0.5 on the reference box. If not, invoke fallback A3 (smaller backbone) before Phase 3 integration proceeds further.
+**Exit gate.** §6.2 targets met, or the gap explained in report v1.
 
-**Exit gate.** §6.2 targets met, or the gap is explained in report v1.
+**Interim hand-off.** As soon as task 2.8 produces any exportable model, even from the layer sweep, it goes to WS-C and WS-D so pipeline work never waits on the final model.
 
-**Interim hand-off to Phase 3.** As soon as task 2.9 produces any exportable model, even the layer-sweep MLP model, it goes to WS-C and WS-D so pipeline work never waits on the final model.
-
----
-
-### Phase 3: Pipeline and Integration (Jan to Mar 2027, about 12 weeks, overlaps Phase 2)
-
-**Goal.** Live calls through Asterisk are scored in near real-time and shown on a dashboard; files can be analyzed in batch.
+### Phase 3: Pipeline and integration (5 January to 20 March 2027)
 
 **WS-C: telephony and streaming**
 
 | # | Task | Satisfies |
 |---|---|---|
-| 3.1 | Asterisk lab container: PJSIP, two extensions, codec forcing (ulaw / gsm / amr), recording profile or ARI ExternalMedia app | FR-T1 |
+| 3.1 | Asterisk lab container: PJSIP, two extensions, codec forcing (ulaw, gsm), ARI tap application | FR-T1, FR-T2 |
 | 3.2 | SIPp scenarios and softphone setup that inject WAV files into calls | FR-T1 |
-| 3.3 | SIPREC SRS: SIP UAS, rs-metadata parsing, SDP answer with two recvonly ports, re-INVITE and BYE handling | FR-T2, FR-T6 |
-| 3.4 | RTP receiver: header parsing, G.711 / GSM 06.10 / AMR-NB decoding, per-leg framing | FR-I1 |
-| 3.5 | Jitter buffer with reorder and packet-loss concealment | FR-I2 |
-| 3.6 | ExternalMedia fallback path sharing the RTP receiver | FR-T3 |
-| 3.7 | Silero VAD integration and 4 s / 2 s windowing on the shared `ingest` module | FR-I3, FR-I4 |
-| 3.8 | Inference worker: ONNX Runtime CPU, thread settings, micro-batching, warm-up | FR-I9 |
-| 3.9 | Scorer: EMA, minimum-evidence rule, hysteresis state machine, Redis session state, PostgreSQL flush on call end | FR-I5, FR-I6, FR-I7 |
-| 3.10 | Leg selection config (caller only by default) | FR-I8 |
-| 3.11 | Degraded mode: adaptive stride when inference falls behind; exposed flag | FR-I10 |
-| 3.12 | Call metadata mapping to the dashboard model | FR-T4 |
+| 3.3 | RTP receiver: header parsing, G.711 and GSM decoding, per-call framing; AMR-NB decoder for files and replayed captures | FR-I1 |
+| 3.4 | Jitter buffer with reorder, concealment and the quality gate | FR-I2 |
+| 3.5 | Call lifecycle from ARI events, metadata mapping, silence teardown, cleanup with in-flight drain | FR-T2, FR-T3, FR-T5, FR-I11 |
+| 3.6 | Silero VAD and 4 s / 2 s windowing with partial-window and no-speech handling | FR-I3, FR-I4 |
+| 3.7 | Inference worker: ONNX Runtime CPU, thread settings, micro-batching, warm-up, batch-versus-live priority | FR-I9 |
+| 3.8 | Scorer: EMA, minimum-evidence rule with `undetermined`, full hysteresis state machine, per-hop flush, Redis session state | FR-I5 to FR-I7, FR-I11 |
+| 3.9 | Direction selection and agent-direction rules | FR-I8 |
+| 3.10 | Degraded mode with stride cap and `unmonitored` | FR-I10 |
+| 3.11 | Capacity refusal above max calls | FR-I9 |
+| 3.12 | SIPREC SRS with jambonz, if time allows | FR-T6 (P2) |
 
 **WS-D: API, batch, dashboard**
 
 | # | Task | Satisfies |
 |---|---|---|
-| 3.13 | FastAPI skeleton, Pydantic config loader, OpenAPI at `/docs` | FR-A9, FR-A7 |
-| 3.14 | `POST /v1/analyze` batch endpoint reusing ingest and inference; sync for ≤ 60 s files, job-based beyond | FR-A1 |
-| 3.15 | Calls and alerts REST endpoints | FR-A2, FR-A4 |
-| 3.16 | `WS /v1/events` fan-out from Redis pub/sub | FR-A3 |
-| 3.17 | Health, readiness with warm-up inference, Prometheus metrics | FR-A6 |
-| 3.18 | Auth: local users, Argon2, session cookie, analyst and admin roles; audit middleware | FR-U7, §6.3 |
-| 3.19 | Dashboard scaffold (React + TypeScript + Vite), bundled assets, no CDN | FR-U8 |
-| 3.20 | Live call board with state, confidence, sparkline | FR-U1 |
-| 3.21 | Alert feed with notification | FR-U2 |
-| 3.22 | Batch upload page | FR-U4 |
-| 3.23 | Call detail view and history/search (P1) | FR-U3, FR-U5 |
-| 3.24 | Settings page for thresholds and retention (P1) | FR-U6 |
-| 3.25 | Analyst feedback endpoint and UI (P1) | FR-A5 |
+| 3.13 | FastAPI skeleton, Pydantic config loader with FR-I4 validation, OpenAPI at `/docs` | FR-A9, FR-A11 |
+| 3.14 | `POST /v1/analyze` with input bounds, shared ingest path, sync and job modes; `GET /v1/jobs/{id}` | FR-A1, FR-A2 |
+| 3.15 | Calls and alerts endpoints with timeline downsampling | FR-A3, FR-A6 |
+| 3.16 | `WS /v1/events` fan-out from Redis pub/sub | FR-A4 |
+| 3.17 | Health, readiness with warm-up, Prometheus metrics | FR-A8 |
+| 3.18 | Auth: local users, Argon2, session cookie, two roles; audit middleware (P1) | FR-U7, §6.3 |
+| 3.19 | Dashboard scaffold (React + TypeScript + Vite), bundled assets, limitation text | FR-U8, FR-U1 |
+| 3.20 | Live call board with all states and flags; alert feed | FR-U1, FR-U2 |
+| 3.21 | Per-window timeline component, shared by live and batch views | FR-U3 |
+| 3.22 | Batch upload page with job polling | FR-U4 |
+| 3.23 | Call detail, history and search (P1) | FR-U5, FR-U6 |
+| 3.24 | Language-ID stage and out-of-domain handling (P1) | FR-A5 |
+| 3.25 | Feedback endpoint and UI (P1) | FR-A7 |
 
-**Deliverables.** Working compose stack; live demo of a call scored end to end; batch analysis working; API spec.
+**Deliverables.** Working compose stack; live demo of a tapped call scored end to end; batch analysis; API spec.
 
-**Exit gate.** A synthetic Urdu file played through Asterisk raises an alert on the dashboard within 15 s of speech onset; a genuine file does not; 8 simultaneous SIPp calls stay within the §6.1 latency budget on the reference box using `ava-v1.onnx`.
+**Exit gate.** A synthetic Urdu file played through Asterisk raises an alert on the dashboard within 15 s of speech onset over G.711 and over GSM; a genuine file does not; 8 simultaneous SIPp calls stay within §6.1 on the reference box with `ava-v1.onnx`; stopping AVA mid-call does not drop the call.
 
----
-
-### Phase 4: Deployment and Hardening (Mar to mid Apr 2027, about 6 weeks)
-
-**Goal.** The stack deploys on a clean k3s node from manifests, provably makes no outbound connections, and is observable and documented.
+### Phase 4: Deployment and hardening (8 March to 15 April 2027)
 
 | # | Task | Workstream | Satisfies |
 |---|---|---|---|
-| 4.1 | Dockerfiles for every service; digest-pinned bases; hashed pip requirements; SBOM in CI | WS-D | FR-O1, §6.3 |
-| 4.2 | k3s manifests: Deployments, StatefulSet for PostgreSQL, PVCs (models, DB, snippets), probes, resource limits, ConfigMap for `ava.yaml`, Secrets | WS-D | FR-O2, FR-O7 |
-| 4.3 | Traefik ingress with internal-CA TLS for the API and dashboard | WS-D | §6.3 |
-| 4.4 | NetworkPolicy default-deny egress; allow PBX subnet to SRS and analyst LAN to ingress | WS-D | FR-O4 |
-| 4.5 | Egress verification test in CI: run the stack with outbound DNS and HTTP blocked and assert the e2e test still passes | WS-D | BO-5 |
-| 4.6 | Snippet retention (off by default), AES-256-GCM at rest, TTL cleanup job | WS-C | FR-O6 |
-| 4.7 | Prometheus and Grafana provisioned dashboard; structured JSON logs | WS-D | FR-O5 |
-| 4.8 | E2E test in CI (Asterisk + SIPp + AVA via compose) | WS-C | §6.5 |
-| 4.9 | Unit and integration coverage to ≥ 70% on ingest, scorer, API | WS-C + WS-D | §6.5 |
-| 4.10 | Optional webhook on alert (P2) | WS-D | FR-A8 |
-| 4.11 | Load and soak test: 16 calls for 30 minutes; memory stability; degraded-mode behavior | WS-C | FR-I9, FR-I10 |
-| 4.12 | Deployment guide: hardware, PBX SIPREC configuration, upgrade, backup | WS-D | FR-O8 |
-| 4.13 | Compliance checklist mapping CTDISR-2025 and PDPB 2023 to implemented controls, with evidence links | WS-D | BO-5 |
+| 4.1 | Dockerfiles for every service | WS-D | FR-O1 |
+| 4.2 | k3s manifests: Deployments, StatefulSet for PostgreSQL, PVCs, probes, limits, ConfigMap, Secrets | WS-D | FR-O2, FR-O4 |
+| 4.3 | Traefik ingress with internal-CA TLS | WS-D | §6.3 |
+| 4.4 | NetworkPolicy default-deny egress; allow PBX subnet to the tap receiver and analyst LAN to ingress | WS-D | FR-O3 |
+| 4.5 | Egress verification test in CI | WS-D | FR-O3, BO-5 |
+| 4.6 | Snippet retention per FR-O5 | WS-C | FR-O5 |
+| 4.7 | E2E test in CI (Asterisk + SIPp + AVA via compose), including the AVA-stopped-mid-call case | WS-C | §6.5, FR-T4 |
+| 4.8 | Unit and integration coverage to ≥ 70% on ingest, scorer, API | WS-C + WS-D | §6.5 |
+| 4.9 | Prometheus and Grafana; structured logs (P1) | WS-D | FR-O6 |
+| 4.10 | Digest pinning, hashed requirements, SBOM (P1) | WS-D | FR-O7 |
+| 4.11 | Load and soak test: 16 calls for 30 minutes; memory stability; degraded-mode behaviour (P1) | WS-C | FR-I9, FR-I10 |
+| 4.12 | Optional webhook (P2) | WS-D | FR-A10 |
+| 4.13 | Deployment guide | WS-D | FR-O8 |
+| 4.14 | §6.4 alignment table with evidence links, reviewed by supervisor | WS-D | BO-5 |
 
-**Deliverables.** Images; Kubernetes manifests; passing egress test; Grafana dashboard; deployment guide; compliance checklist.
+**Exit gate.** Manifests bring up the full stack on a clean k3s node and the e2e test passes; the egress test passes; the alignment table is reviewed.
 
-**Exit gate.** Applying the manifests on a clean k3s node brings up the full stack and the e2e test passes; the egress test passes; the compliance checklist is reviewed by the supervisor.
-
----
-
-### Phase 5: Final Evaluation and Report (mid Apr to May 2027, about 6 weeks)
-
-**Goal.** Evidence for every objective, the final SDP report, and a rehearsed demo.
+### Phase 5: Final evaluation and report (10 April to 25 May 2027)
 
 | # | Task | Workstream | Satisfies |
 |---|---|---|---|
-| 5.1 | Final model evaluation on the test set and unseen-generator partition; final EER and min t-DCF tables for AVA vs. baselines | WS-B | BO-1 |
-| 5.2 | Per-dialect robustness table (Standard Urdu vs. Majhi Punjabi), per-codec table, code-switched subset | WS-B | BO-6 |
-| 5.3 | Live-call evaluation: scripted SIPp campaign of N genuine and N synthetic calls per codec; alert precision, recall, and time-to-alert | WS-C | BO-4, §6.2 false alert rate |
-| 5.4 | Final CPU benchmark and concurrency numbers in the deployed k3s configuration | WS-B + WS-C | BO-3, BO-7 |
-| 5.5 | Retrain with analyst feedback if any was collected (optional) | WS-B | FR-A5 |
-| 5.6 | Revise PRD §6 targets with measured values; document deviations | All | — |
-| 5.7 | Final SDP report: problem, data, model, system, evaluation, compliance, limitations, future work | All | — |
-| 5.8 | Demo script and rehearsal: live call, batch upload, dashboard, egress proof | All | — |
-| 5.9 | Handover package: repo tag, datasheet, model card, deployment guide | WS-D | — |
-
-**Deliverables.** Final evaluation report; SDP report; demo; tagged release `ava-v1.0`.
+| 5.1 | Final evaluation on all FR-M5 partitions; AVA versus baselines with intervals | WS-B | BO-1 |
+| 5.2 | Per-language, per-codec, code-switched and per-dialect tables; time-versus-evidence curves | WS-B | BO-6, RQ-A, RQ-B |
+| 5.3 | Live-call campaign: at least 100 genuine and 100 synthetic calls per live codec (G.711, GSM); AMR-NB on replayed captures; alert precision, recall, time-to-alert | WS-C | BO-4, §6.2 |
+| 5.4 | Final CPU benchmark and concurrency in the deployed k3s configuration | WS-B + WS-C | BO-3, BO-7 |
+| 5.5 | Listening study per FR-S1 (P1) | WS-A | RQ-C |
+| 5.6 | Retrain with analyst feedback if any was collected with retention on (optional) | WS-B | FR-A7 |
+| 5.7 | Revise §6 targets with measured values (v0.3); document deviations | All | — |
+| 5.8 | Final SDP report: problem, data, model, system, evaluation, research questions, ethics, limitations, future work | All | — |
+| 5.9 | Demo script and rehearsal: live tapped call, batch upload, timeline, egress proof | All | — |
+| 5.10 | Handover package: repo tag, datasheet, model card, deployment guide, licence register | WS-D | — |
 
 **Exit gate.** Every row of §7 has linked evidence; SDP panel presentation delivered.
-
----
 
 ### 8.1 Dependencies between phases
 
@@ -578,32 +555,45 @@ gantt
 flowchart LR
     P0[Phase 0<br/>Setup] --> P1[Phase 1<br/>Dataset]
     P0 --> P3[Phase 3<br/>Pipeline]
-    P1 -- "ava-data-v0 (interim)" --> P2[Phase 2<br/>Model]
-    P1 -- "ava-data-v1" --> P2
+    P1 -- "ava-data-v0 (mid Oct)" --> P2[Phase 2<br/>Model]
+    P1 -- "ava-data-v1 (mid Dec)" --> P2
     P2 -- "first exportable ONNX" --> P3
-    P2 -- "ava-v1.onnx after benchmark gate" --> P3
+    P2 -- "ava-v1.onnx after 15 Jan gate" --> P3
     P3 --> P4[Phase 4<br/>Deploy]
     P2 --> P5[Phase 5<br/>Eval + Report]
     P4 --> P5
 ```
 
-- **Phase 3 does not wait for the final model.** It starts on Phase 0's exit with the Asterisk lab and SRS, and integrates the first exportable ONNX from the layer sweep.
-- **The benchmark gate (task 2.11) is the critical decision point.** It is scheduled for mid January so a backbone fallback still leaves six weeks of Phase 2.
-- **Phase 4's egress test needs Phase 3's e2e test**, so task 4.8 is pulled forward to the end of Phase 3 where possible.
+- **Ethics approval is on the critical path.** Recording sessions (task 1.5) cannot start before FR-E1; if approval slips past early November, a second recording wave is scheduled in January and `ava-data-v1` carries the shortfall (R9).
+- **Phase 3 does not wait for the final model.** It integrates the first exportable ONNX from the layer sweep.
+- **The benchmark gate (15 January 2027)** is the critical decision point; a backbone fallback still leaves four weeks of Phase 2.
+- **The LDC Data Scholarship application** is due 15 January 2027 (Q10); without it, partition (d) of FR-D8 uses lab call recordings.
 
 ### 8.2 Requirement coverage by phase
 
 | Requirement group | Phase |
 |---|---|
-| FR-D1 to FR-D10 | 1 |
-| FR-M1 to FR-M9 | 2 |
-| FR-I1 to FR-I10, FR-T1 to FR-T6 | 3 (T1 and T3 spike in 0) |
-| FR-A1 to FR-A7, FR-A9, FR-U1 to FR-U8 | 3 |
-| FR-A8, FR-O1 to FR-O8 | 4 |
+| FR-D1 to FR-D15, FR-E1 to FR-E6 | 0 and 1 |
+| FR-M1 to FR-M12 | 2 (final numbers in 5) |
+| FR-I1 to FR-I11, FR-T1 to FR-T7 | 3 (tap spike in 0) |
+| FR-A1 to FR-A11, FR-U1 to FR-U8 | 3 |
+| FR-O1 to FR-O8 | 4 |
+| FR-S1 | 1 (stimulus set), 5 (study) |
 | §6.1 performance | 2 (benchmark), 3 (concurrency), 4 (soak), 5 (final) |
 | §6.2 detection quality | 2 (report v1), 5 (final) |
-| §6.3 and §6.4 security and compliance | 3 (auth, audit), 4 (egress, encryption, checklist) |
-| BO-1 to BO-7 evidence | 5 |
+| §6.3 and §6.4 | 3 (auth, audit), 4 (egress, encryption, alignment table) |
+| BO-1 to BO-8, RQ-A to RQ-C evidence | 5 |
+
+### 8.3 Budget and funding
+
+| Item | Estimate | Fallback if unfunded |
+|---|---|---|
+| Speaker payments, 60 to 80 sessions at Rs 1,000 to 1,500 | Rs 60,000 to 120,000 | Volunteers; target 50 speakers; report the demographic skew |
+| Generator and API costs (ElevenLabs only if permitted; others are free) | Small; capped | Exclude ElevenLabs |
+| GPU rental if no lab GPU (Q4) | To be estimated after task 0.8 | Lab GPU; smaller sweeps |
+| Lab hardware (handsets, headsets) | Small | Softphones only |
+
+Funding source, approver and approval date to be recorded by task 0.11.
 
 ---
 
@@ -611,26 +601,37 @@ flowchart LR
 
 | ID | Risk | Likelihood | Impact | Mitigation |
 |---|---|---|---|---|
-| R1 | XLS-R 300M too slow on CPU for real-time at 8 concurrent calls | High | High | INT8 quantization, truncate to first 12 transformer layers (artifact cues live in lower layers), batch windows across calls, fallback to smaller backbone (A3). Benchmark early in Phase 2. |
-| R2 | Mamba selective-scan has no clean ONNX export on CPU | Medium | High | Implement a sequential/parallel-scan pure-PyTorch reference kernel used for export; validate parity. Fallback head: BiGRU or Transformer encoder. |
-| R3 | Insufficient Majhi Punjabi genuine data | High | Medium | Team-recorded corpus with consent; Common Voice pa-PK; accept smaller Punjabi partition and report it honestly. |
-| R4 | Asterisk native SIPREC forking unavailable/unstable in the chosen version | Medium | Medium | ARI ExternalMedia fallback (FR-T3) delivers equivalent forked RTP. |
-| R5 | ElevenLabs cost or ToS limits synthetic generation | Medium | Low | Cap ElevenLabs share; rely on XTTSv2, RVC, MMS-TTS for volume. |
-| R6 | Model overfits to generator artifacts and fails on unseen attacks | High | High | Held-out generator partition (FR-D8), codec/noise augmentation, layer-weighted features, report unseen EER separately. |
-| R7 | False positives on heavy code-switching | Medium | High | Explicit code-switched partition (FR-D4); per-subset EER tracked. |
-| R8 | Scope creep from dashboard work eating model time | Medium | Medium | Dashboard P0 items are minimal; P1/P2 deferred until BO-1 evidence exists. |
+| R1 | Truncated MMS-300M too slow on CPU for 8 concurrent calls | High | High | INT8, 7 to 8 layers chosen by sweep, micro-batching, the A3 fallback ladder; benchmark gate 15 January. |
+| R2 | AntiDeepfake checkpoint unavailable, in a format that will not export, or under a licence that blocks use | Medium | High | Task 0.7 obtains and converts it in Phase 0; fallback XLS-R 300M + SLS; licence recorded in FR-E5. |
+| R3 | Insufficient Pakistani Punjabi genuine data | High | Medium | Meta Omnilingual pnb_Arab, Habib University, 60 to 80 recorded speakers; floor of 8,000 Punjabi genuine clips with the shortfall reported. |
+| R4 | Asterisk tap unreliable or unavailable in the chosen version | Medium | Medium | FR-T7 fallback order; Phase 0 spike. |
+| R5 | ElevenLabs permission refused | Medium | Low | It is optional; four other generators carry the volume. |
+| R6 | Model overfits to generator artifacts or to a dataset shortcut and fails on unseen attacks | High | High | Held-out generator (FR-D9), same-speaker rule (FR-D11), pipeline parity and leakage probes (FR-D12), codec and noise augmentation; unseen EER reported separately. |
+| R7 | False positives on heavy code-switching or on unfamiliar dialects | Medium | High | Code-switched partition (FR-D5); per-dialect FAR (FR-M10); results reported, not hidden. |
+| R8 | Dashboard and platform work eating model and data time | Medium | Medium | P0 limited to what the four deliverables need; Grafana, SBOM, soak and SIPREC are P1 or P2. |
+| R9 | Ethics approval delayed beyond early November | Medium | High | Application in Phase 0; start with public data; second recording wave in January. |
+| R10 | LDC scholarship refused | Medium | Low | Partition (d) uses lab call recordings. |
+| R11 | Non-commercial licences on weights and corpora conflict with any commercial framing | High | Low | Vision reframed as a research prototype; restriction stated in model card and datasheet. |
+| R12 | A replacement generator produces unusable Punjabi | Medium | Medium | Phase 0 smoke test (FR-D15); voice conversion carries Punjabi volume. |
 
 ---
 
-## 10. Open Questions
+## 10. Open questions
 
 | # | Question | Owner | Needed by |
 |---|---|---|---|
-| Q1 | Will LUMS CSALT share the Urdu deepfake corpus, and under what license? | Team lead | Phase 1 start |
-| Q2 | Is a PTCL MOU realistic in the SDP window, and does it change the codec priority list? | Supervisor | Phase 1 |
-| Q3 | Which Asterisk version will the lab standardize on, and does it support SIPREC as SRC out of the box? | Telephony owner | Phase 3 start |
-| Q4 | Training compute: lab GPU availability vs. rented GPU (with only synthetic/consented data leaving premises)? | Team | Phase 2 start |
-| Q5 | Is replay attack detection worth including in evaluation given the SDP timeline? | Supervisor | Phase 2 |
+| Q1 | Does the Meta Omnilingual pnb_Arab licence permit derivative synthetic data and model training? | WS-A | 15 Oct 2026 |
+| Q2 | Is a PTCL MOU realistic in the SDP window, and does it change the codec priority? | Supervisor | Phase 1 |
+| Q3 | Which Asterisk version, and does the snoop + ExternalMedia tap work in it? | WS-C | 15 Oct 2026 |
+| Q4 | Training compute: lab GPU availability versus rented GPU under D13? | WS-B | 15 Oct 2026 |
+| Q5 | Is replay attack detection worth including in evaluation? | Supervisor | Phase 2 |
+| Q6 | Who grants ethics approval at GIKI (ORIC or FYP coordinator's designated body), and what is the turnaround? | WS-A | 8 Oct 2026 |
+| Q7 | Will ElevenLabs grant written research permission? | WS-A | 1 Nov 2026 |
+| Q8 | UrduSpeech rights and Habib University corpus access | WS-A | 1 Nov 2026 |
+| Q9 | Workstream owners by name | Team | 8 Oct 2026 |
+| Q10 | LDC Data Scholarship application for LDC2017S14 | WS-A | 15 Jan 2027 |
+| Q11 | What does the professor's "50k" mean: clips, originals only, or including codec copies? (D6 assumes originals.) | Team | 15 Oct 2026 |
+| Q12 | Will the dataset or a paper be published? (Consent form depends on it.) | Team + supervisor | 8 Oct 2026 |
 
 ---
 
@@ -638,18 +639,88 @@ flowchart LR
 
 | Term | Meaning |
 |---|---|
-| AMR-NB | Adaptive Multi-Rate Narrowband, cellular speech codec (4.75–12.2 kbps, 8 kHz) |
-| ASVspoof | Benchmark series for spoofing/deepfake speech detection |
-| CTDISR-2025 | Critical Telecom Data and Infrastructure Security Regulations (PTA, 2025) |
-| DuaBiMamba | Dual-Column Bidirectional Mamba, a state-space sequence model classification head |
+| AMR-NB | Adaptive Multi-Rate Narrowband, cellular speech codec (4.75 to 12.2 kbps, 8 kHz) |
+| AntiDeepfake | Family of speech models post-trained for deepfake detection on 74k hours in 100+ languages (Ge et al. 2025) |
+| ARI | Asterisk REST Interface, used to attach snoop channels and receive call events |
+| ASR | Automatic speech recognition |
+| ASVspoof | Benchmark series for spoofing and deepfake speech detection |
+| CCP | Complex Computing Problem, the accreditation criterion a final-year project must satisfy |
+| CTDISR-2025 | Critical Telecom Data and Infrastructure Security Regulations (PTA, 2025); binds telecom licensees |
+| ECE | Expected Calibration Error |
 | EER | Equal Error Rate, the point where false accept rate equals false reject rate |
+| EMA | Exponential moving average |
+| ExternalMedia | Asterisk ARI channel type that sends a channel's audio as plain RTP to a host and port |
+| FAR / FRR | False accept rate (genuine flagged as synthetic) / false reject rate (synthetic passed as genuine) |
 | GSM 06.10 | Full-rate GSM speech codec (13 kbps, 8 kHz) |
-| min t-DCF | Minimum tandem Detection Cost Function, ASVspoof's cost-weighted metric |
+| G.711 | μ-law and A-law telephone codec, 64 kbps, 8 kHz |
+| INT8 | Eight-bit integer quantization of model weights and activations |
+| jambonz | Open-source voice platform that can act as a SIPREC client |
+| minDCF | Minimum detection cost function (ASVspoof 5 deepfake-track cost) |
+| MMS | Massively Multilingual Speech (Meta); MMS-300M is the backbone family, MMS-TTS the text-to-speech family |
 | ONNX | Open Neural Network Exchange, portable model format |
-| PDPB 2023 | Personal Data Protection Bill (Pakistan, 2023) |
+| ORIC | Office of Research, Innovation and Commercialization |
+| PDPB | Personal Data Protection Bill (Pakistan), an unpassed draft |
+| RTF | Real-time factor: inference seconds per second of audio (defined in §6.1) |
 | RTP | Real-time Transport Protocol, carries call audio |
+| RVC / Seed-VC | Voice conversion tools that change a recording's voice identity while keeping words and accent |
 | SBC | Session Border Controller |
 | SIPREC | SIP Recording protocol (RFC 7865/7866) for forking call media to a recorder |
-| SRC / SRS | SIPREC Session Recording Client (the PBX/SBC) / Session Recording Server (AVA) |
-| VAD | Voice Activity Detection |
-| XLS-R | Cross-lingual self-supervised speech representation model (wav2vec 2.0 family) |
+| SLS | Sensitive layer selection: a classification head that learns a weighting over backbone layers (Zhang et al. 2024) |
+| Snoop channel | Asterisk channel that copies another channel's audio in one or both directions without affecting the call |
+| VAD | Voice activity detection |
+| XLS-R | Cross-lingual self-supervised speech representation model (wav2vec 2.0 family), the fallback backbone |
+
+---
+
+## 12. References
+
+1. Tak et al., "Automatic speaker verification spoofing and deepfake detection using wav2vec 2.0 and data augmentation", Odyssey 2022. arXiv:2202.12233
+2. Ge et al., "Post-training for Deepfake Speech Detection" (AntiDeepfake), ASRU 2025. arXiv:2506.21090
+3. Zhang et al., "Audio Deepfake Detection with Self-Supervised XLS-R and SLS Classifier", ACM MM 2024
+4. Wang et al., "ASVspoof 5: Evaluation of Spoofing, Deepfake, and Adversarial Attack Detection", TASLP 2026. arXiv:2601.03944
+5. Delgado et al., "On Deepfake Voice Detection: It's All in the Presentation", ICASSP 2026. arXiv:2509.26471
+6. Munir et al., "Deepfake Defense: Constructing and Evaluating a Specialized Urdu Deepfake Audio Dataset", Findings of ACL 2024
+7. Pascu et al., "Detecting Audio Deepfakes on the Edge: Lightweight SSL-Based Detection in a Browser Plugin", 2026. arXiv:2606.30780
+8. El Kheir et al., "Comprehensive Layer-wise Analysis of SSL Models for Audio Deepfake Detection", NAACL Findings 2025. arXiv:2502.03559
+9. Zhou and Wang, "When EER Hides Deployment Failure", 2026. arXiv:2606.21584
+10. Kwok et al., bona fide cross-testing, Interspeech 2025. arXiv:2509.09204
+11. Müller and Choong, human versus machine deepfake detection, 2026. arXiv:2605.26136
+12. Meta Omnilingual ASR Corpus (pnb_Arab), 2025. arXiv:2511.09690
+13. NCCIA via Express Tribune, "Pakistanis lose Rs8.32b to cyber fraud", 11 Sep 2026
+14. PSEB and SBP figures via Business Recorder and ProPakistani, FY2024-25
+15. Pindrop, 2025 Voice Intelligence and Security Report (industry data)
+16. PTA, Critical Telecom Data and Infrastructure Security Regulations 2025 (notification of 29 Oct 2025)
+
+The full annotated list of about 80 sources is in `docs/literature-review.md`.
+
+---
+
+## Appendix A: Decision rationale
+
+Alternatives considered and the longer argument for each decision in §4. Architecture.md §10 carries the technology-level records; ADR-1, ADR-2, ADR-4, ADR-10 and ADR-11 must be revised to match D4, D5, D7 and D9.
+
+**D1, D2: FastAPI, WebSocket, React, batch mode.** The scope promises immediate alerts for human analysts. An alert in a log file is not demonstrable. FastAPI keeps the API in the ML language so batch reuses the streaming path; WebSocket is needed because the board updates every 2 s and the dashboard also sends messages upstream. Batch is nearly free and gives a repeatable harness, a demo without a PBX, and a re-check workflow. Rejected: webhook-only, gRPC (browsers cannot consume it), streaming-only.
+
+**D3: CPU-only.** "Edge deployable" is the differentiator. Pakistani call centres run commodity x86; a GPU requirement would convert "edge" into "buy hardware". CPU forces the latency budget to be engineered honestly and removes CUDA coupling from containers. A 2026 study ran a 7-layer SSL detector on one CPU core [7]. Rejected: GPU workstation, cloud GPU.
+
+**D4: AntiDeepfake MMS-300M with SLS.** v0.1 chose XLS-R 300M because it was the only large SSL model pretrained on Urdu and Punjabi. AntiDeepfake MMS-300M starts from the same multilingual family and has already been post-trained for deepfake detection on 74k hours across 100+ languages [2], so it is a strictly better starting point at no cost. The ASVspoof 5 organizers write that new architectures "may be reaching a bottleneck" and that progress comes from data design [4]; a Microsoft/Nuance study found training on realistic phone-call audio improved real-call accuracy by 57% [5]. The DuaBiMamba head of v0.1 was about one EER point better than simpler heads in published comparisons but has no clean CPU export path; SLS, a learned weighting over layers feeding a small classifier [3], exports trivially and captures the layer-selection benefit. Layer-wise analyses find spoof cues in lower and middle layers [8], so 7 to 8 layers is the starting hypothesis, chosen by sweep. Rejected: XLS-R + DuaBiMamba (export risk, CPU cost), WavLM (English-dominated), hand-crafted features (destroyed by narrowband codecs), raw-waveform models (kept as baselines).
+
+**D5: Generators.** The threat is defined by what fraudsters use: zero-shot cloning, voice conversion and plain TTS. OmniVoice is free and supports Urdu and Pakistani Punjabi; Seed-VC and RVC convert any language and keep the speaker's accent, which makes them the main Punjabi source; MMS-TTS is free and local for Urdu volume; Fish Audio S2 is the newest "LLM-style" TTS and is held out as the unseen tool. XTTSv2 was dropped because it supports neither language. ElevenLabs' terms prohibit using its output to train or test detectors, so it is used only with written permission. Rejected: leaving the stack open; reusing only existing corpora (CSALT is clean read speech, ASVspoof is English).
+
+**D6: Dataset size.** About 50,000 original clips, 60 hours, is the scale the panel accepted. Hours "after augmentation" was the v0.1 measure and could be met with 3 hours of originals, so the count is now originals only (Q11 confirms the professor's intent).
+
+**D7, D8: Asterisk tap, SIPREC as stretch, AMR-NB on files.** SIPREC is the vendor-neutral standard every real SBC speaks, which is why v0.1 made it primary. Asterisk, the only PBX the lab can run for free, has no SIPREC client, so a SIPREC server could not be driven end to end. The ARI snoop + ExternalMedia tap delivers the same forked, decoded audio and is what the deck presented. SIPREC stays as a stretch goal using jambonz as the client so the production interface is still demonstrated if time allows. Stock Asterisk cannot negotiate AMR-NB; the decoder is still built and tested on files and replayed captures because AMR-NB is the dominant mobile codec. Rejected: packet mirroring (brittle, looks like surveillance), B2BUA in the media path (AVA failure would drop calls).
+
+**D9, D10: Windows, smoothing, hysteresis.** 4 s matches the crop length detectors are trained on; shorter roughly doubles error. A 2 s hop gives 50% overlap. v0.1 claimed a 6 s first verdict with two windows, which is arithmetically impossible once inference latency is added; v0.2 makes the first window provisional, requires two for any state change, and states the target as speech plus latency. EMA and separate enter/exit thresholds stop flapping. Thresholds are configuration because the operating point is a business choice. RQ-A turns the choice of N into a measured curve rather than an assumption.
+
+**D11: Same-speaker fakes and pipeline parity.** If fakes come from voices that never appear on the genuine side, the model can learn voice identity as the label and pass the test without learning synthesis. If the two classes are processed differently, it can learn silence length, loudness or codec instead. One published model "cheated" on silence alone. Every accent therefore appears on both sides, which is also why accent is a data problem rather than a modelling problem: voice conversion keeps the original accent, and false alarms per dialect are then measured (RQ-B) rather than assumed away.
+
+**D12 to D14: Retention, locality, release.** Data minimization is the cheapest privacy control and the shortest regulator conversation. v0.1 had two inconsistent rules on consented audio leaving premises; D13 is one rule. Most published deepfake datasets reused audio without consent; consented recordings are an advantage only if the consent form says what will happen to them, including whether they will ever be released.
+
+**D15: Caller-versus-enrolled check.** It matches real bank fraud and uses a ready-made speaker model, but it is a biometric, with its own consent and accuracy questions, and is out of scope unless everything else is done.
+
+**Compliance wording.** v0.1 claimed AVA "complies with CTDISR-2025 and PDPB 2023". CTDISR binds telecom licensees, not a student prototype or a bank-side detector; PDPB 2023 has not been passed. v0.2 uses both as motivation and design alignment, and makes the egress test, not a signed checklist, the evidence for BO-5.
+
+**Metrics.** min t-DCF requires an automatic speaker verification system in tandem, which AVA excludes by non-goal, so it was unmeasurable. minDCF and FAR at a fixed FRR are standard and computable. A 30% relative improvement over a strong SSL baseline trained on the same data was implausible for a sibling SSL model; "at least as good as the best baseline, with intervals" is honest and still meaningful because the contribution is the data and the measurements, not the head.
+
+**Priorities.** The project is graded on detection evidence and the four deliverables the panel accepted. P0 is limited to the dataset, the model, the live tap pipeline, a minimal dashboard with the timeline, and the deployment pieces that produce compliance evidence (compose, k3s, NetworkPolicy, egress test). Grafana, SBOM, soak testing, SIPREC and the webhook are P1 or P2 so they can be cut without weakening the core claim.
