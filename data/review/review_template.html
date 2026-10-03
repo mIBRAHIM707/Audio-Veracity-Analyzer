@@ -1,0 +1,119 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; media-src 'self' file: blob:; img-src 'none'; connect-src 'none'; form-action 'none'; base-uri 'none'">
+<title>AVA offline listening review</title>
+<style>
+body{font:16px system-ui,sans-serif;max-width:960px;margin:2rem auto;padding:0 1rem;color:#182536;background:#f5f7fa}h1{font-size:1.8rem}fieldset,article{border:1px solid #bbc7d5;background:white;border-radius:8px;padding:1rem;margin:1rem 0}label{display:block;margin:.6rem 0}input,select,textarea,button{font:inherit;padding:.5rem;max-width:100%;box-sizing:border-box}textarea{width:100%;min-height:5rem}audio{width:100%;margin:.5rem 0}button{cursor:pointer;margin:.3rem}.metadata{overflow-wrap:anywhere;font-size:.9rem;color:#35475b}.flag{color:#754200}#status{font-weight:600}article[hidden]{display:none}
+</style>
+</head>
+<body>
+<h1>AVA offline listening review</h1>
+<p>Listen before deciding. Keep/reject records human audio quality only; it does not grant consent, establish source rights, or approve training use.</p>
+<p id="save-reminder">No automatic storage. Export your decisions and verify the downloaded file before closing. Reloading loses unexported edits.</p>
+<fieldset><legend>Review session</legend>
+<label>Reviewer name <input id="reviewer" type="text" maxlength="200" autocomplete="off"></label>
+<label>Show clips <select id="filter"><option value="all">All clips</option><option value="flagged">Flagged clips</option><option value="unreviewed">Unreviewed clips</option><option value="keep">Keep</option><option value="reject">Reject</option><option value="needs_recut">Needs recut</option></select></label>
+<button id="export" type="button">Export decisions</button>
+<label>Resume exported decisions <input id="import" type="file" accept=".json,application/json"></label>
+<p id="summary"></p><p id="status" role="status" aria-live="polite"></p>
+</fieldset>
+<main id="clips"></main>
+<script id="review-data" type="application/json">__AVA_REVIEW_DATA__</script>
+<script>
+'use strict';
+(() => {
+  const data = JSON.parse(document.getElementById('review-data').textContent);
+  const choices = ['unreviewed', 'keep', 'reject', 'needs_recut'];
+  const reviewer = document.getElementById('reviewer');
+  const filter = document.getElementById('filter');
+  const status = document.getElementById('status');
+  const cards = new Map();
+  let dirty = false;
+  let importGeneration = 0;
+  let decisions = new Map(data.clips.map(clip => [clip.path, { path: clip.path, sha256: clip.sha256, decision: 'unreviewed', notes: '' }]));
+  function updateView() {
+    let visible = 0;
+    for (const clip of data.clips) {
+      const card = cards.get(clip.path);
+      const decision = decisions.get(clip.path);
+      card.select.value = decision.decision;
+      if (card.notes.value !== decision.notes) card.notes.value = decision.notes;
+      card.element.hidden = filter.value === 'flagged' ? !clip.review_flags.length : filter.value !== 'all' && decision.decision !== filter.value;
+      if (card.element.hidden) card.element.querySelector('audio').pause();
+      if (!card.element.hidden) visible++;
+    }
+    const reviewed = [...decisions.values()].filter(item => item.decision !== 'unreviewed').length;
+    document.getElementById('summary').textContent = `${reviewed} of ${data.clips.length} reviewed; ${visible} visible. Flagged clips appear first.`;
+  }
+  function changed() { dirty = true; status.textContent = 'Unsaved edits. Export decisions to keep your work.'; updateView(); }
+  const ordered = data.clips.map((clip, index) => ({ clip, index })).sort((a, b) => Number(Boolean(b.clip.review_flags.length)) - Number(Boolean(a.clip.review_flags.length)) || a.index - b.index);
+  for (const { clip } of ordered) {
+    const article = document.createElement('article');
+    article.dataset.path = clip.path;
+    const title = document.createElement('h2'); title.textContent = clip.path; article.append(title);
+    const metadata = document.createElement('p'); metadata.className = 'metadata';
+    metadata.textContent = `Speaker: ${clip.speaker_id} | ${clip.duration_seconds.toFixed(3)} seconds | Source: ${clip.source_path} | Samples: ${clip.start_sample}–${clip.end_sample}`;
+    article.append(metadata);
+    const flags = document.createElement('p'); flags.className = 'flag'; flags.textContent = clip.review_flags.length ? `Review flags: ${clip.review_flags.join(', ')}` : 'No automated review flags (listening still required).'; article.append(flags);
+    const audio = document.createElement('audio'); audio.controls = true; audio.preload = 'none'; audio.src = clip.path.split('/').map(encodeURIComponent).join('/'); audio.setAttribute('aria-label', `Listen to ${clip.path}`); article.append(audio);
+    audio.addEventListener('play', () => { for (const other of document.querySelectorAll('audio')) if (other !== audio) other.pause(); });
+    const selectLabel = document.createElement('label'); selectLabel.append(document.createTextNode('Quality decision '));
+    const select = document.createElement('select'); select.setAttribute('aria-label', `Quality decision for ${clip.path}`);
+    for (const choice of choices) { const option = document.createElement('option'); option.value = choice; option.textContent = choice.replace('_', ' '); select.append(option); }
+    selectLabel.append(select); article.append(selectLabel);
+    const notesLabel = document.createElement('label'); notesLabel.append(document.createTextNode('Listening notes '));
+    const notes = document.createElement('textarea'); notes.maxLength = 5000; notes.setAttribute('aria-label', `Listening notes for ${clip.path}`); notesLabel.append(notes); article.append(notesLabel);
+    select.addEventListener('change', () => { decisions.get(clip.path).decision = select.value; changed(); });
+    notes.addEventListener('input', () => { decisions.get(clip.path).notes = notes.value; changed(); });
+    cards.set(clip.path, { element: article, select, notes }); document.getElementById('clips').append(article);
+  }
+  reviewer.addEventListener('input', changed);
+  filter.addEventListener('change', updateView);
+  window.addEventListener('beforeunload', event => { if (dirty) { event.preventDefault(); event.returnValue = ''; } });
+  document.getElementById('export').addEventListener('click', () => {
+    if (!reviewer.value.trim()) { status.textContent = 'Enter a reviewer name before exporting.'; reviewer.focus(); return; }
+    const result = { schema_version: 1, report_sha256: data.report_sha256, reviewer: reviewer.value.trim(), decisions: data.clips.map(clip => ({ ...decisions.get(clip.path) })) };
+    const blob = new Blob([JSON.stringify(result, null, 2) + '\n'], { type: 'application/json' });
+    if (blob.size > 10 * 1024 * 1024) { status.textContent = 'Export exceeds the 10 MiB import limit. Shorten notes before exporting.'; return; }
+    const url = URL.createObjectURL(blob);
+    const anchor = document.createElement('a'); anchor.href = url; anchor.download = 'ava-listening-decisions.json'; document.body.append(anchor); anchor.click(); anchor.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+    // Initiating a download cannot prove it was saved, so keep the unload warning.
+    status.textContent = 'Export started. Verify the downloaded JSON file before closing; the unsaved-work warning remains active.';
+  });
+  function validateImport(value) {
+    if (!value || value.schema_version !== 1 || value.report_sha256 !== data.report_sha256) throw new Error('Wrong schema or preparation report hash.');
+    if (typeof value.reviewer !== 'string' || !value.reviewer.trim() || value.reviewer.length > 200) throw new Error('A valid reviewer name is required.');
+    if (!Array.isArray(value.decisions) || value.decisions.length !== data.clips.length) throw new Error('Clip inventory does not match.');
+    const next = new Map();
+    for (const item of value.decisions) {
+      if (!item || typeof item.path !== 'string' || !decisions.has(item.path) || next.has(item.path)) throw new Error('Unknown or duplicate clip path.');
+      if (item.sha256 !== decisions.get(item.path).sha256) throw new Error('Clip hash does not match.');
+      if (!choices.includes(item.decision) || typeof item.notes !== 'string' || item.notes.length > 5000) throw new Error('Invalid decision or notes.');
+      next.set(item.path, { path: item.path, sha256: item.sha256, decision: item.decision, notes: item.notes });
+    }
+    return next;
+  }
+  document.getElementById('import').addEventListener('change', async event => {
+    const file = event.target.files[0]; if (!file) return;
+    const generation = ++importGeneration;
+    try {
+      if (file.size > 10 * 1024 * 1024) throw new Error('Import exceeds 10 MiB.');
+      const text = await file.text();
+      if (generation !== importGeneration) return;
+      const value = JSON.parse(text);
+      const next = validateImport(value);
+      if (dirty && !window.confirm('Replace your unsaved edits with the imported decisions? Cancel to export your current work first.')) { status.textContent = 'Import cancelled. Existing decisions are unchanged.'; return; }
+      decisions = next; reviewer.value = value.reviewer; dirty = false; updateView();
+      status.textContent = 'Imported decisions. Your selected JSON file is the saved copy; further edits require another export.';
+    } catch (error) { if (generation === importGeneration) status.textContent = `Import rejected: ${error.message} Existing decisions are unchanged.`; }
+    finally { if (generation === importGeneration) event.target.value = ''; }
+  });
+  updateView();
+})();
+</script>
+</body>
+</html>
