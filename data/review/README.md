@@ -1,5 +1,9 @@
 # Offline listening review
 
+This is an optional aid for sampled and targeted QA. Established CSALT originals
+do not require individual listening approval before routine ingestion. An
+unreviewed entry describes missing per-clip listening evidence, not rejection.
+
 Generate a review page beside an existing preparation report:
 
 ```text

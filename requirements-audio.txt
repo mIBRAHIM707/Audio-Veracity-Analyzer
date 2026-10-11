@@ -1,0 +1,3 @@
+# CPU-only offline conditioning. Python 3.11; no runtime downloads.
+numpy==2.3.5
+soxr==1.1.0
