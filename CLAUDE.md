@@ -1,60 +1,68 @@
-# AVA: Acoustic Veracity Analyzer
+# AVA Claude Code entrypoint
 
-Final-year project (GIKI FCSE, BS Software Engineering, Sep 2026 to May 2027). Team: Ayesha, Ibrahim, Ilsa, Tughral.
+@AGENTS.md
 
-AVA is an on-premises, CPU-only, passive detector for AI-synthesized (deepfake) voice in live Urdu and Punjabi phone calls. It receives a forked copy of call audio over SIPREC, scores 4 s windows every 2 s, and raises advisory alerts on an analyst dashboard. It never sits in the call path.
+Both Claude Code and Codex use the shared instructions above. Begin by reading
+`docs/context/current-state.md`, the relevant BMAD planning documents, and
+`docs/engineering/workflow.md`. This repository implements an on-premises,
+CPU-only, passive Urdu/Punjabi audio deepfake research prototype.
 
-## Source of truth
+For the 4 October session transfer, read `docs/context/handoffs/claude-resume.md`.
+Tughral now reports approval obtained; this supersedes historical pending-approval
+notes. Record its scope and follow the approved protocol with individual consent.
 
-- [prd.md](prd.md): requirements (FR-*, §6 non-functional targets), phase plan (§8), risks R1..R8 (§9), open questions (§10).
-- [architecture.md](architecture.md): components (§2), model (§4), deployment and `ava.yaml` config (§7), security controls (§8), repo layout (§9), ADR-1..ADR-13 (§10).
+Use `docs/context/todo.md` as the active checklist. After each small step passes
+QA, mark it complete, show the updated checklist, and continue to the next available
+step automatically. Preserve blockers and do independent work; do not infer approval.
 
-Read the relevant section before designing or changing anything. If code and docs disagree, flag it rather than silently picking one. Cite requirement and ADR IDs in PR descriptions.
+For established CSALT data, retain published labels and run automated checks on
+all files with sampled/targeted listening. Do not block routine intake on per-clip
+human approval. See `data/collect/README.md` for scope and the balanced manifest.
 
-## Hard constraints
+## Native capabilities
 
-These come from the scope and regulation (CTDISR-2025, PDPB 2023). Don't trade them away for convenience.
-
-- **CPU-only inference.** ONNX Runtime, INT8. No GPU at runtime (training may use GPUs).
-- **No network egress** from runtime services. No model downloads, telemetry, CDN fonts, or third-party analytics at runtime. Models load from a local volume and startup fails loudly if one is missing.
-- **Telephony audio**: 8 kHz mono, G.711 / GSM 06.10 / AMR-NB, upsampled to 16 kHz for the backbone.
-- **Train/serve parity**: one `ingest` conditioning module (soxr resampling, Silero VAD) is shared by training augmentation and the runtime.
-- **Speaker-disjoint splits**: no speaker appears in more than one of train/dev/test. One generator is held out as the unseen-attack test partition.
-- **Passive and advisory**: AVA never sends media or re-INVITEs to the PBX beyond SIPREC answers.
-- **Data minimization**: audio is processed in memory and discarded. Snippet retention is opt-in, TTL-bounded, and encrypted with AES-256-GCM.
-- **Python 3.11** for every backend service and training (ADR-13). Dashboard: React + TypeScript + Vite, served by the API container.
-
-## Repository layout (planned, architecture.md §9)
-
-```
-data/        manifests + scripts only; audio lives on a data volume, never in git
-model/       ava/ (backbone, duabimamba, pooling), baselines/, train/eval/export/quantize
-services/    siprec_srs/, ingest/, inference/, scorer/, api/
-dashboard/   React + Vite
-lab/         asterisk/, sipp/
-deploy/      docker/, compose.yaml, k8s/
-tests/       unit, integration, e2e
-docs/        deployment guide, compliance checklist, model card
-```
-
-Most of this doesn't exist yet. Create folders as the work needs them and keep to this layout.
+- BMAD is installed in `_bmad/`; invoke the installed `/bmad-help` skill to navigate
+  workflows. Do not reinstall or upgrade it without an intentional version change.
+- Project agents are in `.claude/agents/`; their detailed contracts are shared in
+  `docs/agents/`. Use only the agents needed for the bounded task.
+- `ava-test-designer` in Claude is an Astra handoff role, not an OpenAI model
+  running inside Claude. GPT-6 Astra test design runs in Codex; Claude can execute
+  the resulting cases with the same Playwright/Python commands.
+- Neither tool's private conversation history is the source of project truth.
+  Shared state, decisions, tests, and per-task handoffs must live in the repository.
 
 ## Commands
 
-None yet. Add build, test, lint, and run commands here as soon as they exist (PRD Phase 0 tasks 0.1 and 0.2).
+```text
+uv run --no-project --python 3.11 python scripts/check_foundation.py
+uv run --no-project --python 3.11 --with-requirements requirements-audio.txt python -m unittest discover -s tests/unit -v
+python scripts/sync_agents.py --check
+python scripts/sync_bmad.py --check
+```
+
+Optional CPU model tests use `requirements-model.txt` and `tests/model/`; uv also
+needs explicit `--extra-index-url https://download.pytorch.org/whl/cpu`. See
+`models/smoke/README.md`. Keep this environment separate from lightweight data tests.
+
+Use the installed Playwright commands in `package.json`; see `README.md` for setup.
+Use `data/prepare/prepare_audio.py --condition` for explicit native PCM16 to 16 kHz
+mono conversion and per-clip −3 dBFS peak normalization; see its README for the
+external-output command. Originals stay immutable. The current user instruction
+is to continue the todo list and leave changes uncommitted until further notice.
+Keep this file short. Update it when commands or operating policy changes; write
+progress/evidence to `docs/context/current-state.md`, and product changes to the
+canonical PRD. Do not duplicate the whole PRD here.
 
 ## Workflow
 
 Every change is tracked as a GitHub issue, so the history of what was built and fixed lives in issues and PRs.
 
-1. **Issue first.** Every feature, task, and bug gets an issue before work starts. Use the templates in `.github/ISSUE_TEMPLATE/` (`gh issue create --template bug.md` or `feature.md`) and cite the PRD requirement or task ID. If you notice an unrelated bug mid-task, open a separate issue for it rather than fixing it in the current PR. Put each issue in its phase milestone (`Phase 0: Setup` … `Phase 5: Final Evaluation and Report`) and give it a workstream label (`ws-a-data`, `ws-b-model`, `ws-c-telephony`, `ws-d-platform`). PRD §8 tasks are titled `[N.M] <task>`. Phases 0–1 already have issues, and each later phase gets its issues when it starts.
-2. **Branch** from `main` as `<type>/<issue>-<slug>`, e.g. `feat/14-vad-gate`, `fix/21-amr-decode`. Types: `feat`, `fix`, `docs`, `test`, `chore`.
+1. **Issue first.** Every feature, task, and bug gets an issue before work starts. Use the templates in `.github/ISSUE_TEMPLATE/` and cite the PRD requirement or task ID. Put each issue in its phase milestone (`Phase 0: Setup` through `Phase 5: Final Evaluation and Report`) and give it a workstream label (`ws-a-data`, `ws-b-model`, `ws-c-telephony`, `ws-d-platform`).
+2. **Branch** from `main` as `<type>/<issue>-<slug>`, e.g. `feat/14-vad-gate`. Types: `feat`, `fix`, `docs`, `test`, `chore`.
 3. **Commit** with the same type prefix: `feat: add Silero VAD gate`.
-4. **PR** into `main` using the template. The body must say `Closes #<issue>` so merging closes the issue. Keep it to one issue per PR where practical.
-5. **Review** is optional. Merge once you're satisfied, and request a review for risky or cross-workstream changes.
+4. **PR** into `main` using the template; the body says `Closes #<issue>`.
+5. **Review** is optional by team convention, but the `main` ruleset requires one approval; request one for risky or cross-workstream changes.
 
-No AI attribution anywhere: no `Co-Authored-By: Claude` trailers, "Generated with Claude Code" lines, or similar in commits, PRs, issues, comments, or files.
+No AI attribution anywhere. Never push directly to `main`. Never commit audio, datasets, model weights, `.env`, keys or consent material; `.gitignore` and `scripts/repository_guard.py` cover these.
 
-Never push directly to `main`. Never commit audio, datasets, model weights, `.env`, or keys; `.gitignore` covers these.
-
-`/ava-teach <concept>` explains any design decision from the docs (`/ava-teach curriculum` lists them all). Put personal, machine-specific notes in `CLAUDE.local.md` (gitignored).
+`/ava-teach <concept>` explains any design decision from the canonical documents; the `ava-viva` agent builds panel-question flashcards. Put personal, machine-specific notes in `CLAUDE.local.md` (gitignored).

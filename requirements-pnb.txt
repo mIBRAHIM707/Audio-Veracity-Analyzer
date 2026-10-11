@@ -1,0 +1,4 @@
+# Optional local Parquet/FLAC importer, CPU only.
+-r requirements-audio.txt
+pyarrow==21.0.0
+soundfile==0.13.1
