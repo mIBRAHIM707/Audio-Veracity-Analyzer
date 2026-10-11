@@ -1,0 +1,74 @@
+{
+  "reviewed_on": "2026-10-04",
+  "prd_revision": "44bb37d024cf0e5ea9e7627cab74f2da138d7ecc",
+  "tracking": "Partial groundwork for issues #6 and #11; issue #11 still has superseded source names.",
+  "note": "Scope decisions are recorded per source. CSALT noncommercial detection intake is accepted by the project owner; other unresolved source reviews remain pending. Project-owner decision of 2026-10-05 (PRD FR-D11): under the university approval reported 2026-10-04, CSALT (CC BY-NC 4.0) and Meta Omnilingual pnb_Arab (CC BY 4.0) speakers may be used for voice cloning and training in this noncommercial research; Common Voice is excluded from cloning pending its no-reidentification terms; no cloned voice is released. Existing manifests that carry cloning_status not_authorized or training_eligible false for these sources predate the decision and are regenerated under todo 9e rather than edited in place.",
+  "sources": [
+    {
+      "source_id": "common_voice_ur",
+      "url": "https://mozilladatacollective.com/datasets/cmu5x1w3400cyo107st8cgsoq",
+      "version": "cv-corpus-27.0-2026-09-11",
+      "language": "ur",
+      "published_licence": "CC0-1.0",
+      "status": "usage_review_pending",
+      "next_action": "Review download terms for AVA use. Download via the official portal into approved external storage. Start from validated.tsv, retain client_id as a pseudonymous grouping key, and cap at 30 clips per speaker per FR-D1.",
+      "constraints": "The dataset page prohibits reidentification and rehosting or resharing. Do not treat the licence label alone as permission to clone a speaker."
+    },
+    {
+      "source_id": "csalt_urdu",
+      "url": "https://github.com/CSALT-LUMS/urdu-deepfake-dataset",
+      "download_url": "https://huggingface.co/datasets/CSALT/deepfake_detection_dataset_urdu",
+      "language": "ur",
+      "published_licence": "CC-BY-NC-4.0",
+      "status": "approved_noncommercial_detection_research",
+      "decision_basis": "Project owner explicitly accepted CSALT as an established research source on 2026-10-03 and authorized expanding the genuine pilot. Published CC-BY-NC-4.0 terms retained; this is not institutional or cloning approval.",
+      "next_action": "Use published genuine/Urdu labels, verify publisher hashes and decoded audio, consolidate the balanced multi-speaker pilot. No per-file listening approval gate; sample/target suspicious processing outputs.",
+      "constraints": "PRD FR-D1 selects the genuine partition. Existing synthetic partitions are a separate noncommercial smoke-test benchmark; they are not eligible for AVA training or claimed to satisfy FR-D11.",
+      "synthetic_benchmark": {
+        "revision": "eb8f16623108324867e4424a646937409c64b82b",
+        "verified_catalog_entries": 3396,
+        "partitions": ["Spoofed_TTS", "Spoofed_Tacotron"],
+        "publisher_generator_families": ["VITS", "Tacotron"],
+        "planned_sample_count": 68,
+        "scope": "noncommercial_benchmark_only",
+        "training_eligible": false,
+        "unknowns": ["generator checkpoint/version", "prompt", "reference audio", "consent mapping", "independent target identity verification"],
+        "evidence": "docs/context/handoffs/synthetic-source-verification.md"
+      }
+    },
+    {
+      "source_id": "meta_omnilingual_pnb",
+      "url": "https://huggingface.co/datasets/facebook/omnilingual-asr-corpus",
+      "language": "pnb_Arab",
+      "published_licence": "CC-BY-4.0",
+      "status": "public_source_noncommercial_detection_pilot",
+      "next_action": "Pilot imported and prepared on 2026-10-04 from the pinned first train shard (revision 8648ba8946377697b427ae952076e49fc0e5e44d): 12 recordings, 2 per publisher train speaker, 187 conditioned candidates, all independently verified; see docs/context/handoffs/pnb-pilot-import.md. Next: sampled native-speaker listening for dialect and quality evidence, then inclusion in reproducible split proposals. Second train shard, publisher dev and test remain untouched.",
+      "subset_evidence_url": "https://huggingface.co/api/datasets/facebook/omnilingual-asr-corpus/tree/main/data/pnb_Arab",
+      "constraints": "CC-BY-4.0 attribution retained. Cloning and training permitted by project-owner decision of 2026-10-05 under the university approval (PRD FR-D11, Q1 resolved). pnb_Arab and west2386 do not establish Majhi coverage or independently verified identity. Keep unknown dialect explicit; speaker consent to the original recording is the publisher's, not individually verified.",
+      "evidence": "docs/context/handoffs/pnb-source-preflight.md"
+    },
+    {
+      "source_id": "habib_punjabi",
+      "language": "pnb_Arab",
+      "published_licence": null,
+      "status": "access_and_rights_pending",
+      "next_action": "Obtain the official corpus link, access terms and written clarification where necessary under PRD Q8."
+    },
+    {
+      "source_id": "urduspeech",
+      "language": "ur",
+      "published_licence": null,
+      "status": "rights_pending",
+      "next_action": "Resolve PRD Q8 before importing this source."
+    },
+    {
+      "source_id": "team_recordings",
+      "language": "ur_and_pnb",
+      "published_licence": null,
+      "status": "approval_reported_reference_pending",
+      "approval_note": "Tughral reported institutional approval obtained on 2026-10-04. The approval reference, approved protocol version, scope (recording / cloning / listening study), pilot size, conditions and validity are not yet recorded in the repository; record them in docs/data-collection/approval-pack.md required fields before the first session.",
+      "next_action": "Reconcile approval-pack.md with the approved materials, complete the recording start gate, then run the 2-4 adult pilot per docs/data-collection/collection-plan.md. Individual signed consent per participant remains required for every activity.",
+      "constraints": "Institutional approval does not supply individual recording or cloning consent (FR-E2); no cloning without each speaker's separate opt-in. Each of Tughral, Ibrahim, Ilsa and Ayesha recruits and records participants under the approved protocol."
+    }
+  ]
+}

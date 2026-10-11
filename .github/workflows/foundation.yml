@@ -1,0 +1,44 @@
+name: Foundation checks
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  foundation:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+      - name: Check shared context and adapters
+        run: python scripts/check_foundation.py
+      - name: Check repository data guard
+        run: python scripts/repository_guard.py
+      - name: Python tests
+        run: |
+          python -m pip install -r requirements-audio.txt
+          python -m unittest discover -s tests/unit -v
+      - run: npm ci
+      - run: npx playwright install --with-deps chromium
+      - name: Browser infrastructure tests
+        run: npm run test:browser
+      - name: Retain browser failure evidence
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: browser-foundation-failures
+          path: |
+            test-results/
+            playwright-report/
+            artifacts/browser/
+          retention-days: 7

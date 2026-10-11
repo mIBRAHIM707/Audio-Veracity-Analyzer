@@ -1,0 +1,8 @@
+# Optional CPU smoke-test environment; kept separate from the lightweight data CI.
+--extra-index-url https://download.pytorch.org/whl/cpu
+-r requirements-audio.txt
+torch==2.8.0+cpu
+torchaudio==2.8.0+cpu
+safetensors==0.6.2
+psutil==7.1.0
+packaging==24.1

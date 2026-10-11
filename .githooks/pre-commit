@@ -1,0 +1,7 @@
+#!/bin/sh
+set -eu
+if command -v uv >/dev/null 2>&1; then
+  uv run --no-project --python 3.11 python scripts/repository_guard.py --staged
+else
+  python scripts/repository_guard.py --staged
+fi
