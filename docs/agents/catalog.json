@@ -1,0 +1,43 @@
+[
+  {
+    "id": "coordinator",
+    "description": "Coordinates bounded AVA tasks, owned paths, sequential integration and shared context updates.",
+    "role_file": "docs/agents/coordinator.md"
+  },
+  {
+    "id": "researcher",
+    "description": "Verifies AVA repository and primary-source evidence, dataset access and technical feasibility without modifying implementation.",
+    "role_file": "docs/agents/researcher.md"
+  },
+  {
+    "id": "data-engineer",
+    "description": "Builds AVA source importers, provenance, manifests, splits and reproducible audio QA within approved data rules.",
+    "role_file": "docs/agents/data-engineer.md"
+  },
+  {
+    "id": "model-engineer",
+    "description": "Integrates CPU detection, evaluation, calibration, ONNX export and measured performance without overstating accuracy.",
+    "role_file": "docs/agents/model-engineer.md"
+  },
+  {
+    "id": "implementer",
+    "description": "Implements scoped AVA backend, pipeline or UI changes using explicit contracts, bounded resources and failure tests.",
+    "role_file": "docs/agents/implementer.md"
+  },
+  {
+    "id": "test-designer",
+    "description": "Designs requirement-linked normal, boundary, failure and concurrency cases using GPT-6 Astra, with explicit test-layer and provenance labels.",
+    "role_file": "docs/agents/test-designer.md",
+    "model": "gpt-6-astra"
+  },
+  {
+    "id": "browser-tester",
+    "description": "Executes Astra-designed browser cases and bounded authorized-origin crawls with Playwright, retaining reproducible evidence.",
+    "role_file": "docs/agents/browser-tester.md"
+  },
+  {
+    "id": "reviewer",
+    "description": "Independently reviews AVA correctness, construction, privacy, requirements and test evidence with actionable severity-ranked findings.",
+    "role_file": "docs/agents/reviewer.md"
+  }
+]

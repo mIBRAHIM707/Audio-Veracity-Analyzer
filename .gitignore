@@ -43,3 +43,21 @@ Thumbs.db
 
 # BMAD per-user settings (name, skill level); each teammate keeps their own
 _bmad/**/config.user.toml
+
+# Local coordination, exported context and browser evidence
+.local/
+.worktrees/
+artifacts/
+test-results/
+playwright-report/
+blob-report/
+CLAUDE.local.md
+
+# Additional audio, weights and private data containers
+*.flac
+*.ogg
+*.m4a
+*.aac
+*.safetensors
+data/private/
+data/consents/
