@@ -1,0 +1,21 @@
+{
+  "reviewed_on": "2026-10-04",
+  "models": [
+    {
+      "id": "nii-yamagishilab/mms-300m-anti-deepfake",
+      "revision": "7928e119e09f616b2ce698892e00ca22dbaa40bf",
+      "url": "https://huggingface.co/nii-yamagishilab/mms-300m-anti-deepfake",
+      "licence": "CC-BY-NC-SA-4.0",
+      "scope": "local noncommercial research smoke test",
+      "checkpoint_file": "model.safetensors",
+      "checkpoint_bytes": 1269622944,
+      "checkpoint_sha256": "9bd5d9785bf72f91dfca8508651354946c4b307921cb358505e1b94035102224",
+      "class_order": ["fake", "real"],
+      "head": "Original trained temporal-average plus 1024-to-2 linear classifier",
+      "input_sample_rate": 16000,
+      "input_normalization": "Whole-waveform layer normalization per official inference example",
+      "not_established": ["Urdu/Punjabi accuracy", "telephone-domain performance", "AVA SLS-head training", "fairseq-to-torchaudio numerical parity", "ONNX export parity"],
+      "storage": "External local model storage; see ignored .local/data-location.json"
+    }
+  ]
+}
