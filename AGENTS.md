@@ -2,6 +2,15 @@
 
 Read this file in both Codex and Claude Code. User instructions take precedence.
 
+## Approved daily automation (6 November 2026)
+
+In the dedicated `feat/4-daily-development` worktree, the user authorizes the
+ordered backlog in `docs/context/daily-backlog.md`, local commits of verified
+changes and pushes to that branch's dedicated draft PR. Never merge or enable
+auto-merge. This supersedes historical no-commit instructions only for this scope.
+Follow `docs/engineering/daily-development-prompt.md`; do not edit other checkouts.
+Daily window: noon–2 PM Asia/Karachi. Machine-local runner settings/logs stay ignored.
+
 ## Start here
 
 1. Read `docs/context/current-state.md` for measured state and unresolved work.
