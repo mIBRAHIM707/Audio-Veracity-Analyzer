@@ -1,5 +1,10 @@
 # AVA working checklist
 
+6 November automation update: the approved software queue is `daily-backlog.md`.
+Daily work is noon–2 PM Asia/Karachi on `feat/4-daily-development`; verified commits
+are pushed to its dedicated draft PR without merging. This supersedes the older
+no-commit instruction for that branch only. Collection tasks below remain tracked.
+
 Updated 4 October 2026. This is the active sequence; evidence lives in
 `current-state.md` and `handoffs/`. Check marks mean the stated bounded task passed
 its QA, not that the final dataset or product is accepted.

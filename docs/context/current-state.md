@@ -1,5 +1,16 @@
 # AVA current state
 
+## Current daily automation instruction — 6 November 2026
+
+The user approved the autonomous software phase order and daily noon–2 PM
+Asia/Karachi work. On `feat/4-daily-development`, commit verified tasks and push
+to its dedicated draft PR; never merge. Historical no-commit notes below no longer
+apply to that isolated worktree. Other pending edits remain in the original checkout.
+See `daily-backlog.md` and `autonomous-development-plan.md` for scope, and
+`../engineering/daily-development-prompt.md` for session rules. Docker is not
+installed on the setup machine: report it when required and do independent work.
+Setup progress/evidence is recorded in `handoffs/daily-scheduler.md` when finalized.
+
 Updated 4 October 2026. This is shared, reviewable project memory, not a transcript.
 The coordinator updates it after meaningful integration. Consult actual Git status
 and latest test reports before relying on a historical result below.
