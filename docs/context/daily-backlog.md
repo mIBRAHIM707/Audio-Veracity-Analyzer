@@ -5,14 +5,22 @@ to feat/4-daily-development and its dedicated draft PR; never merge. This is the
 automation queue; docs/context/todo.md still tracks participant/data work.
 
 Mark a task complete only with implementation, relevant tests and independent QA.
-Use actual Astra test design and Playwright for browser cases. Each phase ends
-with a requirement-coverage review; no phase is promised to fit one day.
+Since 8 November 2026 the runner uses Claude Code; Claude designs test cases and
+labels them Claude-authored (Codex/Astra access ended). Playwright runs browser
+cases. Each phase ends with a requirement-coverage review; no phase is promised to
+fit one day. Scope: every task here is independent of the participant dataset;
+items needing that data are listed at the end and stay out of the queue.
 
 ## 0 — Reliable daily runner (#4)
 - [x] 0.1 Isolated worktree, bounded Windows schedule, overlap guard, dry-run,
   deadline cleanup, pause/complete markers, tests and live setup verification.
   Evidence: 23 Astra tests passed, independent review closed, authenticated CLI
   smoke passed; registered task outside-window action returned 0. Next run Nov 7.
+- [x] 0.2 Switch runner from Codex to Claude Code (8 Nov 2026): 7 Nov run failed
+  because the ChatGPT-account Codex cannot use gpt-6-astra; 8 Nov missed because the
+  PC was asleep. Claude CLI headless with acceptEdits plus a shell allowlist (no
+  permission bypass; merge and force push denied), late wake allowed but runner
+  window unchanged. 25 scheduler tests pass (2 new Claude-authored).
 
 ## 1 — Finish existing foundations (#11, #18, #19)
 - [ ] 1.1 Parameterized prepared-output verifier; segmentation/metrics/flags/hash checks.

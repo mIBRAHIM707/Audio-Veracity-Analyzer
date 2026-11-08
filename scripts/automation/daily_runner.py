@@ -1,4 +1,7 @@
-"""Bounded daily Codex runner. All agent publication is governed by the prompt.
+"""Bounded daily Claude Code runner. All agent publication is governed by the prompt.
+
+Switched from Codex to the Claude Code CLI on 8 November 2026 (Codex/Astra access
+ended). The runner launches `claude -p` headless with the daily prompt on stdin.
 
 The Windows job object contains every launched descendant and kills it on runner
 exit, including unexpected runner termination. No shell-built commands are used.
@@ -20,6 +23,7 @@ import time as clock
 PKT = timezone(timedelta(hours=5), "Asia/Karachi")
 REMOTE = "https://github.com/mIBRAHIM707/Audio-Veracity-Analyzer.git"
 BRANCH = "feat/4-daily-development"
+MODELS = {"opus", "sonnet", "claude-opus-5-5", "claude-fable-5-1", "claude-sonnet-5"}
 
 
 def session_window(now: datetime) -> tuple[datetime, datetime, datetime]:
@@ -36,12 +40,16 @@ def load_config(path: Path) -> dict:
     config = json.loads(path.read_text(encoding="utf-8-sig"))
     if not isinstance(config, dict):
         raise ValueError("Config must be an object")
-    for name in ("codex_path", "python_path", "worktree", "state_dir"):
+    for name in ("claude_path", "python_path", "worktree", "state_dir"):
         value = config.get(name)
         if not isinstance(value, str) or not Path(value).is_absolute():
             raise ValueError(f"{name} must be an absolute path")
         config[name] = str(Path(value).resolve())
-    for name in ("codex_path", "python_path"):
+    model = config.get("model", "opus")
+    if model not in MODELS:
+        raise ValueError(f"model must be one of {sorted(MODELS)}")
+    config["model"] = model
+    for name in ("claude_path", "python_path"):
         if not Path(config[name]).is_file():
             raise ValueError(f"Missing executable: {name}")
     if not Path(config["worktree"]).is_dir():
@@ -159,10 +167,52 @@ class WindowsJob:
             self.handle = None
 
 
-def build_command(config: dict, output_path: Path) -> list[str]:
-    return [config["codex_path"], "exec", "-c", "approval_policy=\"never\"",
-            "--sandbox", "danger-full-access", "--json", "--color", "never",
-            "--output-last-message", str(output_path), "-C", config["worktree"], "-"]
+# Unattended sessions never bypass permissions. File edits inside the worktree are
+# auto-accepted; shell use is limited to this allowlist; anything else is denied
+# because nobody is present to approve it.
+ALLOWED_TOOLS = (
+    "Read", "Edit", "Write", "Glob", "Grep", "TodoWrite", "Task",
+    "Bash(git status:*)", "Bash(git diff:*)", "Bash(git log:*)", "Bash(git show:*)",
+    "Bash(git add:*)", "Bash(git commit:*)", "Bash(git fetch:*)", "Bash(git rev-parse:*)",
+    "Bash(git branch --show-current)", "Bash(git ls-remote:*)",
+    "Bash(git push origin HEAD:refs/heads/feat/4-daily-development)",
+    "Bash(uv run:*)", "Bash(npm run test:*)", "Bash(npx playwright test:*)",
+    "Bash(gh pr view:*)", "Bash(gh pr list:*)", "Bash(gh pr edit:*)",
+    "Bash(gh issue view:*)", "Bash(gh issue list:*)", "Bash(gh issue create:*)",
+)
+DENIED_TOOLS = (
+    "Bash(gh pr merge:*)", "Bash(git push --force:*)", "Bash(git push -f:*)",
+    "Bash(git reset --hard:*)", "Bash(git clean:*)", "Bash(git checkout main:*)",
+    "WebFetch", "WebSearch",
+)
+
+
+def build_command(config: dict) -> list[str]:
+    """Headless Claude Code session; prompt on stdin, cwd is the worktree."""
+    return [config["claude_path"], "-p", "--output-format", "stream-json", "--verbose",
+            "--model", config["model"], "--permission-mode", "acceptEdits",
+            "--allowedTools", ",".join(ALLOWED_TOOLS),
+            "--disallowedTools", ",".join(DENIED_TOOLS)]
+
+
+def write_final_message(log_path: Path, output_path: Path) -> bool:
+    """Copy the session's final `result` text from the stream-json log, if any."""
+    final = None
+    try:
+        with log_path.open(encoding="utf-8", errors="replace") as stream:
+            for line in stream:
+                try:
+                    event = json.loads(line)
+                except ValueError:
+                    continue
+                if isinstance(event, dict) and event.get("type") == "result":
+                    final = event.get("result")
+    except OSError:
+        return False
+    if not isinstance(final, str):
+        return False
+    output_path.write_text(final, encoding="utf-8")
+    return True
 
 
 def resume_child(proc):
@@ -178,7 +228,8 @@ def resume_child(proc):
 
 def run_child(command: list[str], prompt: str, log_path: Path, timeout: float,
               stop_path: Path | None = None,
-              wall_deadline: datetime | None = None) -> int:
+              wall_deadline: datetime | None = None,
+              cwd: str | None = None) -> int:
     if timeout <= 0:
         return 124
     deadline = clock.monotonic() + timeout
@@ -189,7 +240,7 @@ def run_child(command: list[str], prompt: str, log_path: Path, timeout: float,
     try:
         with log_path.open("xb") as output:
             proc = subprocess.Popen(command, stdin=subprocess.PIPE, stdout=output,
-                                    stderr=subprocess.STDOUT,
+                                    stderr=subprocess.STDOUT, cwd=cwd,
                                     creationflags=(subprocess.CREATE_NO_WINDOW | 0x4) if os.name == "nt" else 0,
                                     start_new_session=os.name != "nt")
             # CREATE_SUSPENDED prevents even startup hooks spawning outside the job.
@@ -246,7 +297,7 @@ def main(argv=None) -> int:
             print(json.dumps({"dry_run": True, "workspace": workspace,
                               "start": start.isoformat(), "soft_stop": soft.isoformat(),
                               "deadline": deadline.isoformat(), "in_window": start <= now < soft,
-                              "command": build_command(config, Path(config["state_dir"]) / "last.md")}, indent=2))
+                              "command": build_command(config)}, indent=2))
             return 0
         if not start <= now < soft:
             print("Skipped: outside launch window 12:00–13:45 Asia/Karachi")
@@ -297,8 +348,10 @@ def main(argv=None) -> int:
                         ledger["stop_reason"] = "launch cutoff reached during preparation"
                         atomic_json(ledger_path, ledger)
                         break
-                    code = run_child(build_command(config, state / f"{stem}.md"), prompt,
-                                     state / f"{stem}.jsonl", remaining, state / "PAUSED", deadline)
+                    code = run_child(build_command(config), prompt,
+                                     state / f"{stem}.jsonl", remaining, state / "PAUSED", deadline,
+                                     cwd=config["worktree"])
+                    write_final_message(state / f"{stem}.jsonl", state / f"{stem}.md")
                 except (OSError, ValueError, RuntimeError, subprocess.SubprocessError) as exc:
                     ledger.update({"last_exit": 1, "last_finished": datetime.now(PKT).isoformat(),
                                    "failed": True, "error": str(exc)})

@@ -1,9 +1,17 @@
 # AVA daily development session
 
-You are the scheduled development coordinator. User-approved on 6 November 2026:
-work daily noon–2 PM Asia/Karachi; execute the ordered autonomous backlog; commit
-verified coherent work and push to feat/4-daily-development; maintain its dedicated
-draft PR. NEVER merge, enable auto-merge, push main, force push or rewrite history.
+You are the scheduled development coordinator, running as a headless Claude Code
+session. User-approved on 6 November 2026 and moved from Codex to Claude on
+8 November 2026: work daily noon–2 PM Asia/Karachi; execute the ordered backlog in
+docs/context/daily-backlog.md one task at a time; complete everything that does not
+depend on the participant dataset; commit verified coherent work and push to
+feat/4-daily-development; maintain its dedicated PR #27. NEVER merge, enable
+auto-merge, push main, force push or rewrite history.
+
+Your shell access is an allowlist (git on this branch, uv run, npm/Playwright tests,
+gh pr/issue view, list, edit and issue create). A command outside it is denied
+without a prompt. Do not try to work around a denial; record it as a blocker in the
+daily report and move to the next ready task.
 This supersedes historical no-commit/no-push notes only for this dedicated worktree
 and approved scope. No other checkout, pending user edit, or participant record is
 yours to change. Runtime instructions appended below give today's cutoff.
@@ -30,9 +38,11 @@ yours to change. Runtime instructions appended below give today's cutoff.
   this backlog authorizes ordinary reversible implementation decisions. Do not
   ask routine approvals again. Record genuine scope gaps and work elsewhere.
 - Scope each change to a reviewable requirement. Use explicit file ownership and
-  bounded specialist delegation when useful. Use actual GPT-6 Astra for substantive
-  test design; never claim another model is Astra. If unavailable, record the gate
-  and continue independent tasks. Playwright executes browser cases.
+  bounded specialist delegation when useful (project agents in .claude/agents).
+  Since 8 November 2026 Claude designs substantive test cases; label them
+  "Claude-authored" with the date. Existing Astra catalogues keep their Astra
+  provenance; extend them in separate Claude-authored modules or sections. Never
+  label Claude output as Astra. Playwright executes browser cases.
 - Reuse existing public pilots/checkpoint through local configuration; never put
   audio, weights, private manifests, consent or credentials in Git, logs or PRs.
 - CPU-only serving, no runtime downloads/telemetry, passive advisory behavior;
@@ -47,7 +57,9 @@ yours to change. Runtime instructions appended below give today's cutoff.
 ## Publish and remember
 
 - Stage only this task's verified paths, inspect staged diff, run staged repository
-  guard. Use conventional commits tied to issues. Commit complete behavior with
+  guard. Use conventional commits tied to issues, with no AI attribution trailer
+  (project rule). Commit and push after each verified task, not only at the end,
+  so a cutoff never loses finished work. Commit complete behavior with
   its tests/docs, not empty or arbitrary pieces to reach a numerical quota.
 - Push explicitly: git push origin HEAD:refs/heads/feat/4-daily-development.
   Never push to a dynamically selected branch. Verify remote head after success.

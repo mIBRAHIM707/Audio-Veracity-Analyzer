@@ -1,5 +1,15 @@
 # Daily development runner
 
+**8 November 2026: the runner now launches Claude Code, not Codex.** Config key
+`codex_path` is replaced by `claude_path` (absolute path to `claude.exe`) plus an
+optional `model` (`opus` default). Sessions run `claude -p` with `acceptEdits`
+and an explicit shell allowlist defined in `daily_runner.py`; permission checks
+are never bypassed, and merge, force push, hard reset and web access are denied.
+The final message is extracted from the stream-json log into `<date>-<n>.md`.
+The task is registered with StartWhenAvailable so a late wake still runs, but
+the runner's own 12:00–13:45 launch window and 14:00 cutoff are unchanged.
+Text below describing Codex is historical.
+
 Runs the approved backlog in `docs/engineering/daily-development-prompt.md` on
 `feat/4-daily-development`, noon–2 PM Pakistan (UTC+05:00). No new invocation starts
 at or after 13:45. Each run is cut off at 14:00 even if the trigger was late. A

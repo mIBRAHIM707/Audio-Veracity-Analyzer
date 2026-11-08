@@ -64,7 +64,7 @@ class SchedulerTests(unittest.TestCase):
         self.prompt = self.work / "docs/engineering/daily-development-prompt.md"
         self.prompt.parent.mkdir(parents=True)
         self.prompt.write_text("Fictional task. Never merge. No outside contacts.", encoding="utf-8")
-        self.config = dict(codex_path=sys.executable, python_path=sys.executable,
+        self.config = dict(claude_path=sys.executable, python_path=sys.executable,
                            worktree=str(self.work), state_dir=str(self.state),
                            branch=runner.BRANCH, remote_url=runner.REMOTE, max_invocations=2)
         self.config_path = self.root / "config.json"
@@ -196,11 +196,41 @@ class SchedulerTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             runner.validate_workspace(self.config)
 
+    def test_claude_command_never_bypasses_permissions_and_denies_merge(self):
+        # Claude-authored (8 Nov 2026) after the switch from Codex.
+        config = runner.load_config(self.config_path)
+        command = runner.build_command(config)
+        self.assertEqual(command[:2], [config["claude_path"], "-p"])
+        joined = " ".join(command)
+        self.assertNotIn("bypassPermissions", joined)
+        self.assertNotIn("dangerously", joined)
+        self.assertEqual(command[command.index("--permission-mode") + 1], "acceptEdits")
+        allowed = command[command.index("--allowedTools") + 1].split(",")
+        denied = command[command.index("--disallowedTools") + 1].split(",")
+        self.assertIn("Bash(git push origin HEAD:refs/heads/feat/4-daily-development)", allowed)
+        self.assertFalse(any(tool.startswith("Bash(git push") and "feat/4-daily-development" not in tool
+                             for tool in allowed))
+        self.assertIn("Bash(gh pr merge:*)", denied)
+        self.assertNotIn("Bash(*)", allowed)
+        self.assertNotIn("Bash", allowed)
+
+    def test_final_message_extracted_from_stream_json_or_absent(self):
+        log, out = self.root / "s.jsonl", self.root / "s.md"
+        log.write_text('{"type":"system"}\nnot json\n{"type":"result","result":"done: 2 commits"}\n',
+                       encoding="utf-8")
+        self.assertTrue(runner.write_final_message(log, out))
+        self.assertEqual(out.read_text(encoding="utf-8"), "done: 2 commits")
+        log.write_text('{"type":"assistant"}\n', encoding="utf-8")
+        out.unlink()
+        self.assertFalse(runner.write_final_message(log, out))
+        self.assertFalse(out.exists())
+        self.assertFalse(runner.write_final_message(self.root / "missing.jsonl", out))
+
     def test_config_rejects_unsafe_or_malformed_values(self):
         base = self.config.copy()
         for field, value in [("branch", "main"), ("branch", "master"), ("max_invocations", True),
                              ("max_invocations", 0), ("max_invocations", 7), ("max_invocations", 1.5),
-                             ("worktree", "relative"), ("codex_path", ""),
+                             ("worktree", "relative"), ("claude_path", ""), ("model", "gpt-6-astra"),
                              ("remote_url", "https://example.invalid/repo"), ("state_dir", str(self.work)),
                              ("state_dir", str(self.root / "alternate-state")),
                              ("state_dir", str(self.work / ".local/alternate-state"))]:
