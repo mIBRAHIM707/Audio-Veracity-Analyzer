@@ -144,6 +144,10 @@ class AnalysisService:
         self._lock = threading.Lock()
         self.model_id = model_id
 
+    @property
+    def detector_loaded(self):
+        return self._detector is not None
+
     def _get_detector(self):
         """Returns (detector, seconds spent loading it in this call). Called under the analysis lock."""
         if self._detector is not None:

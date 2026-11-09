@@ -85,7 +85,13 @@ and about 50,000 original clips, excluding codec copies.
   `undetermined`, typed errors with HTTP hints (413, 422, 202 job, 503 busy, 500),
   single-flight lock, explicit `uncalibrated_baseline` labelling. 19 Claude-authored
   tests; real smoke on two clips (1-window genuine → undetermined; 3-window synthetic
-  benchmark → synthetic, load 24.8 s, scoring 6.5 s). No accuracy claim. Next: 2.2 API.
+  benchmark → synthetic, load 24.8 s, scoring 6.5 s). No accuracy claim.
+- **Backlog 2.2 complete (9 Nov): local analysis API.** `services/api/app.py`
+  (FastAPI, pinned in `requirements-api.txt`): `POST /v1/analyze` (≤60 s sync, to
+  10 min as an in-memory job), `GET /v1/jobs/{id}`, `/healthz`, local
+  `/openapi.json`; 411/413/422/503/500 mapping; bounded uploads and job queue;
+  shutdown stops the worker. 7 Claude-authored tests. Jobs are not durable (5.2);
+  `/docs` pages off (CDN) is a recorded FR-A11 deviation. Next: 2.3 upload page.
 - **Backlog 1.1 complete (9 Nov, daily branch): prepared-output verifier.**
   `scripts/verify_prepared_output.py` re-derives every `prepare_audio.py` output
   without importing it: conditioning, metrics and flags (exact float sums), pause

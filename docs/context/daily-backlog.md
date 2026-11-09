@@ -50,7 +50,10 @@ items needing that data are listed at the end and stay out of the queue.
   (9 Nov): `services/inference/`, 19 Claude-authored tests, real-checkpoint smoke on
   two clips, independent review findings fixed. Open: file-mode mean vs EMA and
   partial-window evidence rule to record in the PRD.
-- [ ] 2.2 FastAPI upload/results contract; malformed/oversized input and failure cases.
+- [x] 2.2 FastAPI upload/results contract; malformed/oversized input and failure cases.
+  Evidence (9 Nov): `services/api/app.py`, pinned `requirements-api.txt`, 7
+  Claude-authored TestClient tests (sync, 202 job, errors 404/411/413/422/500/503,
+  shutdown), independent review fixed. In-memory jobs only; limits in its README.
 - [ ] 2.3 Local React/TypeScript upload/results view with uncalibrated baseline label.
 - [ ] 2.QA Actual public-pilot audio through browser/API/model; Playwright negative cases.
 
