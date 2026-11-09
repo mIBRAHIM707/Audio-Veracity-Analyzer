@@ -14,6 +14,8 @@ Text below describing Codex is historical.
 two hours from now (launches stop 15 minutes before the end), only when a person
 starts it. It uses the same daily ledger, attempt limit, lock, PAUSED/COMPLETE
 markers and allowlist, and refuses a window that would cross midnight.
+Sessions also enable Claude Code's PowerShell tool, and every Bash allow/deny rule is
+mirrored onto it, because this host's Git Bash is missing `usr\bin\bash.exe`.
 
 Runs the approved backlog in `docs/engineering/daily-development-prompt.md` on
 `feat/4-daily-development`, noon–2 PM Pakistan (UTC+05:00). No new invocation starts

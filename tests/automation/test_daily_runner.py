@@ -238,6 +238,18 @@ class SchedulerTests(unittest.TestCase):
         self.assertIn("Bash(gh pr merge:*)", denied)
         self.assertNotIn("Bash(*)", allowed)
         self.assertNotIn("Bash", allowed)
+        # Claude-authored (9 Nov 2026): PowerShell tool mirrors the same rules, never unrestricted.
+        for shell in ("Bash", "PowerShell"):
+            self.assertIn(f"{shell}(gh pr merge:*)", denied)
+            self.assertIn(f"{shell}(git push --force:*)", denied)
+        self.assertIn("PowerShell(git push origin HEAD:refs/heads/feat/4-daily-development)", allowed)
+        self.assertFalse(any(tool.startswith("PowerShell(git push") and "feat/4-daily-development" not in tool
+                             for tool in allowed))
+        self.assertNotIn("PowerShell", allowed)
+        self.assertNotIn("PowerShell(*)", allowed)
+        self.assertEqual(len([t for t in allowed if t.startswith("Bash(")]),
+                         len([t for t in allowed if t.startswith("PowerShell(")]))
+        self.assertEqual(runner.CHILD_ENV, {"CLAUDE_CODE_USE_POWERSHELL_TOOL": "1"})
 
     def test_final_message_extracted_from_stream_json_or_absent(self):
         log, out = self.root / "s.jsonl", self.root / "s.md"

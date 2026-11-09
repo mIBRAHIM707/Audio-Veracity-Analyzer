@@ -198,6 +198,16 @@ DENIED_TOOLS = (
 )
 
 
+def _with_powershell(rules: tuple[str, ...]) -> tuple[str, ...]:
+    """Mirror every Bash rule onto the PowerShell tool (Git Bash is broken on the host, 9 Nov 2026)."""
+    return rules + tuple("PowerShell" + rule[4:] for rule in rules if rule.startswith("Bash("))
+
+
+ALLOWED_TOOLS = _with_powershell(ALLOWED_TOOLS)
+DENIED_TOOLS = _with_powershell(DENIED_TOOLS)
+CHILD_ENV = {"CLAUDE_CODE_USE_POWERSHELL_TOOL": "1"}
+
+
 def build_command(config: dict) -> list[str]:
     """Headless Claude Code session; prompt on stdin, cwd is the worktree."""
     return [config["claude_path"], "-p", "--output-format", "stream-json", "--verbose",
@@ -252,6 +262,7 @@ def run_child(command: list[str], prompt: str, log_path: Path, timeout: float,
         with log_path.open("xb") as output:
             proc = subprocess.Popen(command, stdin=subprocess.PIPE, stdout=output,
                                     stderr=subprocess.STDOUT, cwd=cwd,
+                                    env={**os.environ, **CHILD_ENV},
                                     creationflags=(subprocess.CREATE_NO_WINDOW | 0x4) if os.name == "nt" else 0,
                                     start_new_session=os.name != "nt")
             # CREATE_SUSPENDED prevents even startup hooks spawning outside the job.

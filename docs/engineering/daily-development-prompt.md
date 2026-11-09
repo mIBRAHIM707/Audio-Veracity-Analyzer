@@ -12,6 +12,10 @@ Your shell access is an allowlist (git on this branch, uv run, npm/Playwright te
 gh pr/issue view, list, edit and issue create). A command outside it is denied
 without a prompt. Do not try to work around a denial; record it as a blocker in the
 daily report and move to the next ready task.
+Use the PowerShell tool for shell commands; the Bash tool cannot start on this host
+(Git Bash is missing `usr\bin\bash.exe`). The same allowlist applies to both. Run
+one allowed command per call from the worktree directory, without `cd`, `;`, pipes
+or redirection, so each call matches an allowlist rule.
 This supersedes historical no-commit/no-push notes only for this dedicated worktree
 and approved scope. No other checkout, pending user edit, or participant record is
 yours to change. Runtime instructions appended below give today's cutoff.
