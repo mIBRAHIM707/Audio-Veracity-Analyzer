@@ -62,6 +62,9 @@ items needing that data are listed at the end and stay out of the queue.
 
 ## 3 — Shared audio path (FR-D6/D12/D13, FR-I3/I4)
 - [ ] 3.1 Shared offline/live conditioning parity; speaker-turn boundary contract.
+  Progress (9 Nov): file-mode parity tests in `tests/unit/test_conditioning_parity.py`
+  (prepare vs analysis service, 5 formats, refusals, gain divergence recorded).
+  Remaining: speaker-turn boundary contract and live/streaming-side parity.
 - [ ] 3.2 VAD, speech-only windows, no-speech/partial-window semantics.
 - [ ] 3.3 G.711/GSM and AMR-NB file codec pipeline; loss/jitter and source lineage.
 - [ ] 3.4 Other PRD codec/noise paths with bounded reproducible fixtures.

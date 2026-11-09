@@ -92,6 +92,14 @@ and about 50,000 original clips, excluding codec copies.
   `/openapi.json`; 411/413/422/503/500 mapping; bounded uploads and job queue;
   shutdown stops the worker. 7 Claude-authored tests. Jobs are not durable (5.2);
   `/docs` pages off (CDN) is a recorded FR-A11 deviation. Next: 2.3 upload page.
+- **Backlog 3.1 in progress (9 Nov): offline/serving conditioning parity.**
+  `tests/unit/test_conditioning_parity.py` (Claude-authored) runs one WAV through
+  `prepare_audio.py --condition` and the analysis service: identical canonical PCM
+  hash and sample count for 16/8/48 kHz mono and 44.1/22.05 kHz stereo; prepared clip
+  offsets address the service's samples; both paths refuse PCM24, 3-channel and
+  6 kHz input. Recorded divergence: the service applies no peak normalization and
+  skips a final tail under 1.5 s. Open for 3.1: speaker-turn boundary contract.
+  2.3 is blocked on frontend dependencies (see daily report).
 - **Backlog 1.1 complete (9 Nov, daily branch): prepared-output verifier.**
   `scripts/verify_prepared_output.py` re-derives every `prepare_audio.py` output
   without importing it: conditioning, metrics and flags (exact float sums), pause
