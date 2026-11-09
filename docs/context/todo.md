@@ -98,13 +98,14 @@ independent preparation. Do not treat elapsed time as approval.
   document missing identity/lineage that prevents final training-set assignment.
   Spec: `_bmad-output/implementation-artifacts/spec-split-proposals.md` (six gap
   decisions recorded 4 Oct).
-  - [ ] 9a. Implementation and Claude-authored baseline tests (`data/manifest/`,
+  - [x] 9a. Implementation and Claude-authored baseline tests (`data/manifest/`,
     `tests/unit/test_split_proposals.py`), real proposal run on the three local
     reports, validator pass. First run (v1) passed all checks but exposed that the
     CSALT synthetic benchmark shares all 17 speakers with CSALT genuine, so a
     `benchmark_only` partition swallowed every Urdu genuine clip. Decision 7 in the
-    spec: benchmark rows follow their speaker and stay ineligible by flag. v2 run in
-    progress, data-engineer role.
+    spec: benchmark rows follow their speaker and stay ineligible by flag. Done
+    9 Nov (backlog 1.3/1.4): schema-2 proposal on the FR-D11-migrated reports is
+    valid; see `handoffs/policy-migration.md`.
   - [x] 9d. Intake follow-up from 9a: two CSALT genuine source hashes appear under
     two different publisher speaker folders (four duplicated clip hashes). Done
     9 Nov (backlog 1.3): `csalt_pilot.annotate_duplicates` marks new intakes with

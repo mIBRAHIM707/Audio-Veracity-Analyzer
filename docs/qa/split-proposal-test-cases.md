@@ -46,6 +46,6 @@ overlap, publication, no-overwrite and fault injection, input bounds, CLI exit c
 take hashed allocation slots; not material for current CSALT data.
 
 **Limitations.** Python 3.12 cross-version stability not run (repository pins
-3.11). Concurrent `mkdir` races are not tested. Real proposal rerun under schema 2
-is backlog 1.4. Nothing here establishes identity, consent, FR-D11 compliance or
+3.11). Concurrent `mkdir` races are not tested. The real schema-2 rerun (backlog
+1.4) is recorded in `docs/context/handoffs/policy-migration.md`. Nothing here establishes identity, consent, FR-D11 compliance or
 eligibility.

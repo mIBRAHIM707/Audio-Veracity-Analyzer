@@ -126,7 +126,8 @@ bytes) and `duplicate_original_speakers` (distinct speaker folders, empty when
 one); the summary reports `duplicate_original_hashes`,
 `cross_speaker_duplicate_hashes` and `duplicate_selected_files`. Publisher labels
 are kept and nothing is quarantined, but speaker identity for those recordings is
-uncertain. The split proposer merges hash-linked speakers into one group, so the
+uncertain: do not use them as voice-cloning references, even after the FR-D11
+policy migration, until a human resolves which speaker folder is correct. The split proposer merges hash-linked speakers into one group, so the
 copies cannot straddle partitions. Existing v2 manifests are not rewritten.
 
 ## Separate existing-synthetic benchmark

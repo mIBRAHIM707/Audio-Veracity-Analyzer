@@ -28,7 +28,7 @@ items needing that data are listed at the end and stay out of the queue.
   real read-only PASS on three external prepared outputs, independent review
   findings fixed. Exact-mode pilot v2 lacks its input manifest; fixtures only.
 - [x] 1.2 Punjabi importer follow-ups and meaningful Windows fixture cleanup fix.
-  Evidence (9 Nov): review items L3/L4/L7/L8 closed, 9 Claude-authored pnb tests
+  Evidence (9 Nov): review items L3/L4/L7/L8 closed, 8 Claude-authored pnb tests
   plus 4 cleanup tests; tests/pnb 36 OK twice, tests/unit 167 OK twice; real pilot
   verifier PASS under the new selection rule; independent review lows fixed.
 - [x] 1.3 Split cases (Claude-authored since Astra access ended) and independent
@@ -39,7 +39,10 @@ items needing that data are listed at the end and stay out of the queue.
   Evidence (9 Nov): `migrate_policy.py` + 8 Claude-authored tests, review fixed; 3 manifests
   migrated, re-prepared (450/50/187 clips) and verified PASS; schema-2 proposal
   validated (687 rows, zero crossings, 637 trainable). Originals and v1 kept.
-- [ ] 1.QA Review evidence and remaining source/identity limitations.
+- [x] 1.QA Review evidence and remaining source/identity limitations.
+  Evidence (9 Nov): `docs/qa/phase-1-qa.md`, independent conditional pass as
+  infrastructure; no data/product acceptance; medium documentation findings fixed,
+  PRD FR-D11 wording and duplicate-identity cloning rule sent to Tughral.
 
 ## 2 — Working upload/scoring prototype (FR-A1/A2, FR-U4)
 - [ ] 2.1 Bounded analysis service wraps existing trained CPU checkpoint; no runtime download.

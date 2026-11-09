@@ -115,8 +115,8 @@ and about 50,000 original clips, excluding codec copies.
   Split proposal v2 (schema 2, seed `ava-split-2026-11-09`): 687 rows, 23 speakers
   in 22 groups, train/dev/test 520/75/92 rows, 637 trainable, zero crossings. This
   supersedes the v1 proposals for planning; it is a proposal, not an accepted
-  split. CSALT publisher synthetic rows stay benchmark-only, so Urdu speakers are
-  genuine-only in training until AVA-generated fakes exist (D11 shortcut risk;
+  split. CSALT publisher synthetic rows stay benchmark-only, so all 637 trainable
+  rows (Urdu and Punjabi) are genuine until AVA-generated fakes exist (D11 shortcut risk;
   deviation from todo 9e wording awaits Tughral). Use the `-frd11-r2` outputs.
   See `handoffs/policy-migration.md`.
 - **Todo 8b complete: collection preparation written; 8a and 8c blocked on the

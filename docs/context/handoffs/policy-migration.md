@@ -27,8 +27,10 @@ sentence "public-corpus genuine and synthetic clips are training-eligible" would
 make the CSALT publisher synthetic clips trainable. They stay benchmark-only here:
 their generator version, prompt and reference audio are unknown (FR-D2), and the
 licence register already excluded them from AVA training. Consequence: until AVA
-generates its own fakes, the 17 CSALT Urdu speakers appear in training as genuine
-only, which is the genuine-only shortcut D11 warns about.
+generates its own fakes, every trainable row (Urdu and Punjabi) is genuine, which
+is the genuine-only shortcut D11 warns about. The two CSALT recordings published
+under two speaker folders each are trainable but must not be used as cloning
+references until their identity is resolved.
 
 An independent review (conditional pass, no blockers) led to these changes; the
 first real run with the pre-review code wrote `-frd11` directories, which are

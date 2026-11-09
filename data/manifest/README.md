@@ -80,7 +80,8 @@ It exits 1 on any failure or unreadable input and never modifies the proposal.
 - Schema version 1 (before decision 7) moved every speaker with a benchmark row
   into a `benchmark_only` partition; the CSALT synthetic benchmark shares all 17
   speakers with CSALT genuine, so v1 left no Urdu genuine clips for train/dev/test.
-  The external v1 proposals are kept as evidence; a v2 rerun is backlog 1.4.
+  The external v1 proposals are kept as evidence; the schema-2 rerun (backlog 1.4,
+  9 Nov) is in `docs/context/handoffs/policy-migration.md`.
 - Benchmark rows now share a partition with genuine rows of the same speaker, so a
   model trained on that partition must exclude them by flag; consumers must read
   `training_eligible`/`benchmark_only`, not the partition name.

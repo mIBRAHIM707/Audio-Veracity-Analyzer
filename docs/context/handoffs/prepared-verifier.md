@@ -2,7 +2,7 @@
 
 - Task: backlog 1.1 / todo 7d second bullet, from the 7c review medium finding
   (the 7c verifier checked tiling and counted flags instead of recomputing them).
-  Issue #11 (ingest and normalize). Requirements: FR-D6 (shared conditioning),
+  Issue #11 (ingest and normalize). Requirements: FR-D12 (one conditioning path, partial),
   FR-D8 (lineage), FR-D13 (signal checks), FR-E3/FR-E6 (nothing private in Git).
 - Author: Claude (Claude Code, Opus 5.5), scheduled session 9 November 2026.
   Tests are Claude-authored and labelled so; no Astra design was used.
