@@ -72,8 +72,10 @@ items needing that data are listed at the end and stay out of the queue.
   and provision them locally (or approve an energy-based interim VAD).
 - [ ] 3.3 G.711/GSM and AMR-NB file codec pipeline; loss/jitter and source lineage.
   Progress (9 Nov): `data/prepare/codecs.py` G.711 mu/A-law + 8 kHz roundtrip with
-  lineage; 10 Claude-authored tests (exhaustive audioop oracle). Remaining: GSM,
-  AMR-NB (need a codec library; none installed), loss/jitter, manifest wiring.
+  lineage; 10 Claude-authored tests (exhaustive audioop oracle). Seeded 0-5 % packet
+  loss with concealment; 12 Claude-authored tests. Remaining: GSM, AMR-NB (need a
+  codec library; none installed), jitter, per-clip rate/seed derivation, concealment
+  fade-out, manifest wiring.
 - [ ] 3.4 Other PRD codec/noise paths with bounded reproducible fixtures.
 - [ ] 3.QA Sample-level parity, malformed formats and immutable-original checks.
 

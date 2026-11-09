@@ -5,7 +5,8 @@ reference code (the same tables as CPython's `audioop`, which tests use as an or
 `telephone_roundtrip` takes canonical 16 kHz PCM16 to the 8 kHz telephone band, encodes
 and decodes it, and returns 8 kHz PCM16; bring it back to the model grid through
 `conditioning.canonicalize(decoded, 8000, 1)` so the shared path does the upsampling.
-GSM, AMR-NB, packet loss and jitter are not implemented here yet.
+`drop_packets` applies seeded 20 ms packet loss (0-5 %, PRD FR-D6) with concealment.
+GSM, AMR-NB and jitter are not implemented here yet.
 Inputs must be `bytes` (not bytearray/memoryview), matching `conditioning.py`.
 """
 import hashlib
@@ -90,16 +91,67 @@ def decode(encoded, law):
     return (_ulaw_decode(codes) if law == 'ulaw' else _alaw_decode(codes)).astype('<i2').tobytes()
 
 
-def telephone_roundtrip(canonical, law, *, rate=16000):
-    """Canonical PCM16 at `rate` -> soxr HQ 8 kHz -> G.711 encode/decode -> 8 kHz PCM16.
-    Returns (decoded bytes, lineage record). Raises ValueError on invalid input."""
+FRAME_SAMPLES = 160  # 20 ms G.711 packet at 8 kHz
+MAX_LOSS_RATE = 0.05  # PRD FR-D6: randomized packet loss from 0 to 5%
+CONCEALMENTS = ('silence', 'repeat')
+_SILENCE_CODE = {'ulaw': 0xFF, 'alaw': 0xD5}
+
+
+def drop_packets(encoded, law, loss_rate, seed, concealment='repeat'):
+    """Seeded Bernoulli loss of 20 ms G.711 packets, concealed by the silence code or by
+    repeating the previous received packet (silence when none precedes). Returns
+    (concealed bytes, record). A final short packet is a packet too."""
     _check_law(law)
+    codes = _codes(encoded).astype(np.uint8)
+    if concealment not in CONCEALMENTS:
+        raise ValueError(f'concealment must be one of {CONCEALMENTS}')
+    if isinstance(loss_rate, bool) or not isinstance(loss_rate, (int, float)) \
+            or not 0 <= loss_rate <= MAX_LOSS_RATE:
+        raise ValueError(f'loss_rate must be a number from 0 to {MAX_LOSS_RATE}')
+    if type(seed) is not int or seed < 0:
+        raise ValueError('seed must be a non-negative integer for reproducible loss')
+    count = -(-len(codes) // FRAME_SAMPLES)
+    lost = np.random.default_rng(seed).random(count) < loss_rate
+    output, previous = codes.copy(), None
+    for index in range(count):
+        frame = slice(index * FRAME_SAMPLES, (index + 1) * FRAME_SAMPLES)
+        if not lost[index]:
+            previous = codes[frame]
+            continue
+        width = len(output[frame])
+        if concealment == 'repeat' and previous is not None:
+            output[frame] = np.resize(previous, width)
+        else:
+            output[frame] = _SILENCE_CODE[law]
+    indices = np.flatnonzero(lost).astype('<i4').tobytes()
+    return output.tobytes(), {
+        'loss_rate': float(loss_rate), 'seed': seed, 'model': 'bernoulli_per_packet',
+        'rng': 'numpy.random.default_rng(seed).random(packets) < loss_rate',
+        'numpy_version': np.__version__,
+        'packet_ms': 20, 'packets': count, 'lost_packets': int(lost.sum()),
+        'lost_indices_sha256': hashlib.sha256(indices).hexdigest(), 'concealment': concealment,
+    }
+
+
+def telephone_roundtrip(canonical, law, *, rate=16000, loss_rate=0.0, seed=None,
+                        concealment='repeat'):
+    """Canonical PCM16 at `rate` -> soxr HQ 8 kHz -> G.711 encode -> optional seeded packet
+    loss -> decode -> 8 kHz PCM16. Returns (decoded bytes, lineage record).
+    Raises ValueError on invalid input. Jitter is not modelled yet (record says None)."""
+    _check_law(law)
+    if concealment not in CONCEALMENTS:
+        raise ValueError(f'concealment must be one of {CONCEALMENTS}')
     if type(rate) is not int or not TELEPHONE_RATE <= rate <= 192000:
         raise ValueError('Expected integer input rate from 8000 to 192000')
     samples = _pcm(canonical).astype(np.float64)
     narrow, saturated = resample_to_pcm16(samples, rate, TELEPHONE_RATE)
     encoded = encode(narrow, law)
-    decoded = decode(encoded, law)
+    loss = None
+    if loss_rate or seed is not None:
+        received, loss = drop_packets(encoded, law, loss_rate, seed, concealment)
+    else:
+        received = encoded
+    decoded = decode(received, law)
     return decoded, {
         'codec': f'g711_{law}', 'codec_implementation': G711_IMPLEMENTATION,
         'codec_rate': TELEPHONE_RATE, 'input_rate': rate,
@@ -109,5 +161,5 @@ def telephone_roundtrip(canonical, law, *, rate=16000):
         'saturated_samples': saturated, 'sample_count': len(decoded) // 2,
         'encoded_sha256': hashlib.sha256(encoded).hexdigest(),
         'decoded_pcm_sha256': hashlib.sha256(decoded).hexdigest(),
-        'packet_loss': None, 'jitter': None, **library_versions(),
+        'packet_loss': loss, 'jitter': None, **library_versions(),
     }

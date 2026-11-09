@@ -105,8 +105,11 @@ tables, checked exhaustively against CPython 3.11 `audioop`) and
 `telephone_roundtrip(canonical, law)`: soxr HQ to 8 kHz, encode, decode, return
 8 kHz PCM16 plus a lineage record (codec, rates, saturation count, encoded and
 decoded hashes). Return to the model grid with `canonicalize(decoded, 8000, 1)`.
-It is a library only: not yet wired into `prepare_audio.py`, and GSM, AMR-NB,
-packet loss and jitter are not implemented.
+`drop_packets` (or `telephone_roundtrip(..., loss_rate=, seed=, concealment=)`)
+applies seeded per-packet (20 ms) loss from 0 to 5 % with silence or
+repeat-last-packet concealment and records seed, counts and a lost-index hash.
+It is a library only: not yet wired into `prepare_audio.py`, and GSM, AMR-NB and
+jitter are not implemented.
 
 `tests/unit/test_conditioning_parity.py` checks that this preparation path and the
 analysis service (`services/inference/`) condition the same WAV to identical
@@ -115,7 +118,7 @@ analysis service (`services/inference/`) condition the same WAV to identical
 ## Verification
 
 ```text
-uv run --no-project --python 3.11 --with-requirements requirements-audio.txt python -m unittest tests.unit.test_g711_codec tests.unit.test_conditioning_parity -v
+uv run --no-project --python 3.11 --with-requirements requirements-audio.txt python -m unittest tests.unit.test_g711_codec tests.unit.test_packet_loss tests.unit.test_conditioning_parity -v
 uv run --no-project --python 3.11 python -m unittest discover -s tests/unit -p test_audio_preparation.py -v
 uv run --no-project --python 3.11 --with-requirements requirements-audio.txt python -m unittest discover -s tests/unit -p test_audio_conditioning.py -v
 ```
