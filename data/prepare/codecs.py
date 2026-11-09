@@ -97,6 +97,26 @@ CONCEALMENTS = ('silence', 'repeat')
 _SILENCE_CODE = {'ulaw': 0xFF, 'alaw': 0xD5}
 
 
+LOSS_DERIVATION = 'ava-packet-loss-v1'
+
+
+def derive_loss(master_seed, clip_id):
+    """Deterministic per-clip loss plan from a master seed and the exact manifest clip ID
+    string (not Unicode-normalized). The rate is approximately uniform in
+    [0, MAX_LOSS_RATE] at 1e-6 resolution (PRD FR-D6 "randomized"), so clips do not
+    share one loss pattern. Pass the plan to telephone_roundtrip(loss_plan=...), which
+    records every field."""
+    if type(master_seed) is not int or master_seed < 0:
+        raise ValueError('master_seed must be a non-negative integer')
+    if not isinstance(clip_id, str) or not clip_id:
+        raise ValueError('clip_id must be a nonempty string')
+    digest = hashlib.sha256(f'{LOSS_DERIVATION}\0{master_seed}\0{clip_id}'.encode()).digest()
+    rate_draw = int.from_bytes(digest[:8], 'big') / 2 ** 64
+    return {'derivation': LOSS_DERIVATION, 'master_seed': master_seed, 'clip_id': clip_id,
+            'loss_rate': min(round(rate_draw * MAX_LOSS_RATE, 6), MAX_LOSS_RATE),
+            'seed': int.from_bytes(digest[8:16], 'big')}
+
+
 def drop_packets(encoded, law, loss_rate, seed, concealment='repeat'):
     """Seeded Bernoulli loss of 20 ms G.711 packets, concealed by the silence code or by
     repeating the previous received packet (silence when none precedes). Returns
@@ -134,7 +154,7 @@ def drop_packets(encoded, law, loss_rate, seed, concealment='repeat'):
 
 
 def telephone_roundtrip(canonical, law, *, rate=16000, loss_rate=0.0, seed=None,
-                        concealment='repeat'):
+                        concealment='repeat', loss_plan=None):
     """Canonical PCM16 at `rate` -> soxr HQ 8 kHz -> G.711 encode -> optional seeded packet
     loss -> decode -> 8 kHz PCM16. Returns (decoded bytes, lineage record).
     Raises ValueError on invalid input. Jitter is not modelled yet (record says None)."""
@@ -147,7 +167,16 @@ def telephone_roundtrip(canonical, law, *, rate=16000, loss_rate=0.0, seed=None,
     narrow, saturated = resample_to_pcm16(samples, rate, TELEPHONE_RATE)
     encoded = encode(narrow, law)
     loss = None
-    if loss_rate or seed is not None:
+    if loss_plan is not None:
+        if loss_rate or seed is not None:
+            raise ValueError('Give either loss_plan or loss_rate/seed, not both')
+        if not isinstance(loss_plan, dict) or loss_plan != derive_loss(
+                loss_plan.get('master_seed'), loss_plan.get('clip_id')):
+            raise ValueError('loss_plan must come unchanged from derive_loss')
+        received, loss = drop_packets(encoded, law, loss_plan['loss_rate'], loss_plan['seed'], concealment)
+        loss.update(derivation=loss_plan['derivation'], master_seed=loss_plan['master_seed'],
+                    clip_id=loss_plan['clip_id'])
+    elif loss_rate or seed is not None:
         received, loss = drop_packets(encoded, law, loss_rate, seed, concealment)
     else:
         received = encoded

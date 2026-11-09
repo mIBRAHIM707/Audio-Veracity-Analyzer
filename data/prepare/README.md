@@ -108,6 +108,9 @@ decoded hashes). Return to the model grid with `canonicalize(decoded, 8000, 1)`.
 `drop_packets` (or `telephone_roundtrip(..., loss_rate=, seed=, concealment=)`)
 applies seeded per-packet (20 ms) loss from 0 to 5 % with silence or
 repeat-last-packet concealment and records seed, counts and a lost-index hash.
+`derive_loss(master_seed, clip_id)` gives each clip its own plan (rate uniform
+0-5 %, seed); `telephone_roundtrip(..., loss_plan=plan)` records the derivation
+version, master seed and exact manifest clip ID so the chain can be rebuilt.
 It is a library only: not yet wired into `prepare_audio.py`, and GSM, AMR-NB and
 jitter are not implemented.
 

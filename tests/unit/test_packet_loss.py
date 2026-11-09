@@ -7,10 +7,11 @@ import unittest
 
 import numpy as np
 
-from data.prepare.codecs import (FRAME_SAMPLES, MAX_LOSS_RATE, LAWS, decode, drop_packets, encode,
-                                 telephone_roundtrip)
+from data.prepare.codecs import (FRAME_SAMPLES, MAX_LOSS_RATE, LAWS, decode, derive_loss, drop_packets,
+                                 encode, telephone_roundtrip)
 
 SILENCE = {'ulaw': 0xFF, 'alaw': 0xD5}
+PINNED_DERIVATION = (0.049792, 1167741683207843127)  # regression pin captured 9 Nov 2026
 
 
 def frames(count, extra=0):
@@ -122,6 +123,39 @@ class DropPacketsTests(unittest.TestCase):
                     drop_packets(*args, **kwargs)
 
 
+class DeriveLossTests(unittest.TestCase):
+    def test_derivation_is_deterministic_bounded_and_spread(self):
+        plans = [derive_loss(2026, f'clip-{i}') for i in range(2000)]
+        self.assertEqual(plans, [derive_loss(2026, f'clip-{i}') for i in range(2000)])
+        draws = [(plan['loss_rate'], plan['seed']) for plan in plans]
+        rates = np.array([rate for rate, _ in draws])
+        self.assertTrue(np.all((rates >= 0) & (rates <= MAX_LOSS_RATE)))
+        self.assertAlmostEqual(float(rates.mean()), MAX_LOSS_RATE / 2, delta=0.002)  # uniform mean
+        self.assertLess(float(rates.min()), 0.002)
+        self.assertGreater(float(rates.max()), 0.048)
+        self.assertEqual(len({seed for _, seed in draws}), 2000)  # no shared loss pattern
+        for rate, seed in draws[:50]:  # every derived pair is accepted by drop_packets
+            drop_packets(frames(5), 'ulaw', rate, seed)
+
+    def test_master_seed_and_clip_id_both_change_the_draw(self):
+        self.assertNotEqual(derive_loss(1, 'a'), derive_loss(2, 'a'))
+        self.assertNotEqual(derive_loss(1, 'a'), derive_loss(1, 'b'))
+        # Separator prevents ambiguous concatenation such as (1, '2x') versus (12, 'x').
+        self.assertNotEqual(derive_loss(1, '2x'), derive_loss(12, 'x'))
+
+    def test_derivation_is_pinned(self):
+        # Golden value (9 Nov 2026): changing the derivation would break recorded chains.
+        plan = derive_loss(2026, 'clip-0')
+        self.assertEqual((plan['loss_rate'], plan['seed']), PINNED_DERIVATION)
+        self.assertEqual(plan['derivation'], 'ava-packet-loss-v1')
+
+    def test_invalid_derivation_inputs_are_rejected(self):
+        for master, clip in ((-1, 'a'), (1.0, 'a'), (True, 'a'), (None, 'a'), (1, ''), (1, None), (1, 5)):
+            with self.subTest(master=master, clip=clip):
+                with self.assertRaises(ValueError):
+                    derive_loss(master, clip)
+
+
 class RoundtripLossTests(unittest.TestCase):
     def test_roundtrip_records_loss_and_matches_explicit_chain(self):
         t = np.arange(16000 * 3) / 16000
@@ -146,6 +180,31 @@ class RoundtripLossTests(unittest.TestCase):
             telephone_roundtrip(silence, 'alaw', loss_rate=0.01)
         with self.assertRaises(ValueError):  # validated even when no loss is requested
             telephone_roundtrip(silence, 'alaw', concealment='interpolate')
+
+    def test_loss_plan_is_recorded_and_rebuilds_the_same_chain(self):
+        t = np.arange(16000 * 2) / 16000
+        source = np.rint(7000 * np.sin(2 * np.pi * 300 * t)).astype('<i2').tobytes()
+        plan = derive_loss(99, 'csalt/fictional-0001')
+        decoded, record = telephone_roundtrip(source, 'alaw', loss_plan=plan)
+        loss = record['packet_loss']
+        for key in ('derivation', 'master_seed', 'clip_id', 'loss_rate', 'seed'):
+            self.assertEqual(loss[key], plan[key])
+        rebuilt_plan = derive_loss(loss['master_seed'], loss['clip_id'])  # from the record alone
+        again, again_record = telephone_roundtrip(source, 'alaw', loss_plan=rebuilt_plan,
+                                                  concealment=loss['concealment'])
+        self.assertEqual(again, decoded)
+        self.assertEqual(again_record['decoded_pcm_sha256'], record['decoded_pcm_sha256'])
+
+    def test_loss_plan_rejects_tampering_and_mixed_arguments(self):
+        silence = np.zeros(1600, dtype='<i2').tobytes()
+        plan = derive_loss(1, 'a')
+        for bad in ({**plan, 'loss_rate': 0.05}, {**plan, 'seed': 1}, {**plan, 'master_seed': -1},
+                    {k: v for k, v in plan.items() if k != 'clip_id'}, [plan], 'plan'):
+            with self.subTest(bad=bad):
+                with self.assertRaises(ValueError):
+                    telephone_roundtrip(silence, 'ulaw', loss_plan=bad)
+        with self.assertRaises(ValueError):
+            telephone_roundtrip(silence, 'ulaw', loss_plan=plan, seed=3)
 
     def test_seed_without_loss_records_zero_lost_packets(self):
         silence = np.zeros(1600, dtype='<i2').tobytes()

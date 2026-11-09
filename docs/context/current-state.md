@@ -103,7 +103,8 @@ and about 50,000 original clips, excluding codec copies.
 - **Backlog 3.3 in progress (9 Nov): G.711 file codec.** `data/prepare/codecs.py`
   mu-law/A-law encode/decode (exhaustively equal to CPython 3.11 `audioop`) and an
   8 kHz telephone roundtrip with lineage; seeded 0-5 % 20 ms packet loss with
-  silence/repeat concealment; 22 Claude-authored tests. Library only: GSM, AMR-NB,
+  silence/repeat concealment; recorded per-clip loss plans (`derive_loss`);
+  28 Claude-authored tests. Library only: GSM, AMR-NB,
   jitter and manifest wiring remain. 3.2 VAD is blocked on an
   unprovisioned VAD dependency/model.
 - **Backlog 1.1 complete (9 Nov, daily branch): prepared-output verifier.**
