@@ -26,6 +26,23 @@ def _encode(samples):
     return np.clip(np.rint(samples), -32768, 32767).astype('<i2').tobytes()
 
 
+def resample_to_pcm16(samples, rate: int, target: int):
+    """Shared band-limit and quantize step: soxr HQ from `rate` to `target` (bypass when
+    equal), count out-of-range samples before clipping, round-half-even and clip to PCM16.
+    Returns (PCM16 bytes, saturated sample count). Used by canonicalize and codecs."""
+    if rate != target:
+        samples = soxr.resample(samples, rate, target, quality='HQ')
+    if not len(samples):
+        raise ValueError('Resampling produced no samples')
+    saturated = int(np.count_nonzero((samples < -32768) | (samples > 32767)))
+    return _encode(samples), saturated
+
+
+def library_versions():
+    return {'numpy_version': np.__version__, 'soxr_version': soxr.__version__,
+            'libsoxr_version': soxr.__libsoxr_version__}
+
+
 def canonicalize(raw: bytes, rate: int, channels: int):
     """Downmix and band-limit native PCM16; no gain normalization here."""
     if type(rate) is not int or not 8000 <= rate <= 192000:
@@ -37,23 +54,17 @@ def canonicalize(raw: bytes, rate: int, channels: int):
     native_near_full = float(np.max(np.mean(np.abs(native) / 32768 >= .999, axis=0)))
     samples = native.mean(axis=1)
     native_count = len(samples)
-    if rate != RATE:
-        samples = soxr.resample(samples, rate, RATE, quality='HQ')
-    if not len(samples):
-        raise ValueError('Resampling produced no samples')
-    saturated = int(np.count_nonzero((samples < -32768) | (samples > 32767)))
-    result = _encode(samples)
+    result, saturated = resample_to_pcm16(samples, rate, RATE)
     return result, {
         'input_rate': rate, 'input_channels': channels,
-        'input_sample_count': native_count, 'output_sample_count': len(samples),
+        'input_sample_count': native_count, 'output_sample_count': len(result) // 2,
         'output_rate': RATE, 'resampler': 'bypass' if rate == RATE else 'soxr_hq',
         'downmix': 'arithmetic_mean' if channels == 2 else 'bypass',
         'quantization': 'round_nearest_even_clip_pcm16',
         'saturated_samples': saturated,
         'native_near_full_scale_fraction': native_near_full,
         'canonical_pcm_sha256': hashlib.sha256(result).hexdigest(),
-        'numpy_version': np.__version__, 'soxr_version': soxr.__version__,
-        'libsoxr_version': soxr.__libsoxr_version__,
+        **library_versions(),
     }
 
 

@@ -98,9 +98,24 @@ new cuts have not thereby passed listening QA. Use sampled/targeted review under
 FR-D13. Noise scoring, ASR, codec augmentation, speaker splits and end-to-end
 train/serve parity remain subsequent work.
 
+## G.711 telephone codec (partial backlog 3.3)
+
+`codecs.py` provides G.711 mu-law and A-law `encode`/`decode` (Sun reference
+tables, checked exhaustively against CPython 3.11 `audioop`) and
+`telephone_roundtrip(canonical, law)`: soxr HQ to 8 kHz, encode, decode, return
+8 kHz PCM16 plus a lineage record (codec, rates, saturation count, encoded and
+decoded hashes). Return to the model grid with `canonicalize(decoded, 8000, 1)`.
+It is a library only: not yet wired into `prepare_audio.py`, and GSM, AMR-NB,
+packet loss and jitter are not implemented.
+
+`tests/unit/test_conditioning_parity.py` checks that this preparation path and the
+analysis service (`services/inference/`) condition the same WAV to identical
+16 kHz samples and coordinates; the service applies no peak normalization.
+
 ## Verification
 
 ```text
+uv run --no-project --python 3.11 --with-requirements requirements-audio.txt python -m unittest tests.unit.test_g711_codec tests.unit.test_conditioning_parity -v
 uv run --no-project --python 3.11 python -m unittest discover -s tests/unit -p test_audio_preparation.py -v
 uv run --no-project --python 3.11 --with-requirements requirements-audio.txt python -m unittest discover -s tests/unit -p test_audio_conditioning.py -v
 ```

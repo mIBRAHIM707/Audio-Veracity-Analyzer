@@ -100,6 +100,11 @@ and about 50,000 original clips, excluding codec copies.
   6 kHz input. Recorded divergence: the service applies no peak normalization and
   skips a final tail under 1.5 s. Open for 3.1: speaker-turn boundary contract.
   2.3 is blocked on frontend dependencies (see daily report).
+- **Backlog 3.3 in progress (9 Nov): G.711 file codec.** `data/prepare/codecs.py`
+  mu-law/A-law encode/decode (exhaustively equal to CPython 3.11 `audioop`) and an
+  8 kHz telephone roundtrip with lineage; 10 Claude-authored tests. Library only:
+  GSM, AMR-NB, loss/jitter and manifest wiring remain. 3.2 VAD is blocked on an
+  unprovisioned VAD dependency/model.
 - **Backlog 1.1 complete (9 Nov, daily branch): prepared-output verifier.**
   `scripts/verify_prepared_output.py` re-derives every `prepare_audio.py` output
   without importing it: conditioning, metrics and flags (exact float sums), pause

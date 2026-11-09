@@ -64,9 +64,16 @@ items needing that data are listed at the end and stay out of the queue.
 - [ ] 3.1 Shared offline/live conditioning parity; speaker-turn boundary contract.
   Progress (9 Nov): file-mode parity tests in `tests/unit/test_conditioning_parity.py`
   (prepare vs analysis service, 5 formats, refusals, gain divergence recorded).
-  Remaining: speaker-turn boundary contract and live/streaming-side parity.
+  Remaining: speaker-turn boundary contract (not defined in PRD/architecture; needs
+  a scope definition) and live/streaming-side parity.
 - [ ] 3.2 VAD, speech-only windows, no-speech/partial-window semantics.
+  **Blocked 9 Nov:** no VAD package or Silero weights are installed; adding them is a
+  dependency/model download outside the runner window rules. Needs a human to pin
+  and provision them locally (or approve an energy-based interim VAD).
 - [ ] 3.3 G.711/GSM and AMR-NB file codec pipeline; loss/jitter and source lineage.
+  Progress (9 Nov): `data/prepare/codecs.py` G.711 mu/A-law + 8 kHz roundtrip with
+  lineage; 10 Claude-authored tests (exhaustive audioop oracle). Remaining: GSM,
+  AMR-NB (need a codec library; none installed), loss/jitter, manifest wiring.
 - [ ] 3.4 Other PRD codec/noise paths with bounded reproducible fixtures.
 - [ ] 3.QA Sample-level parity, malformed formats and immutable-original checks.
 
