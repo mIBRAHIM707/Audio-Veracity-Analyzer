@@ -45,7 +45,11 @@ items needing that data are listed at the end and stay out of the queue.
   PRD FR-D11 wording and duplicate-identity cloning rule sent to Tughral.
 
 ## 2 — Working upload/scoring prototype (FR-A1/A2, FR-U4)
-- [ ] 2.1 Bounded analysis service wraps existing trained CPU checkpoint; no runtime download.
+- [x] 2.1 Bounded analysis service wraps existing trained CPU checkpoint; no runtime download.
+  (The checkpoint is the pretrained AntiDeepfake baseline, not AVA-trained.) Evidence
+  (9 Nov): `services/inference/`, 19 Claude-authored tests, real-checkpoint smoke on
+  two clips, independent review findings fixed. Open: file-mode mean vs EMA and
+  partial-window evidence rule to record in the PRD.
 - [ ] 2.2 FastAPI upload/results contract; malformed/oversized input and failure cases.
 - [ ] 2.3 Local React/TypeScript upload/results view with uncalibrated baseline label.
 - [ ] 2.QA Actual public-pilot audio through browser/API/model; Playwright negative cases.

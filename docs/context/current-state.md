@@ -78,6 +78,14 @@ and about 50,000 original clips, excluding codec copies.
 
 ## Implemented locally
 
+- **Backlog 2.1 complete (9 Nov): bounded analysis service.** `services/inference/`
+  analyses one PCM16 WAV with the pinned pretrained AntiDeepfake MMS-300M CPU
+  baseline (hash-verified local load, no downloads): shared conditioning to 16 kHz,
+  4 s windows every 2 s, mean of full windows, fewer than two full windows →
+  `undetermined`, typed errors with HTTP hints (413, 422, 202 job, 503 busy, 500),
+  single-flight lock, explicit `uncalibrated_baseline` labelling. 19 Claude-authored
+  tests; real smoke on two clips (1-window genuine → undetermined; 3-window synthetic
+  benchmark → synthetic, load 24.8 s, scoring 6.5 s). No accuracy claim. Next: 2.2 API.
 - **Backlog 1.1 complete (9 Nov, daily branch): prepared-output verifier.**
   `scripts/verify_prepared_output.py` re-derives every `prepare_audio.py` output
   without importing it: conditioning, metrics and flags (exact float sums), pause
