@@ -55,6 +55,9 @@ items needing that data are listed at the end and stay out of the queue.
   Claude-authored TestClient tests (sync, 202 job, errors 404/411/413/422/500/503,
   shutdown), independent review fixed. In-memory jobs only; limits in its README.
 - [ ] 2.3 Local React/TypeScript upload/results view with uncalibrated baseline label.
+  **Blocked 9 Nov:** React/Vite/TypeScript are not installed and `npm install`/`npm
+  view` are outside the runner allowlist. Needs pinned deps plus lockfile added by a
+  human, an allowlist change, or approval of a dependency-free page for 2.3.
 - [ ] 2.QA Actual public-pilot audio through browser/API/model; Playwright negative cases.
 
 ## 3 — Shared audio path (FR-D6/D12/D13, FR-I3/I4)
