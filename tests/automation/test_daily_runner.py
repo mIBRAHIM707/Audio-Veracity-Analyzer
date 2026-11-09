@@ -108,6 +108,31 @@ class SchedulerTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             runner.session_window(datetime(2026, 11, 6, 12))
 
+    # Claude-authored, 9 Nov 2026: manual catch-up window.
+    def test_catch_up_window_is_two_hours_from_now_and_refuses_midnight_crossing(self):
+        now = datetime(2026, 11, 9, 15, 8, tzinfo=runner.PKT)
+        start, soft, end = runner.catch_up_window(now)
+        self.assertEqual(start, now)
+        self.assertEqual(soft, datetime(2026, 11, 9, 16, 53, tzinfo=runner.PKT))
+        self.assertEqual((end - start).total_seconds(), 7200)
+        runner.catch_up_window(datetime(2026, 11, 9, 21, 59, tzinfo=runner.PKT))
+        for bad in (datetime(2026, 11, 9, 22, 0, 1, tzinfo=runner.PKT), datetime(2026, 11, 9, 15)):
+            with self.subTest(bad=bad), self.assertRaises(ValueError):
+                runner.catch_up_window(bad)
+
+    def test_catch_up_launches_outside_noon_window_with_two_hour_cap_and_same_ledger(self):
+        FixedDateTime.value = datetime(2026, 11, 6, 15, 8, tzinfo=runner.PKT)
+        result, launch = self.run_main()
+        self.assertEqual(result, 0)
+        launch.assert_not_called()
+        result, launch = self.run_main("--catch-up")
+        self.assertEqual(result, 0)
+        self.assertGreater(launch.call_count, 0)
+        for call in launch.call_args_list:
+            self.assertGreater(call.args[3], 0)
+            self.assertLessEqual(call.args[3], 7200)
+        self.assertEqual(self.ledger()["date"], "2026-11-06")
+
     def test_no_launch_before_noon_or_at_soft_or_hard_cutoff(self):
         for hour, minute, second, microsecond in [(11, 59, 59, 999999), (13, 45, 0, 0),
                                                   (14, 0, 0, 0), (23, 59, 59, 0)]:

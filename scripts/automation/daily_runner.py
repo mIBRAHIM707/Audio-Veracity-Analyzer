@@ -34,6 +34,17 @@ def session_window(now: datetime) -> tuple[datetime, datetime, datetime]:
                  (time(12), time(13, 45), time(14)))
 
 
+def catch_up_window(now: datetime) -> tuple[datetime, datetime, datetime]:
+    """Manual two-hour make-up session starting now (user-invoked only, never scheduled)."""
+    if now.tzinfo is None:
+        raise ValueError("Timezone-aware time required")
+    start = now.astimezone(PKT)
+    deadline = start + timedelta(hours=2)
+    if deadline.date() != start.date():
+        raise ValueError("Catch-up session must finish before midnight Asia/Karachi")
+    return start, deadline - timedelta(minutes=15), deadline
+
+
 def load_config(path: Path) -> dict:
     if path.stat().st_size > 32_768:
         raise ValueError("Config too large")
@@ -285,6 +296,8 @@ def main(argv=None) -> int:
     parser.add_argument("--config", type=Path, required=True)
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument("--max-seconds", type=float, help="Only shortens this run; never bypasses the daily window")
+    parser.add_argument("--catch-up", action="store_true",
+                        help="Manual make-up session: two hours from now instead of noon-2 PM; same ledger and guards")
     args = parser.parse_args(argv)
     try:
         if args.max_seconds is not None and (not 0 < args.max_seconds <= 7200):
@@ -292,7 +305,7 @@ def main(argv=None) -> int:
         config = load_config(args.config)
         workspace = validate_workspace(config)
         now = datetime.now(PKT)
-        start, soft, deadline = session_window(now)
+        start, soft, deadline = (catch_up_window if args.catch_up else session_window)(now)
         if args.dry_run:
             print(json.dumps({"dry_run": True, "workspace": workspace,
                               "start": start.isoformat(), "soft_stop": soft.isoformat(),
@@ -300,7 +313,7 @@ def main(argv=None) -> int:
                               "command": build_command(config)}, indent=2))
             return 0
         if not start <= now < soft:
-            print("Skipped: outside launch window 12:00–13:45 Asia/Karachi")
+            print(f"Skipped: outside launch window {start:%H:%M}–{soft:%H:%M} Asia/Karachi")
             return 0
         state = Path(config["state_dir"])
         state.mkdir(parents=True, exist_ok=True)

@@ -10,6 +10,11 @@ The task is registered with StartWhenAvailable so a late wake still runs, but
 the runner's own 12:00–13:45 launch window and 14:00 cutoff are unchanged.
 Text below describing Codex is historical.
 
+**Manual catch-up (9 November 2026).** `--catch-up` runs one make-up session for
+two hours from now (launches stop 15 minutes before the end), only when a person
+starts it. It uses the same daily ledger, attempt limit, lock, PAUSED/COMPLETE
+markers and allowlist, and refuses a window that would cross midnight.
+
 Runs the approved backlog in `docs/engineering/daily-development-prompt.md` on
 `feat/4-daily-development`, noon–2 PM Pakistan (UTC+05:00). No new invocation starts
 at or after 13:45. Each run is cut off at 14:00 even if the trigger was late. A
