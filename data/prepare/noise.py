@@ -15,6 +15,40 @@ import numpy as np
 MIN_SNR_DB = 0.0
 MAX_SNR_DB = 20.0
 NOISE_IMPLEMENTATION = 'ava-additive-noise-v1'
+NOISE_DERIVATION = 'ava-noise-snr-v1'
+
+
+def derive_noise(master_seed, clip_id):
+    """Deterministic per-clip noise plan from a master seed and the exact manifest clip ID
+    string: SNR approximately uniform in [MIN_SNR_DB, MAX_SNR_DB] at 1e-6 dB resolution
+    and an offset seed, both from SHA-256 of a versioned tag (separate from the packet-
+    loss tag, so the two plans are independent). Use with mix_planned."""
+    if type(master_seed) is not int or master_seed < 0:
+        raise ValueError('master_seed must be a non-negative integer')
+    if not isinstance(clip_id, str) or not clip_id:
+        raise ValueError('clip_id must be a nonempty string')
+    digest = hashlib.sha256(f'{NOISE_DERIVATION}\0{master_seed}\0{clip_id}'.encode()).digest()
+    draw = int.from_bytes(digest[:8], 'big') / 2 ** 64
+    snr = min(round(MIN_SNR_DB + draw * (MAX_SNR_DB - MIN_SNR_DB), 6), MAX_SNR_DB)
+    return {'derivation': NOISE_DERIVATION, 'master_seed': master_seed, 'clip_id': clip_id,
+            'snr_db': snr, 'seed': int.from_bytes(digest[8:16], 'big')}
+
+
+def mix_planned(speech, noise, plan):
+    """mix_at_snr with a plan that must come unchanged from derive_noise; the record
+    also holds the derivation tag, master seed and clip ID so the plan can be rebuilt.
+    The caller owns binding the plan to the right clip's audio (speech_sha256 records it)."""
+    try:
+        valid = isinstance(plan, dict) and plan == derive_noise(plan.get('master_seed'),
+                                                                plan.get('clip_id'))
+    except ValueError:
+        valid = False
+    if not valid:
+        raise ValueError('plan must come unchanged from derive_noise')
+    mixed, record = mix_at_snr(speech, noise, plan['snr_db'], plan['seed'])
+    record.update(derivation=plan['derivation'], master_seed=plan['master_seed'],
+                  clip_id=plan['clip_id'])
+    return mixed, record
 
 
 def _pcm(raw, name):
@@ -34,7 +68,7 @@ def mix_at_snr(speech, noise, snr_db, seed):
     """Return (mixed PCM16 bytes, record). The noise is scaled so that
     10*log10(P_speech / P_noise_excerpt) equals snr_db before rounding. Clipping is
     counted, not refused: callers must check `clipped_samples` and `achieved_snr_db`.
-    The caller chooses snr_db and seed; a per-clip derivation is not implemented yet."""
+    For per-clip randomized SNR use derive_noise and mix_planned."""
     clean = _pcm(speech, 'speech')
     source = _pcm(noise, 'noise')
     snr = _number(snr_db, 'snr_db')

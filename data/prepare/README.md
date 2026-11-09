@@ -120,8 +120,11 @@ jitter are not implemented.
 noise at 0 to 20 dB SNR from a seeded offset (wrapping when the noise is short),
 rounds and clips to int16, and records the SNR basis, target and achieved SNR,
 seed, offset, wrap/repeat count, speech/noise/output hashes, gain and clipped-sample
-count. Callers must check clipping; the caller picks SNR and seed (no per-clip
-derivation yet). SNR is whole-clip mean square (no VAD yet).
+count. Callers must check clipping. `derive_noise(master_seed, clip_id)` gives
+each clip its own plan (SNR uniform 0-20 dB, offset seed; independent of the
+packet-loss tag) and `mix_planned(speech, noise, plan)` records the derivation,
+master seed and clip ID and refuses altered plans. SNR is whole-clip mean square
+(no VAD yet).
 No noise corpus or room impulse responses are included; it is a library only.
 
 `tests/unit/test_conditioning_parity.py` checks that this preparation path and the

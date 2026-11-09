@@ -78,8 +78,8 @@ items needing that data are listed at the end and stay out of the queue.
   Per-clip rate/seed derivation (`derive_loss`) added 9 Nov.
 - [ ] 3.4 Other PRD codec/noise paths with bounded reproducible fixtures.
   Progress (9 Nov): `data/prepare/noise.py` seeded additive noise at 0-20 dB SNR
-  (FR-D7) with lineage; 11 Claude-authored tests. Remaining: per-clip SNR/seed
-  derivation, noise corpora, RIRs, speech-active SNR (needs VAD, 3.2), Opus/G.729
+  (FR-D7) with lineage and per-clip plans (`derive_noise`/`mix_planned`); 18
+  Claude-authored tests. Remaining: noise corpora, RIRs, speech-active SNR (needs VAD, 3.2), Opus/G.729
   VoIP path, manifest wiring.
 - [ ] 3.QA Sample-level parity, malformed formats and immutable-original checks.
 

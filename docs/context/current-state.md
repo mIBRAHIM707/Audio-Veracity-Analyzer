@@ -109,9 +109,9 @@ and about 50,000 original clips, excluding codec copies.
   unprovisioned VAD dependency/model.
 - **Backlog 3.4 in progress (9 Nov): additive noise at SNR (FR-D7).**
   `data/prepare/noise.py` mixes same-rate PCM16 noise at 0-20 dB whole-clip SNR
-  from a seeded, recorded offset with clipping and achieved SNR recorded; 11
-  Claude-authored tests. Library only: no per-clip SNR derivation, noise corpus,
-  RIRs, speech-active SNR or manifest wiring yet.
+  from a seeded, recorded offset with clipping and achieved SNR recorded, plus
+  per-clip SNR/seed plans (`derive_noise`, `mix_planned`); 18 Claude-authored tests.
+  Library only: no noise corpus, RIRs, speech-active SNR or manifest wiring yet.
 - **Backlog 1.1 complete (9 Nov, daily branch): prepared-output verifier.**
   `scripts/verify_prepared_output.py` re-derives every `prepare_audio.py` output
   without importing it: conditioning, metrics and flags (exact float sums), pause

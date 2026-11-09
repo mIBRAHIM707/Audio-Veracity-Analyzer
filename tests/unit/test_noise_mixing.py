@@ -182,5 +182,78 @@ class MixAtSnrTests(unittest.TestCase):
             noise_mod.mix_at_snr(speech, noise, 10, seeds[0])
 
 
+class DeriveNoiseTests(unittest.TestCase):
+    """Claude-authored, 9 November 2026: per-clip SNR/seed plans (review M2)."""
+
+    def test_pinned_value_and_independent_digest(self):
+        plan = noise_mod.derive_noise(2026, 'csalt/spk01/clip0001.wav')
+        self.assertEqual(plan, {'derivation': 'ava-noise-snr-v1', 'master_seed': 2026,
+                                'clip_id': 'csalt/spk01/clip0001.wav',
+                                'snr_db': 12.47682, 'seed': 3317115706357268130})
+        digest = hashlib.sha256(b'ava-noise-snr-v1\x002026\x00csalt/spk01/clip0001.wav').digest()
+        self.assertEqual(plan['seed'], int.from_bytes(digest[8:16], 'big'))
+        self.assertEqual(plan['snr_db'],
+                         round(20 * int.from_bytes(digest[:8], 'big') / 2 ** 64, 6))
+
+    def test_deterministic_bounded_and_spread_over_clips(self):
+        plans = [noise_mod.derive_noise(7, f'clip-{i}') for i in range(2000)]
+        self.assertEqual(plans[5], noise_mod.derive_noise(7, 'clip-5'))
+        snrs = np.array([p['snr_db'] for p in plans])
+        self.assertTrue(((snrs >= 0) & (snrs <= 20)).all())
+        counts = np.histogram(snrs, bins=4, range=(0, 20))[0]
+        self.assertTrue((counts > 400).all(), counts)  # ~500 per 5 dB bin
+        self.assertEqual(len({p['seed'] for p in plans}), 2000)
+        self.assertNotEqual(noise_mod.derive_noise(8, 'clip-5'), plans[5])
+
+    def test_independent_of_packet_loss_derivation(self):
+        # data/prepare/codecs.py shares its name with the stdlib module, so load it by path.
+        import importlib.util
+        spec = importlib.util.spec_from_file_location(
+            'prepare_codecs', Path(__file__).resolve().parents[2] / 'data' / 'prepare' / 'codecs.py')
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        self.assertNotEqual(module.LOSS_DERIVATION, noise_mod.NOISE_DERIVATION)
+        loss = [module.derive_loss(7, f'clip-{i}') for i in range(2000)]
+        noise = [noise_mod.derive_noise(7, f'clip-{i}') for i in range(2000)]
+        self.assertTrue(all(a['seed'] != b['seed'] for a, b in zip(loss, noise)))
+        r = np.corrcoef([p['loss_rate'] for p in loss], [p['snr_db'] for p in noise])[0, 1]
+        self.assertLess(abs(r), 0.1)
+
+    def test_clip_id_is_exact_string(self):
+        self.assertNotEqual(noise_mod.derive_noise(1, 'a.wav'), noise_mod.derive_noise(1, 'A.wav'))
+        self.assertNotEqual(noise_mod.derive_noise(1, 'a.wav'), noise_mod.derive_noise(1, 'a.wav '))
+
+    def test_rejects_invalid_derivation_inputs(self):
+        for index, (master, clip) in enumerate([(-1, 'x'), (1.0, 'x'), (True, 'x'), (None, 'x'),
+                                                (1, ''), (1, None), (1, b'x')]):
+            with self.subTest(case=index), self.assertRaises(ValueError):
+                noise_mod.derive_noise(master, clip)
+
+    def test_mix_planned_matches_direct_mix_and_records_derivation(self):
+        speech, noise = tone(8000), white(20000, 13)
+        plan = noise_mod.derive_noise(42, 'clip-a')
+        mixed, record = noise_mod.mix_planned(speech, noise, plan)
+        direct, direct_record = noise_mod.mix_at_snr(speech, noise, plan['snr_db'], plan['seed'])
+        self.assertEqual(mixed, direct)
+        self.assertEqual(record, {**direct_record, 'derivation': 'ava-noise-snr-v1',
+                                  'master_seed': 42, 'clip_id': 'clip-a'})
+        rebuilt = noise_mod.derive_noise(record['master_seed'], record['clip_id'])
+        self.assertEqual((rebuilt['snr_db'], rebuilt['seed']), (record['snr_db'], record['seed']))
+        self.assertAlmostEqual(measured_snr(speech, mixed), plan['snr_db'], delta=0.02)
+
+    def test_mix_planned_refuses_altered_or_malformed_plans(self):
+        speech, noise = tone(1000), white(2000, 14)
+        plan = noise_mod.derive_noise(42, 'clip-a')
+        altered = [{**plan, 'snr_db': 3.0}, {**plan, 'seed': plan['seed'] + 1},
+                   {**plan, 'clip_id': 'clip-b'}, {**plan, 'derivation': 'other'},
+                   {**plan, 'master_seed': 43}, {**plan, 'master_seed': -1},
+                   {**plan, 'extra': 1}, {k: v for k, v in plan.items() if k != 'seed'},
+                   {}, None, list(plan.items())]
+        for index, bad in enumerate(altered):
+            with self.subTest(case=index), \
+                    self.assertRaisesRegex(ValueError, 'unchanged from derive_noise'):
+                noise_mod.mix_planned(speech, noise, bad)
+
+
 if __name__ == '__main__':
     unittest.main()
