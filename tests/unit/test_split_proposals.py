@@ -3,7 +3,8 @@
 Fictional fixtures only: invented source, speaker and recording labels with hashes
 of fictional literals. No real manifests, audio, external paths or `.local` values.
 These are infrastructure tests of placement rules, not dataset or product acceptance.
-Not authored by GPT-6 Astra; an Astra extension module is a separate deliverable.
+Not authored by GPT-6 Astra. Updated 9 Nov 2026 by Claude (Opus 5.5) for spec decisions
+7 and 9; further Claude-authored cases are in test_split_proposals_cases.py.
 """
 
 import hashlib
@@ -70,7 +71,8 @@ class AssignmentRuleTests(unittest.TestCase):
             propose_splits.allocate(-1)
 
     def test_order_independence_and_seed_determinism(self):
-        rows = speakers(17) + speakers(2, "fx_source_beta", benchmark_only=True, label="synthetic")
+        rows = speakers(17) + speakers(2, "fx_source_beta", benchmark_only=True, label="synthetic",
+                                       training_eligible=False)
         rows += speakers(3, "fx_source_gamma", publisher_split="dev")
         first = propose_splits.propose(rows, SEED)
         shuffled = list(rows)
@@ -83,7 +85,7 @@ class AssignmentRuleTests(unittest.TestCase):
                                  if r["assignment_rule"] == "hashed_speaker"}
         self.assertNotEqual(hashed(first), hashed(other), "a new seed should move some speaker")
         fixed = lambda result: {r["group_key"]: r["proposed_split"] for r in result[1]
-                                if r["assignment_rule"] != "hashed_speaker"}
+                                if r["assignment_rule"] == "publisher_held_out"}
         self.assertEqual(fixed(first), fixed(other))
 
     def test_seventeen_speakers_allocation_and_atomicity(self):
@@ -139,28 +141,41 @@ class AssignmentRuleTests(unittest.TestCase):
         self.assertEqual(result["within_partition_duplicates"]["source_sha256"], 1)
         self.assertEqual(result["within_partition_duplicates"]["sha256"], 0)
 
-    def test_benchmark_rules(self):
-        rows = speakers(5, publisher_split="train")
+    def test_benchmark_rows_follow_their_speaker(self):
+        """Spec decision 7 (4 Oct, superseding rule 1): benchmark is a scope, not a partition."""
+        rows = speakers(5, publisher_split="train", training_eligible=True)
         benchmark = speakers(2, "fx_source_bench", benchmark_only=True, label="synthetic",
-                             publisher_split="train")
-        scoped = speakers(1, "fx_source_scope", training_eligible=False,
-                          use_scope="noncommercial_benchmark_only")
+                             publisher_split="train", training_eligible=False)
         pending = speakers(3, "fx_source_pend", training_eligible=False,
                            use_scope="noncommercial_detection_research")
         coupled = [fx_row(speaker="fx_spk_01", recording="fx_spk_01_rec_fake", label="synthetic",
                           benchmark_only=True, training_eligible=False)]
-        _, output, detail = propose_splits.propose(rows + benchmark + scoped + pending + coupled, SEED)
-        by_source = {}
-        for row in output:
-            by_source.setdefault(row["source_id"], set()).add(row["proposed_split"])
-        self.assertEqual(by_source["fx_source_bench"], {"benchmark_only"})
-        self.assertEqual(by_source["fx_source_scope"], {"benchmark_only"})
-        self.assertEqual(by_source["fx_source_pend"], {"train", "dev", "test"})
+        _, output, detail = propose_splits.propose(rows + benchmark + pending + coupled, SEED)
         table = partition_of(output)
-        self.assertEqual(table[("fx_source_alpha", "fx_spk_01")], {"benchmark_only"})
-        self.assertEqual(detail["benchmark_coupled_rows"], 4)
-        rules = {row["assignment_rule"] for row in output if row["proposed_split"] == "benchmark_only"}
-        self.assertEqual(rules, {"benchmark_only"})
+        self.assertTrue(all(len(splits) == 1 for splits in table.values()))
+        self.assertNotIn("benchmark_only", {row["proposed_split"] for row in output})
+        fake = next(row for row in output if row["source_recording_id"] == "fx_spk_01_rec_fake")
+        self.assertEqual(fake["assignment_rule"], "benchmark_follows_speaker")
+        self.assertEqual((fake["benchmark_only"], fake["training_eligible"]), (True, False))
+        genuine = next(row for row in output if row["source_recording_id"] == "fx_spk_01_rec_a")
+        self.assertEqual(genuine["assignment_rule"], "hashed_speaker")
+        self.assertEqual(fake["proposed_split"], genuine["proposed_split"])
+        self.assertEqual({row["assignment_rule"] for row in output if row["source_id"] == "fx_source_bench"},
+                         {"benchmark_follows_speaker"})
+        self.assertEqual(detail["allocation"]["fx_source_alpha"]["eligible_groups"], 5)
+        result = validate_splits.check_rows(output)
+        self.assertTrue(result["ok"], result["errors"])
+        self.assertEqual(sum(result["benchmark_rows_by_partition"].values()), 9)
+        self.assertEqual(sum(result["trainable_rows_by_partition"].values()), 20)
+
+    def test_benchmark_scope_without_both_flags_fails_before_output(self):
+        """Decision 9 (9 Nov): a benchmark use_scope must be carried by explicit flags."""
+        for flags in ({"training_eligible": False}, {"training_eligible": True},
+                      {"benchmark_only": True, "training_eligible": True}):
+            with self.subTest(flags=flags):
+                scoped = speakers(3, "fx_source_scope", use_scope="noncommercial_benchmark_only", **flags)
+                with self.assertRaisesRegex(ValueError, "lineage"):
+                    propose_splits.propose(scoped, SEED)
 
     def test_publisher_rules_and_conflicts(self):
         dev = speakers(2, publisher_split="dev")
@@ -199,7 +214,8 @@ class AssignmentRuleTests(unittest.TestCase):
 
 class ValidatorTests(unittest.TestCase):
     def setUp(self):
-        rows = speakers(6) + speakers(1, "fx_source_bench", benchmark_only=True, label="synthetic")
+        rows = speakers(6) + speakers(1, "fx_source_bench", benchmark_only=True, label="synthetic",
+                                      training_eligible=False)
         rows += speakers(1, "fx_source_pub", publisher_split="dev")
         _, self.rows, _ = propose_splits.propose(rows, SEED)
         self.assertTrue(validate_splits.check_rows(self.rows)["ok"])
@@ -246,7 +262,8 @@ class ValidatorTests(unittest.TestCase):
     def test_cross_source_hash_overlap_rejected(self):
         rows = [dict(row) for row in self.rows]
         bench = next(row for row in rows if row["source_id"] == "fx_source_bench")
-        hashed = next(row for row in rows if row["assignment_rule"] == "hashed_speaker")
+        hashed = next(row for row in rows if row["assignment_rule"] == "hashed_speaker"
+                      and row["proposed_split"] != bench["proposed_split"])
         bench["source_sha256"] = hashed["source_sha256"]
         result = validate_splits.check_rows(rows)
         self.assertFalse(result["ok"])
@@ -273,7 +290,7 @@ class PublicationTests(unittest.TestCase):
     def test_run_publishes_valid_proposal_and_report(self):
         genuine = self.report("genuine", speakers(17))
         bench = self.report("bench", speakers(2, "fx_source_bench", benchmark_only=True,
-                                                label="synthetic", language="fy"))
+                                                label="synthetic", language="fy", training_eligible=False))
         pilot_rows = speakers(6, "fx_source_pilot", publisher_split="train",
                               training_eligible=False, language="fz")
         for row in pilot_rows:
@@ -285,8 +302,10 @@ class PublicationTests(unittest.TestCase):
         before = (sentinel.read_bytes(), sentinel.stat().st_mtime_ns)
         summary = propose_splits.run([genuine, bench, pilot], SEED, self.output)
         self.assertEqual(summary["rows"], 100)
-        self.assertEqual(summary["partitions"]["benchmark_only"], 8)
-        self.assertEqual(summary["training_ineligible_placements"], 24)
+        self.assertNotIn("benchmark_only", summary["partitions"])
+        self.assertEqual(summary["benchmark_rows"], 8)
+        self.assertEqual(summary["trainable_rows"], 0)
+        self.assertEqual(summary["training_ineligible_placements"], 24, "benchmark rows excluded")
         self.assertEqual((sentinel.read_bytes(), sentinel.stat().st_mtime_ns), before)
         self.assertFalse((self.output / "INCOMPLETE").exists())
         proposal = json.loads((self.output / "proposal.json").read_text(encoding="utf-8"))

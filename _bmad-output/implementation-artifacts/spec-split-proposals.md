@@ -117,6 +117,17 @@ Raised by the Astra handoff preparation (`docs/qa/split-proposal-astra-handoff.m
    and a `trainable_rows_by_partition` table that excludes every
    `training_eligible: false` row. Publisher held-out rule 2 and atomicity rule 1
    (decisions section) are unchanged. Groups linked by shared hashes still merge.
+9. **Benchmark scope must be explicit (coordinator, 9 Nov 2026).** Implementation
+   of decision 7 review: a row whose `use_scope` contains `benchmark` must carry
+   `benchmark_only: true` and `training_eligible: false`; otherwise proposal fails
+   before output (fail closed). The validator also recomputes the `proposal_id`
+   content digest over the rows minus proposal fields, so a coordinated relabel of a
+   benchmark row is detected, and requires proposal `schema_version` 2.
+   `training_ineligible_placements` excludes benchmark rows. Open question for a
+   human: speaker groups made only of benchmark rows still take hashed allocation
+   slots and enter realised shares; current CSALT data is unaffected because all 17
+   benchmark speakers also have genuine rows. Implementation Notes above that name a
+   `benchmark_only` partition or rule are superseded by decision 7.
 8. **Allocation tie-break reading confirmed.** Remainder ties resolve in the
    fixed order train, dev, test after ordering speakers by hash key; 4 speakers
    give 2/1/1 and 5 give 3/1/1. Within-partition duplicate warnings are counted

@@ -23,7 +23,7 @@ FIELDS = ('clip_id','source_id','source_version','speaker_id','source_recording_
           'language','label','sha256','duration_s','licence_ref','use_status','split',
           'path','sample_rate','channels','pcm_bits','selected_for_pilot',
           'validation_status','review_flags','label_provenance','listening_status',
-          'cloning_status','use_scope','error')
+          'cloning_status','use_scope','duplicate_original_rows','duplicate_original_speakers','error')
 
 
 def validate_catalog(catalog):
@@ -136,6 +136,26 @@ def safe_path(root, relative):
     return path
 
 
+def annotate_duplicates(rows):
+    """Todo 9d: mark verified originals whose exact bytes recur under other paths.
+
+    Publisher labels are kept; nothing is quarantined. Counts are strings (CSV) and
+    empty when the bytes are unique. Cross-speaker duplicates mean one recording is
+    published under two speaker folders, so speaker identity for it is uncertain.
+    """
+    paths,speakers={},{}
+    for row in rows:
+        if row['validation_status']=='verified':
+            paths.setdefault(row['sha256'],set()).add(row['path'])
+            speakers.setdefault(row['sha256'],set()).add(row['speaker_id'])
+    for row in rows:
+        verified=row['validation_status']=='verified'
+        shared=len(paths[row['sha256']]) if verified else 0
+        owners=len(speakers[row['sha256']]) if verified else 0
+        row['duplicate_original_rows']=str(shared) if shared>1 else ''
+        row['duplicate_original_speakers']=str(owners) if owners>1 else ''
+
+
 def run_pilot(catalog_path, source_root, output_root, per_speaker=20, fetch_bytes=None, expected_speakers=None):
     catalog_payload=bounded_read(Path(catalog_path))
     catalog=json.loads(catalog_payload)
@@ -204,6 +224,7 @@ def run_pilot(catalog_path, source_root, output_root, per_speaker=20, fetch_byte
         for task in as_completed(tasks):
             row,new=task.result(); rows.append(row); downloaded+=new
     rows.sort(key=lambda r:r['path'])
+    annotate_duplicates(rows)
     balanced=[r for r in rows if r['selected_for_pilot']=='true']
     counts={speaker:sum(r['speaker_id']==speaker for r in balanced) for speaker in sorted({e['path'].split('/')[1] for e in entries})}
     errors=[{'path':r['path'],'error':r['error']} for r in rows if r['validation_status']=='failed']
@@ -212,7 +233,10 @@ def run_pilot(catalog_path, source_root, output_root, per_speaker=20, fetch_byte
         'errors':len(errors),'balanced_complete':all(n==per_speaker for n in counts.values()),
         'selected_minutes':sum(r['duration_s'] for r in balanced)/60,
         'selected_bytes':sum(e['size'] for e in entries if any(r['path']==e['path'] for r in balanced)),
-        'review_flagged_selected':sum(json.loads(r['review_flags'])!=[] for r in balanced)}
+        'review_flagged_selected':sum(json.loads(r['review_flags'])!=[] for r in balanced),
+        'duplicate_original_hashes':len({r['sha256'] for r in rows if r['duplicate_original_rows']}),
+        'cross_speaker_duplicate_hashes':len({r['sha256'] for r in rows if r['duplicate_original_speakers']}),
+        'duplicate_selected_files':sum(bool(r['duplicate_original_rows']) for r in balanced)}
     summary['selected_native_formats']={fmt:sum(f'{r["sample_rate"]}Hz/{r["channels"]}ch/{r["pcm_bits"]}bit'==fmt for r in balanced)
         for fmt in sorted({f'{r["sample_rate"]}Hz/{r["channels"]}ch/{r["pcm_bits"]}bit' for r in balanced})}
     with (output_root/'inventory.csv').open('w',encoding='utf-8',newline='') as stream:

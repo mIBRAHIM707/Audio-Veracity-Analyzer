@@ -31,7 +31,10 @@ items needing that data are listed at the end and stay out of the queue.
   Evidence (9 Nov): review items L3/L4/L7/L8 closed, 9 Claude-authored pnb tests
   plus 4 cleanup tests; tests/pnb 36 OK twice, tests/unit 167 OK twice; real pilot
   verifier PASS under the new selection rule; independent review lows fixed.
-- [ ] 1.3 Astra split cases and independent review; annotate duplicate originals.
+- [x] 1.3 Split cases (Claude-authored since Astra access ended) and independent
+  review; annotate duplicate originals. Evidence (9 Nov): spec decision 7 implemented
+  (schema 2) plus decision 9; 16 Claude-authored cases + 20 updated baseline tests;
+  todo 9d annotation with real read-only count (2 hashes, 4 rows); review fixed.
 - [ ] 1.4 Versioned policy migration and pilot split rerun, preserving originals.
 - [ ] 1.QA Review evidence and remaining source/identity limitations.
 

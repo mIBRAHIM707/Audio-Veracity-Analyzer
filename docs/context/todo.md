@@ -105,10 +105,19 @@ independent preparation. Do not treat elapsed time as approval.
     `benchmark_only` partition swallowed every Urdu genuine clip. Decision 7 in the
     spec: benchmark rows follow their speaker and stay ineligible by flag. v2 run in
     progress, data-engineer role.
-  - [ ] 9d. Intake follow-up from 9a: two CSALT genuine source hashes appear under
-    two different publisher speaker folders (four duplicated clip hashes). The
-    proposer merges them; intake should annotate or quarantine the originals and
-    the datasheet must mention it.
+  - [x] 9d. Intake follow-up from 9a: two CSALT genuine source hashes appear under
+    two different publisher speaker folders (four duplicated clip hashes). Done
+    9 Nov (backlog 1.3): `csalt_pilot.annotate_duplicates` marks new intakes with
+    `duplicate_original_rows`/`_speakers` and summary counts; read-only count on the
+    v2 inventory confirms 2 hashes, 4 rows, all selected; recorded as a datasheet
+    item in `data/collect/README.md` (no dataset datasheet exists yet). Annotated,
+    not quarantined; existing v2 manifests unchanged.
+  - [x] Spec decision 7 implemented (9 Nov, backlog 1.3): benchmark rows follow their
+    speaker, proposal schema 2, benchmark/trainable tables, decision 9 (explicit
+    benchmark flags, content digest). 16 Claude-authored cases
+    in `tests/unit/test_split_proposals_cases.py` replace the Astra request (Astra
+    access ended); catalogue `docs/qa/split-proposal-test-cases.md`. Real v2 rerun
+    is backlog 1.4.
   - [ ] 9e. Apply the 5 Oct owner decision (PRD FR-D11) to data: regenerate the
     CSALT genuine, CSALT synthetic and Meta pnb manifests into new versions with
     `cloning_status: permitted_public_corpus`, `training_eligible: true` and the

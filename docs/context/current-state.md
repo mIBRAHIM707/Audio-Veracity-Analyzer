@@ -98,6 +98,15 @@ and about 50,000 original clips, excluding codec copies.
   Intermittent Windows WinError 145 fixture-cleanup errors are handled by the
   bounded `tests/fixture_cleanup.py` retry. Existing pilot manifests keep string
   flags; only new imports change.
+- **Backlog 1.3 complete (9 Nov): split proposals at schema 2.** Spec decision 7
+  is implemented: benchmark rows follow their speaker (`benchmark_follows_speaker`)
+  and keep `benchmark_only: true`/`training_eligible: false`; there is no
+  `benchmark_only` partition; reports carry benchmark and trainable tables.
+  Decision 9 (coordinator): benchmark scope must be explicit, and the validator
+  recomputes the `proposal_id` content digest. 16 Claude-authored cases plus 20
+  updated baseline tests. Todo 9d: CSALT intake annotates duplicate originals; the
+  real v2 inventory has 2 cross-speaker duplicate hashes (4 rows, all selected).
+  Open: benchmark-only speaker groups still take allocation slots (not material now).
 - **Todo 8b complete: collection preparation written; 8a and 8c blocked on the
   approval document.** `docs/data-collection/collection-plan.md` lists the eight
   fields only the approval can supply (reference, body, protocol and form
