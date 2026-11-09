@@ -115,8 +115,10 @@ version, master seed and exact manifest clip ID so the chain can be rebuilt.
 late-packet loss: each packet gets a seeded exponential extra delay (mean
 `jitter_ms`, at most 100 ms); a packet later than the fixed playout buffer
 (`buffer_ms`, at most 400 ms) is concealed like a lost one. Packets are never
-reordered. It is not yet called by `telephone_roundtrip` (record `jitter` is None)
-and has no per-clip derivation yet.
+reordered. `derive_jitter(master_seed, clip_id)` gives each clip a plan (mean
+delay uniform 0-20 ms behind a 60 ms buffer, so at most about 5 % late packets;
+seed independent of `derive_loss`). Jitter is not yet called by
+`telephone_roundtrip` (record `jitter` is None).
 It is a library only: not yet wired into `prepare_audio.py`, and GSM and AMR-NB
 are not implemented.
 

@@ -178,6 +178,29 @@ def drop_late_packets(encoded, law, jitter_ms, buffer_ms, seed, concealment='rep
     }
 
 
+JITTER_DERIVATION = 'ava-jitter-v1'
+PLAN_BUFFER_MS = 60  # fixed playout buffer used by derived plans
+PLAN_MAX_JITTER_MS = 20  # exp(-60/20) = 4.98 % expected late packets, inside FR-D6's 5 %
+
+
+def derive_jitter(master_seed, clip_id):
+    """Deterministic per-clip jitter plan from a master seed and the exact manifest clip
+    ID string: mean extra delay approximately uniform in [0, PLAN_MAX_JITTER_MS] ms at
+    1e-6 ms resolution, buffer PLAN_BUFFER_MS, and a seed. Its tag differs from
+    derive_loss, so loss and jitter draws are independent for the same clip. Uniform
+    delay is not uniform late loss: at 10 ms the expected late fraction is exp(-6),
+    about 0.25 %, so most clips get far less than 5 % late packets (unconfirmed choice)."""
+    if type(master_seed) is not int or master_seed < 0:
+        raise ValueError('master_seed must be a non-negative integer')
+    if not isinstance(clip_id, str) or not clip_id:
+        raise ValueError('clip_id must be a nonempty string')
+    digest = hashlib.sha256(f'{JITTER_DERIVATION}\0{master_seed}\0{clip_id}'.encode()).digest()
+    draw = int.from_bytes(digest[:8], 'big') / 2 ** 64
+    return {'derivation': JITTER_DERIVATION, 'master_seed': master_seed, 'clip_id': clip_id,
+            'jitter_ms': min(round(draw * PLAN_MAX_JITTER_MS, 6), PLAN_MAX_JITTER_MS),
+            'buffer_ms': PLAN_BUFFER_MS, 'seed': int.from_bytes(digest[8:16], 'big')}
+
+
 def drop_packets(encoded, law, loss_rate, seed, concealment='repeat'):
     """Seeded Bernoulli loss of 20 ms G.711 packets, concealed by the silence code or by
     repeating the previous received packet (silence when none precedes). Returns

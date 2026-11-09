@@ -9,7 +9,8 @@ import unittest
 
 import numpy as np
 
-from data.prepare.codecs import (FRAME_SAMPLES, LAWS, MAX_BUFFER_MS, MAX_JITTER_MS,
+from data.prepare.codecs import (FRAME_SAMPLES, LAWS, MAX_BUFFER_MS, MAX_JITTER_MS, MAX_LOSS_RATE,
+                                 PLAN_BUFFER_MS, PLAN_MAX_JITTER_MS, derive_jitter, derive_loss,
                                  drop_late_packets, drop_packets)
 
 SILENCE = {'ulaw': 0xFF, 'alaw': 0xD5}
@@ -133,6 +134,49 @@ class DropLatePacketsTests(unittest.TestCase):
                 kwargs.update(change)
                 with self.assertRaises(ValueError):
                     drop_late_packets(**kwargs)
+
+
+class DeriveJitterTests(unittest.TestCase):
+    def test_deterministic_bounded_and_spread(self):
+        plans = [derive_jitter(42, f'clip-{i:04d}') for i in range(2000)]
+        self.assertEqual(plans[0], derive_jitter(42, 'clip-0000'))
+        jitters = np.array([p['jitter_ms'] for p in plans])
+        self.assertTrue(((jitters >= 0) & (jitters <= PLAN_MAX_JITTER_MS)).all())
+        self.assertAlmostEqual(jitters.mean(), PLAN_MAX_JITTER_MS / 2, delta=0.6)
+        self.assertEqual(len({p['seed'] for p in plans}), 2000)
+        self.assertNotEqual(derive_jitter(43, 'clip-0000'), plans[0])
+
+    def test_plan_constants_boundary_is_accepted(self):
+        self.assertLessEqual(math.exp(-PLAN_BUFFER_MS / PLAN_MAX_JITTER_MS), MAX_LOSS_RATE)
+        drop_late_packets(frames(3), 'ulaw', PLAN_MAX_JITTER_MS, PLAN_BUFFER_MS, 0)
+
+    def test_every_plan_is_accepted_by_drop_late_packets(self):
+        for i in range(300):
+            plan = derive_jitter(7, f'c{i}')
+            self.assertLessEqual(math.exp(-plan['buffer_ms'] / plan['jitter_ms']) if plan['jitter_ms'] else 0,
+                                 MAX_LOSS_RATE)
+            drop_late_packets(frames(3), 'ulaw', plan['jitter_ms'], plan['buffer_ms'], plan['seed'])
+
+    def test_pinned_value_matches_independent_digest(self):
+        digest = hashlib.sha256(b'ava-jitter-v1\x0042\x00clip-0000').digest()
+        plan = derive_jitter(42, 'clip-0000')
+        self.assertEqual(plan['seed'], int.from_bytes(digest[8:16], 'big'))
+        self.assertEqual(plan['jitter_ms'],
+                         round(int.from_bytes(digest[:8], 'big') / 2 ** 64 * PLAN_MAX_JITTER_MS, 6))
+        self.assertEqual((plan['buffer_ms'], plan['derivation']), (PLAN_BUFFER_MS, 'ava-jitter-v1'))
+
+    def test_independent_of_loss_derivation(self):
+        jitter = [derive_jitter(5, f'x{i}') for i in range(2000)]
+        loss = [derive_loss(5, f'x{i}') for i in range(2000)]
+        self.assertFalse(any(j['seed'] == l['seed'] for j, l in zip(jitter, loss)))
+        r = np.corrcoef([j['jitter_ms'] for j in jitter], [l['loss_rate'] for l in loss])[0, 1]
+        self.assertLess(abs(r), 0.1)
+
+    def test_invalid_inputs_refused(self):
+        for seed, clip in ((-1, 'a'), (1.0, 'a'), (True, 'a'), (None, 'a'), (1, ''), (1, None), (1, 3)):
+            with self.subTest(seed=seed, clip=clip):
+                with self.assertRaises(ValueError):
+                    derive_jitter(seed, clip)
 
 
 if __name__ == '__main__':
