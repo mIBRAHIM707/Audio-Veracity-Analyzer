@@ -27,7 +27,10 @@ items needing that data are listed at the end and stay out of the queue.
   Evidence (9 Nov): `scripts/verify_prepared_output.py`, 40 Claude-authored tests,
   real read-only PASS on three external prepared outputs, independent review
   findings fixed. Exact-mode pilot v2 lacks its input manifest; fixtures only.
-- [ ] 1.2 Punjabi importer follow-ups and meaningful Windows fixture cleanup fix.
+- [x] 1.2 Punjabi importer follow-ups and meaningful Windows fixture cleanup fix.
+  Evidence (9 Nov): review items L3/L4/L7/L8 closed, 9 Claude-authored pnb tests
+  plus 4 cleanup tests; tests/pnb 36 OK twice, tests/unit 167 OK twice; real pilot
+  verifier PASS under the new selection rule; independent review lows fixed.
 - [ ] 1.3 Astra split cases and independent review; annotate duplicate originals.
 - [ ] 1.4 Versioned policy migration and pilot split rerun, preserving originals.
 - [ ] 1.QA Review evidence and remaining source/identity limitations.

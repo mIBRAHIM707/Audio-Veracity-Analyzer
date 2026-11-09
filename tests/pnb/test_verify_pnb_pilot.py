@@ -24,6 +24,7 @@ import soundfile as sf
 
 from data.collect import meta_pnb_pilot as pnb
 from scripts import verify_pnb_pilot as verifier
+from tests.fixture_cleanup import cleanup_with_retry
 
 REVISION = "8648ba8946377697b427ae952076e49fc0e5e44d"
 SHARD = "data/pnb_Arab/train-00000-of-00002.parquet"
@@ -78,11 +79,11 @@ class VerifyPnbPilotTests(unittest.TestCase):
 
     @classmethod
     def tearDownClass(cls):
-        cls.temporary.cleanup()
+        cleanup_with_retry(cls.temporary)
 
     def setUp(self):
         private = tempfile.TemporaryDirectory()
-        self.addCleanup(private.cleanup)
+        self.addCleanup(cleanup_with_retry, private)
         root = Path(private.name).resolve()
         self.raw, self.manifest = root / "raw", root / "manifests"
         shutil.copytree(self.pristine_raw, self.raw)
@@ -128,7 +129,8 @@ class VerifyPnbPilotTests(unittest.TestCase):
         self.assertEqual(len(self.pilot["files"]), 4)
 
     def test_recomputed_selection_matches_documented_formula(self):
-        meta = {(SHARD, i): {"speaker_id": row["speaker_id"]} for i, row in enumerate(fixture_rows())}
+        meta = {(SHARD, i): {"speaker_id": row["speaker_id"], "duration": row["duration"]}
+                for i, row in enumerate(fixture_rows())}
         expected, speakers = verifier.expected_selection(meta, REVISION, 2)
         self.assertEqual(speakers, 2)
         self.assertEqual({index for _, index in expected}, {row["source_row_index"] for row in self.pilot["files"]})

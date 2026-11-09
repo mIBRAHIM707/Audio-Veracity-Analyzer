@@ -88,6 +88,16 @@ and about 50,000 original clips, excluding codec copies.
   40 Claude-authored tests; independent review findings fixed. The exact-mode CSALT
   pilot v2 cannot be re-verified: its input manifest is not on disk.
   See `handoffs/prepared-verifier.md`.
+- **Backlog 1.2 complete (9 Nov): Punjabi importer follow-ups and cleanup fix.**
+  `csalt_pilot.inspect_pcm` gives signal inspection without a publisher claim
+  (CSALT `inspect_audio` output unchanged); Punjabi `review_flags` are now lists;
+  rows declared longer than ~104 s are excluded before ranking (counted as
+  `excluded_over_duration_bound`, a speaker losing all rows fails before output),
+  mirrored in `scripts/verify_pnb_pilot.py`; archive root must be outside the repo.
+  The real 12-row pilot re-verifies PASS under the new rule (selection unchanged).
+  Intermittent Windows WinError 145 fixture-cleanup errors are handled by the
+  bounded `tests/fixture_cleanup.py` retry. Existing pilot manifests keep string
+  flags; only new imports change.
 - **Todo 8b complete: collection preparation written; 8a and 8c blocked on the
   approval document.** `docs/data-collection/collection-plan.md` lists the eight
   fields only the approval can supply (reference, body, protocol and form

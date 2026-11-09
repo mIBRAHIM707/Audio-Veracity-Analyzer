@@ -16,6 +16,7 @@ import pyarrow.parquet as pq
 import soundfile as sf
 
 from data.collect import meta_pnb_pilot as pnb
+from tests.fixture_cleanup import cleanup_with_retry
 
 
 REVISION = "8648ba8946377697b427ae952076e49fc0e5e44d"
@@ -25,7 +26,7 @@ SHARD = "data/pnb_Arab/train-00000-of-00002.parquet"
 class PnbPilotTests(unittest.TestCase):
     def setUp(self):
         temporary = tempfile.TemporaryDirectory()
-        self.addCleanup(temporary.cleanup)
+        self.addCleanup(cleanup_with_retry, temporary)  # fixture teardown only (Claude, 9 Nov)
         self.root = Path(temporary.name).resolve()
         self.archives = self.root / "archives"
         self.archives.mkdir()

@@ -18,11 +18,18 @@ matching `publisher_lfs_sha256`. The caller obtains these expected values from
 the official pinned file-list API; this importer verifies bytes against them.
 It never substitutes a locally computed hash for a missing publisher hash.
 
-Archives, raw outputs and reports must be disjoint; both output roots must be
-new and outside the repository. Archive size/hash and all row metadata are
+Archives, raw outputs and reports must be disjoint and outside the repository;
+both output roots must be new. Archive size/hash and all row metadata are
 checked before creating outputs. Selection uses revision/shard/row hashes and
-an equal allocation per observed publisher speaker. A cap that cannot fit the
-requested equal allocation fails explicitly; it never silently drops speakers.
+an equal allocation per observed publisher speaker. Rows declared longer than a
+10 MB PCM16 WAV holds at 48 kHz mono (about 104 s, less the 0.1 s duration
+tolerance) are excluded before ranking and counted as
+`excluded_over_duration_bound`; stereo or higher-rate rows can still fail at
+decode. Rows declared over 625 s abort the scan. A speaker left with no
+selectable rows, or a cap that cannot fit the requested equal allocation, fails
+explicitly before any output; it never silently drops speakers. Signal flags
+(`review_flags`) are a JSON list; `scripts/verify_pnb_pilot.py` reproduces the
+selection rule.
 Metadata scans exclude audio. Audio iteration uses batches of eight, and only
 selected rows are converted to Python values for extraction.
 

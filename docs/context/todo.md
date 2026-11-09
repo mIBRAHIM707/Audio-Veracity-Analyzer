@@ -70,11 +70,15 @@ independent preparation. Do not treat elapsed time as approval.
       Arabic-script scan, root contents, original FLAC hashes. 40 Claude-authored
       tests; real PASS on the Punjabi (187 clips), CSALT conditioned (450) and
       synthetic (50) outputs; review fixes applied. See `handoffs/prepared-verifier.md`.
-    - [ ] Importer tightening: vacuous publisher-hash branch and string `review_flags`,
-      625 s versus 10 MB bound, CLI exit-code and 48 kHz/stereo fixtures, archive root
-      outside the repo. Needs an Astra case update since the catalogue is Astra's.
-    - [ ] `tests/unit/test_audio_preparation.py` fixture cleanup retry (Windows
-      `WinError 145`); do not use `ignore_cleanup_errors`.
+    - [x] Importer tightening (backlog 1.2, 9 Nov): `inspect_pcm` without the vacuous
+      publisher-hash claim and list `review_flags`; over-long rows (> ~104 s) excluded
+      before ranking, mirrored in the verifier; CLI exit-code, 48 kHz and stereo
+      fixtures; archive root outside the repo. Separate Claude-authored module
+      `tests/pnb/test_meta_pnb_followups.py`; the Astra catalogue is unchanged apart
+      from fixture teardown. Real pilot re-verified with the new rule: PASS.
+    - [x] Fixture cleanup retry `tests/fixture_cleanup.py` (WinError 5/32/145 only,
+      bounded, re-raises, reported on stderr; no `ignore_cleanup_errors`), used by
+      the preparation, conditioning, verifier and Punjabi suites.
 - [ ] 8. Prepare original data collection. Tughral reported approval obtained on
   4 October; the approved protocol and individual consent govern every activity.
   - [ ] 8a. Record the approval reference, body, protocol/form versions, scope

@@ -87,9 +87,17 @@ def fetch_remote(entry, revision):
 
 
 def inspect_audio(payload, entry):
+    """Publisher-verified inspection; review_flags stay a JSON string for CSV-shaped inventories."""
     digest=hashlib.sha256(payload).hexdigest()
     if len(payload)!=entry['size'] or digest!=entry['lfs']['oid']:
         raise ValueError('Publisher size or SHA256 mismatch')
+    info=inspect_pcm(payload)
+    return {**info,'review_flags':json.dumps(info['review_flags'])}
+
+
+def inspect_pcm(payload):
+    """Signal inspection of a PCM16 WAV with no publisher claim; review_flags is a list."""
+    digest=hashlib.sha256(payload).hexdigest()
     with wave.open(io.BytesIO(payload),'rb') as audio:
         rate,channels,width,count=audio.getframerate(),audio.getnchannels(),audio.getsampwidth(),audio.getnframes()
         if not 8000<=rate<=192000 or channels not in (1,2) or width!=2:
@@ -113,7 +121,7 @@ def inspect_audio(payload, entry):
     if sum(quiet)/len(quiet)>.5: flags.append('mostly_quiet')
     if sum(abs(x)/32768>=.999 for x in values)/len(values)>.001: flags.append('possible_digital_clipping')
     if not 3<=count/rate<=6: flags.append('requires_duration_processing')
-    return {'sha256':digest,'duration_s':count/rate,'sample_rate':rate,'channels':channels,'pcm_bits':width*8,'review_flags':json.dumps(flags)}
+    return {'sha256':digest,'duration_s':count/rate,'sample_rate':rate,'channels':channels,'pcm_bits':width*8,'review_flags':flags}
 
 
 def safe_path(root, relative):

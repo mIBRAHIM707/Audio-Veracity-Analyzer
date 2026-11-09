@@ -22,6 +22,7 @@ import numpy as np
 
 from data.prepare.prepare_audio import process_manifest
 from scripts import verify_prepared_output as verifier
+from tests.fixture_cleanup import cleanup_with_retry
 
 SCRIPT = Path(verifier.__file__).resolve()
 TRANSCRIPT = "Fictional unaligned transcript alpha"
@@ -89,11 +90,11 @@ class VerifyPreparedOutputTests(unittest.TestCase):
 
     @classmethod
     def tearDownClass(cls):
-        cls.temporary.cleanup()
+        cleanup_with_retry(cls.temporary)
 
     def setUp(self):
         temporary = tempfile.TemporaryDirectory()
-        self.addCleanup(temporary.cleanup)
+        self.addCleanup(cleanup_with_retry, temporary)
         self.work = Path(temporary.name).resolve()
 
     def copy(self, mode="condition", name=None):
