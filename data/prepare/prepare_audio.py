@@ -27,7 +27,8 @@ PROVENANCE_FIELDS = ('source_id', 'source_version', 'source_recording_id', 'lang
                      'source_row_index', 'source_language', 'publisher_split',
                      'dialect', 'source_prompt_id', 'source_segment_id',
                      'source_speaker_id', 'source_transcript_path',
-                     'source_glottocode', 'original_split', 'consent_status')
+                     'source_glottocode', 'original_split', 'consent_status',
+                     'policy_version')
 
 
 def preflight(manifest_path, source_root, output_root):

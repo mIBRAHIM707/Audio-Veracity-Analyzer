@@ -45,7 +45,7 @@ PROVENANCE = ('source_id', 'source_version', 'source_recording_id', 'language', 
               'original_audio_path', 'source_shard', 'source_shard_sha256', 'source_row_index',
               'source_language', 'publisher_split', 'dialect', 'source_prompt_id', 'source_segment_id',
               'source_speaker_id', 'source_transcript_path', 'source_glottocode', 'original_split',
-              'consent_status')
+              'consent_status', 'policy_version')
 CONDITIONING_FIELDS = ('input_rate', 'input_channels', 'input_sample_count', 'output_sample_count', 'output_rate',
                        'resampler', 'downmix', 'quantization', 'saturated_samples',
                        'native_near_full_scale_fraction', 'canonical_pcm_sha256')

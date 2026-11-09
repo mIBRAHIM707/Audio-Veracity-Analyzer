@@ -86,6 +86,17 @@ It exits 1 on any failure or unreadable input and never modifies the proposal.
   `training_eligible`/`benchmark_only`, not the partition name.
 - Small speaker counts make 70/10/20 approximate; read realised shares.
 
+## Policy migration (FR-D11)
+
+`migrate_policy.py --manifest <published intake manifest> --output-root <new dir>
+--kind csalt_genuine|csalt_synthetic_benchmark|meta_pnb` writes a policy-versioned
+copy (`fr-d11-2026-10-05`): genuine CSALT and Meta rows become trainable with
+`cloning_status: permitted_public_corpus`; benchmark rows stay excluded; consent is
+unchanged; previous values are kept in `previous_policy`. Re-prepare the copy with
+`prepare_audio.py --condition` (clips carry `policy_version`), verify with
+`scripts/verify_prepared_output.py`, then propose. See
+`docs/context/handoffs/policy-migration.md`.
+
 ## Verification
 
 ```text

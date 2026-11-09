@@ -107,6 +107,18 @@ and about 50,000 original clips, excluding codec copies.
   updated baseline tests. Todo 9d: CSALT intake annotates duplicate originals; the
   real v2 inventory has 2 cross-speaker duplicate hashes (4 rows, all selected).
   Open: benchmark-only speaker groups still take allocation slots (not material now).
+- **Backlog 1.4 complete (9 Nov): FR-D11 policy applied to data (todo 9e).**
+  `data/manifest/migrate_policy.py` wrote policy-versioned copies
+  (`fr-d11-2026-10-05`) of the CSALT genuine (340 rows trainable), CSALT synthetic
+  benchmark (68, still excluded) and Meta pnb (12 trainable) manifests; consent
+  status unchanged. Re-prepared outputs match the earlier totals and verify PASS.
+  Split proposal v2 (schema 2, seed `ava-split-2026-11-09`): 687 rows, 23 speakers
+  in 22 groups, train/dev/test 520/75/92 rows, 637 trainable, zero crossings. This
+  supersedes the v1 proposals for planning; it is a proposal, not an accepted
+  split. CSALT publisher synthetic rows stay benchmark-only, so Urdu speakers are
+  genuine-only in training until AVA-generated fakes exist (D11 shortcut risk;
+  deviation from todo 9e wording awaits Tughral). Use the `-frd11-r2` outputs.
+  See `handoffs/policy-migration.md`.
 - **Todo 8b complete: collection preparation written; 8a and 8c blocked on the
   approval document.** `docs/data-collection/collection-plan.md` lists the eight
   fields only the approval can supply (reference, body, protocol and form

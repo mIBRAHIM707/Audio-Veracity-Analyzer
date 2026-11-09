@@ -35,7 +35,10 @@ items needing that data are listed at the end and stay out of the queue.
   review; annotate duplicate originals. Evidence (9 Nov): spec decision 7 implemented
   (schema 2) plus decision 9; 16 Claude-authored cases + 20 updated baseline tests;
   todo 9d annotation with real read-only count (2 hashes, 4 rows); review fixed.
-- [ ] 1.4 Versioned policy migration and pilot split rerun, preserving originals.
+- [x] 1.4 Versioned policy migration and pilot split rerun, preserving originals.
+  Evidence (9 Nov): `migrate_policy.py` + 8 Claude-authored tests, review fixed; 3 manifests
+  migrated, re-prepared (450/50/187 clips) and verified PASS; schema-2 proposal
+  validated (687 rows, zero crossings, 637 trainable). Originals and v1 kept.
 - [ ] 1.QA Review evidence and remaining source/identity limitations.
 
 ## 2 — Working upload/scoring prototype (FR-A1/A2, FR-U4)

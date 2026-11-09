@@ -21,9 +21,9 @@
       "language": "ur",
       "published_licence": "CC-BY-NC-4.0",
       "status": "approved_noncommercial_detection_research",
-      "decision_basis": "Project owner explicitly accepted CSALT as an established research source on 2026-10-03 and authorized expanding the genuine pilot. Published CC-BY-NC-4.0 terms retained; this is not institutional or cloning approval.",
+      "decision_basis": "Project owner explicitly accepted CSALT as an established research source on 2026-10-03 and authorized expanding the genuine pilot. Project-owner decision of 2026-10-05 (PRD D11, FR-D11), under the university approval reported 2026-10-04 (reference pending): CSALT genuine speakers may be used for training and voice cloning in this noncommercial research; applied to data as policy version fr-d11-2026-10-05 on 2026-11-09 (data/manifest/migrate_policy.py). Published CC-BY-NC-4.0 terms retained (noncommercial only); no cloned voice is released; this is not individual consent.",
       "next_action": "Use published genuine/Urdu labels, verify publisher hashes and decoded audio, consolidate the balanced multi-speaker pilot. No per-file listening approval gate; sample/target suspicious processing outputs.",
-      "constraints": "PRD FR-D1 selects the genuine partition. Existing synthetic partitions are a separate noncommercial smoke-test benchmark; they are not eligible for AVA training or claimed to satisfy FR-D11.",
+      "constraints": "PRD FR-D1 selects the genuine partition. Existing synthetic partitions are a separate noncommercial smoke-test benchmark; they are not eligible for AVA training or claimed to satisfy FR-D11 (generator version, prompt and reference audio unknown), and the fr-d11-2026-10-05 migration keeps them benchmark-only.",
       "synthetic_benchmark": {
         "revision": "eb8f16623108324867e4424a646937409c64b82b",
         "verified_catalog_entries": 3396,

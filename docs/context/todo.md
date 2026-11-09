@@ -118,7 +118,11 @@ independent preparation. Do not treat elapsed time as approval.
     in `tests/unit/test_split_proposals_cases.py` replace the Astra request (Astra
     access ended); catalogue `docs/qa/split-proposal-test-cases.md`. Real v2 rerun
     is backlog 1.4.
-  - [ ] 9e. Apply the 5 Oct owner decision (PRD FR-D11) to data: regenerate the
+  - [x] 9e (done 9 Nov, backlog 1.4: `data/manifest/migrate_policy.py`; three
+    migrated manifests re-prepared and verified PASS; schema-2 proposal valid with
+    637 trainable rows; see `handoffs/policy-migration.md`). **Deviation to confirm:**
+    CSALT publisher synthetic rows were kept benchmark-only (not trainable), unlike
+    the wording below; reason and shortcut risk in the handoff. Apply the 5 Oct owner decision (PRD FR-D11) to data: regenerate the
     CSALT genuine, CSALT synthetic and Meta pnb manifests into new versions with
     `cloning_status: permitted_public_corpus`, `training_eligible: true` and the
     approval/licence basis recorded; rerun the split proposal on them; keep the
