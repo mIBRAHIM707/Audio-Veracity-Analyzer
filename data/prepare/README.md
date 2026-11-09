@@ -114,6 +114,16 @@ version, master seed and exact manifest clip ID so the chain can be rebuilt.
 It is a library only: not yet wired into `prepare_audio.py`, and GSM, AMR-NB and
 jitter are not implemented.
 
+## Additive noise at SNR (partial backlog 3.4, PRD FR-D7)
+
+`noise.py` `mix_at_snr(speech, noise, snr_db, seed)` adds same-rate mono PCM16
+noise at 0 to 20 dB SNR from a seeded offset (wrapping when the noise is short),
+rounds and clips to int16, and records the SNR basis, target and achieved SNR,
+seed, offset, wrap/repeat count, speech/noise/output hashes, gain and clipped-sample
+count. Callers must check clipping; the caller picks SNR and seed (no per-clip
+derivation yet). SNR is whole-clip mean square (no VAD yet).
+No noise corpus or room impulse responses are included; it is a library only.
+
 `tests/unit/test_conditioning_parity.py` checks that this preparation path and the
 analysis service (`services/inference/`) condition the same WAV to identical
 16 kHz samples and coordinates; the service applies no peak normalization.
@@ -121,7 +131,7 @@ analysis service (`services/inference/`) condition the same WAV to identical
 ## Verification
 
 ```text
-uv run --no-project --python 3.11 --with-requirements requirements-audio.txt python -m unittest tests.unit.test_g711_codec tests.unit.test_packet_loss tests.unit.test_conditioning_parity -v
+uv run --no-project --python 3.11 --with-requirements requirements-audio.txt python -m unittest tests.unit.test_g711_codec tests.unit.test_packet_loss tests.unit.test_noise_mixing tests.unit.test_conditioning_parity -v
 uv run --no-project --python 3.11 python -m unittest discover -s tests/unit -p test_audio_preparation.py -v
 uv run --no-project --python 3.11 --with-requirements requirements-audio.txt python -m unittest discover -s tests/unit -p test_audio_conditioning.py -v
 ```
