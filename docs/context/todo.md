@@ -64,8 +64,12 @@ independent preparation. Do not treat elapsed time as approval.
       versions and transcript hashes; real pilot read-only run PASS (12 rows, 6
       speakers, 13.0646 min). Prior-hash comparison stays inactive until a fresh
       record is written beside the prototype's; see `handoffs/pnb-verifier.md`.
-    - [ ] Parameterised prepared-output verifier that recomputes segmentation, metrics
-      and flags, scans values for transcript text, checks root contents, reads FLAC.
+    - [x] Parameterised prepared-output verifier `scripts/verify_prepared_output.py`
+      (backlog 1.1, 9 Nov): recomputes conditioning, metrics, flags, pause boundaries
+      and the retained optimum, rebuilds every clip, exact key sets, transcript and
+      Arabic-script scan, root contents, original FLAC hashes. 40 Claude-authored
+      tests; real PASS on the Punjabi (187 clips), CSALT conditioned (450) and
+      synthetic (50) outputs; review fixes applied. See `handoffs/prepared-verifier.md`.
     - [ ] Importer tightening: vacuous publisher-hash branch and string `review_flags`,
       625 s versus 10 MB bound, CLI exit-code and 48 kHz/stereo fixtures, archive root
       outside the repo. Needs an Astra case update since the catalogue is Astra's.

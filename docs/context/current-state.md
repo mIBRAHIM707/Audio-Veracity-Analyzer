@@ -78,6 +78,16 @@ and about 50,000 original clips, excluding codec copies.
 
 ## Implemented locally
 
+- **Backlog 1.1 complete (9 Nov, daily branch): prepared-output verifier.**
+  `scripts/verify_prepared_output.py` re-derives every `prepare_audio.py` output
+  without importing it: conditioning, metrics and flags (exact float sums), pause
+  boundaries and the retained-sample optimum (tie-break independent), byte-exact
+  clips, exact field sets, summary totals, root contents, original FLAC hashes and
+  a transcript/Arabic-script scan. Read-only PASS on the Punjabi (187 clips), CSALT
+  conditioned (450) and synthetic benchmark (50) outputs, matching earlier totals.
+  40 Claude-authored tests; independent review findings fixed. The exact-mode CSALT
+  pilot v2 cannot be re-verified: its input manifest is not on disk.
+  See `handoffs/prepared-verifier.md`.
 - **Todo 8b complete: collection preparation written; 8a and 8c blocked on the
   approval document.** `docs/data-collection/collection-plan.md` lists the eight
   fields only the approval can supply (reference, body, protocol and form

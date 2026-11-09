@@ -106,5 +106,19 @@ uv run --no-project --python 3.11 --with-requirements requirements-audio.txt pyt
 ```
 
 Tests use fictional generated PCM and temporary directories. No real audio or
-filled source manifest belongs in Git. The portable project state records only
+filled source manifest belongs in Git.
+
+To verify a published output root independently, read-only, run
+`scripts/verify_prepared_output.py` with the same input manifest and source root
+and the mode the run used (`condition` or `exact`). It does not import this
+package: it re-derives conditioning, metrics, flags, pause boundaries and the
+retained-sample optimum, rebuilds every clip byte-for-byte, hashes original
+audio (e.g. FLAC) when rows name it, scans `report.json` for transcript text and
+Arabic-script characters and checks root contents. It prints one aggregate
+`PASS`/`FAIL` line. Earlier evidence files in the root need `--allow-extra NAME`.
+
+```text
+uv run --no-project --python 3.11 --with-requirements requirements-audio.txt python scripts/verify_prepared_output.py --manifest <input.json> --source-root <raw root> --output-root <prepared root> --mode condition
+uv run --no-project --python 3.11 --with-requirements requirements-audio.txt python -m unittest tests.unit.test_verify_prepared_output -v
+``` The portable project state records only
 aggregate results; `.local/data-location.json` locates this machine's data.

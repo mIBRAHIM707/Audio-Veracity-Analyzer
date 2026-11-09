@@ -23,7 +23,10 @@ items needing that data are listed at the end and stay out of the queue.
   window unchanged. 25 scheduler tests pass (2 new Claude-authored).
 
 ## 1 — Finish existing foundations (#11, #18, #19)
-- [ ] 1.1 Parameterized prepared-output verifier; segmentation/metrics/flags/hash checks.
+- [x] 1.1 Parameterized prepared-output verifier; segmentation/metrics/flags/hash checks.
+  Evidence (9 Nov): `scripts/verify_prepared_output.py`, 40 Claude-authored tests,
+  real read-only PASS on three external prepared outputs, independent review
+  findings fixed. Exact-mode pilot v2 lacks its input manifest; fixtures only.
 - [ ] 1.2 Punjabi importer follow-ups and meaningful Windows fixture cleanup fix.
 - [ ] 1.3 Astra split cases and independent review; annotate duplicate originals.
 - [ ] 1.4 Versioned policy migration and pilot split rerun, preserving originals.
