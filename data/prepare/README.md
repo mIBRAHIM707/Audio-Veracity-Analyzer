@@ -111,8 +111,14 @@ repeat-last-packet concealment and records seed, counts and a lost-index hash.
 `derive_loss(master_seed, clip_id)` gives each clip its own plan (rate uniform
 0-5 %, seed); `telephone_roundtrip(..., loss_plan=plan)` records the derivation
 version, master seed and exact manifest clip ID so the chain can be rebuilt.
-It is a library only: not yet wired into `prepare_audio.py`, and GSM, AMR-NB and
-jitter are not implemented.
+`drop_late_packets(encoded, law, jitter_ms, buffer_ms, seed)` models jitter as
+late-packet loss: each packet gets a seeded exponential extra delay (mean
+`jitter_ms`, at most 100 ms); a packet later than the fixed playout buffer
+(`buffer_ms`, at most 400 ms) is concealed like a lost one. Packets are never
+reordered. It is not yet called by `telephone_roundtrip` (record `jitter` is None)
+and has no per-clip derivation yet.
+It is a library only: not yet wired into `prepare_audio.py`, and GSM and AMR-NB
+are not implemented.
 
 ## Additive noise at SNR (partial backlog 3.4, PRD FR-D7)
 

@@ -10,6 +10,7 @@ GSM, AMR-NB and jitter are not implemented here yet.
 Inputs must be `bytes` (not bytearray/memoryview), matching `conditioning.py`.
 """
 import hashlib
+import math
 
 import numpy as np
 
@@ -117,6 +118,66 @@ def derive_loss(master_seed, clip_id):
             'seed': int.from_bytes(digest[8:16], 'big')}
 
 
+def _conceal(codes, lost, law, concealment):
+    """Replace each lost 20 ms packet by the previous received packet ('repeat') or the
+    silence code (no previous packet, or 'silence')."""
+    output, previous = codes.copy(), None
+    for index in range(len(lost)):
+        frame = slice(index * FRAME_SAMPLES, (index + 1) * FRAME_SAMPLES)
+        if not lost[index]:
+            previous = codes[frame]
+            continue
+        if concealment == 'repeat' and previous is not None:
+            output[frame] = np.resize(previous, len(output[frame]))
+        else:
+            output[frame] = _SILENCE_CODE[law]
+    return output
+
+
+MAX_JITTER_MS = 100  # bound on the mean extra network delay accepted for augmentation
+MAX_BUFFER_MS = 400
+
+
+def drop_late_packets(encoded, law, jitter_ms, buffer_ms, seed, concealment='repeat'):
+    """Seeded jitter as late-packet loss (PRD FR-D6 jitter, FR-I2 jitter buffer): each
+    20 ms packet gets an independent exponential extra delay with mean `jitter_ms`; a
+    packet whose delay exceeds the fixed playout buffer `buffer_ms` misses its slot and
+    is concealed like a lost packet. `jitter_ms` is that mean extra delay, not RFC 3550
+    interarrival jitter, and delays are uncorrelated. Settings whose expected late fraction
+    exp(-buffer_ms/jitter_ms) exceeds MAX_LOSS_RATE are refused, so jitter stays inside
+    the FR-D6 loss range. Packets are never reordered in the output (a fixed
+    buffer plays in sequence order). Returns (concealed bytes, record)."""
+    _check_law(law)
+    codes = _codes(encoded).astype(np.uint8)
+    if concealment not in CONCEALMENTS:
+        raise ValueError(f'concealment must be one of {CONCEALMENTS}')
+    for name, value, upper in (('jitter_ms', jitter_ms, MAX_JITTER_MS),
+                               ('buffer_ms', buffer_ms, MAX_BUFFER_MS)):
+        if isinstance(value, bool) or not isinstance(value, (int, float)) \
+                or not np.isfinite(value) or not 0 <= value <= upper:
+            raise ValueError(f'{name} must be a finite number from 0 to {upper}')
+    if jitter_ms and math.exp(-buffer_ms / jitter_ms) > MAX_LOSS_RATE:
+        raise ValueError('expected late-packet fraction exp(-buffer_ms/jitter_ms) exceeds '
+                         f'the FR-D6 loss bound {MAX_LOSS_RATE}')
+    if type(seed) is not int or seed < 0:
+        raise ValueError('seed must be a non-negative integer for reproducible jitter')
+    count = -(-len(codes) // FRAME_SAMPLES)
+    delays = np.random.default_rng(seed).exponential(1.0, count) * jitter_ms
+    late = delays > buffer_ms
+    output = _conceal(codes, late, law, concealment)
+    indices = np.flatnonzero(late).astype('<i4').tobytes()
+    return output.tobytes(), {
+        'jitter_ms': float(jitter_ms), 'buffer_ms': float(buffer_ms), 'seed': seed,
+        'model': 'exponential_delay_fixed_buffer_late_loss',
+        'jitter_definition': 'mean of independent per-packet extra delay (not RFC 3550 interarrival jitter)',
+        'expected_late_fraction': math.exp(-buffer_ms / jitter_ms) if jitter_ms else 0.0,
+        'rng': 'numpy.random.default_rng(seed).exponential(1.0, packets) * jitter_ms > buffer_ms',
+        'numpy_version': np.__version__, 'packet_ms': 20, 'packets': count,
+        'late_packets': int(late.sum()),
+        'late_indices_sha256': hashlib.sha256(indices).hexdigest(), 'concealment': concealment,
+    }
+
+
 def drop_packets(encoded, law, loss_rate, seed, concealment='repeat'):
     """Seeded Bernoulli loss of 20 ms G.711 packets, concealed by the silence code or by
     repeating the previous received packet (silence when none precedes). Returns
@@ -132,17 +193,7 @@ def drop_packets(encoded, law, loss_rate, seed, concealment='repeat'):
         raise ValueError('seed must be a non-negative integer for reproducible loss')
     count = -(-len(codes) // FRAME_SAMPLES)
     lost = np.random.default_rng(seed).random(count) < loss_rate
-    output, previous = codes.copy(), None
-    for index in range(count):
-        frame = slice(index * FRAME_SAMPLES, (index + 1) * FRAME_SAMPLES)
-        if not lost[index]:
-            previous = codes[frame]
-            continue
-        width = len(output[frame])
-        if concealment == 'repeat' and previous is not None:
-            output[frame] = np.resize(previous, width)
-        else:
-            output[frame] = _SILENCE_CODE[law]
+    output = _conceal(codes, lost, law, concealment)
     indices = np.flatnonzero(lost).astype('<i4').tobytes()
     return output.tobytes(), {
         'loss_rate': float(loss_rate), 'seed': seed, 'model': 'bernoulli_per_packet',
