@@ -87,7 +87,10 @@ items needing that data are listed at the end and stay out of the queue.
 - [ ] 3.QA Sample-level parity, malformed formats and immutable-original checks.
 
 ## 4 — Streaming decisions (FR-I4–I8)
-- [ ] 4.1 Configuration validation and call-scoped reload behavior.
+- [x] 4.1 Configuration validation and call-scoped reload behavior.
+  Evidence (10 Nov): `services/scorer/config.py` (FR-I4 rules, §7.3 defaults, JSON
+  loader, serialized atomic reload with fingerprint), 22 Claude-authored tests incl. a
+  mutation-checked overlapping-reload case; independent review fixed. No YAML/Pydantic.
 - [ ] 4.2 EMA, minimum evidence, hysteresis and undetermined outcomes.
 - [ ] 4.3 Quality flags, direction selection and agent-direction semantics.
 - [ ] 4.QA Boundary/state-transition/concurrency tests and independent review.

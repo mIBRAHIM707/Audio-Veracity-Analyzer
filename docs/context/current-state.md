@@ -111,6 +111,14 @@ and about 50,000 original clips, excluding codec copies.
   union exceed 5 % of a clip's packets; FR-D6 does not say whether 0-5 % bounds the
   sum. Library only: GSM, AMR-NB and manifest wiring remain. 3.2 VAD is blocked on an
   unprovisioned VAD dependency/model.
+- **Backlog 4.1 complete (10 Nov): scoring configuration.** `services/scorer/config.py`
+  validates the FR-I4/§2.4 rules (both threshold pairs `0 < exit < enter <= 1`,
+  `0 < hop <= window`, window equal to the model card) plus labelled sanity rules,
+  with §7.3 defaults; `ConfigStore` gives calls immutable snapshots, serialized atomic
+  reloads from a mapping or a hardened JSON file, and a restart-stable fingerprint.
+  Deviation: no YAML parser or Pydantic is pinned, so JSON stands in. Open for the
+  PRD: ordering between suspicious and alert thresholds, `min_windows` upper bound,
+  agent-only scoring.
 - **Backlog 3.4 in progress (9 Nov): additive noise at SNR (FR-D7).**
   `data/prepare/noise.py` mixes same-rate PCM16 noise at 0-20 dB whole-clip SNR
   from a seeded, recorded offset with clipping and achieved SNR recorded, plus
