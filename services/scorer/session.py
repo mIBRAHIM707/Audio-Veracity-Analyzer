@@ -6,6 +6,13 @@ Pure domain logic with no I/O: `DirectionSession.add_window` takes one window's
 summary. Persistence, Redis, event publishing, direction combination (FR-I8, backlog
 4.3) and degraded mode (FR-I10, backlog 8.2) are outside this module.
 
+Concurrency contract: a session is not thread-safe. Each call has one owner;
+`add_window` and `end` must not overlap and windows must arrive in window order for
+the direction. "Nothing changes on failure" holds within that single owner. The
+integration (backlog 5) must serialize per call and reject reordered or duplicate
+results, e.g. with a monotonic window index at the boundary. Event `data` dicts are
+not frozen; copy them before publishing (backlog 5).
+
 Rules (architecture §2.4):
 - EMA with `ema_alpha`; the first window seeds the EMA with its own score.
 - A provisional score is published from the first window; no state change until
@@ -48,8 +55,12 @@ class SessionClosed(RuntimeError):
 
 def _real(value):
     """Finite real number, not a bool; accepts NumPy scalars such as float32."""
-    return (isinstance(value, numbers.Real) and not isinstance(value, bool)
-            and math.isfinite(value))
+    if isinstance(value, bool) or not isinstance(value, numbers.Real):
+        return False
+    try:
+        return math.isfinite(value)
+    except OverflowError:  # e.g. 10**400
+        return False
 
 
 def _next_state(state, ema, streak, levels):

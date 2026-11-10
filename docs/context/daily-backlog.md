@@ -103,7 +103,10 @@ items needing that data are listed at the end and stay out of the queue.
   answer, >10 % concealed windows not scored with quality=low, more severe direction
   drives, call verdict), 17 Claude-authored tests with hand-worked timelines; review
   fixed. Interpretations (sticky quality, tie to caller, verdict rule) await the PRD.
-- [ ] 4.QA Boundary/state-transition/concurrency tests and independent review.
+- [x] 4.QA Boundary/state-transition/concurrency tests and independent review.
+  Evidence (10 Nov): `docs/qa/phase-4-qa.md`, independent conditional pass as
+  infrastructure; M1 concurrency contract documented, L1/L2 fixed with tests, L3 and
+  the reorder/duplicate boundary check assigned to backlog 5; ten PRD questions listed.
 
 ## 5 — Backend persistence/events (FR-A, FR-I11)
 - [ ] 5.1 PostgreSQL/Redis data and event contracts, migrations and bounded queues.

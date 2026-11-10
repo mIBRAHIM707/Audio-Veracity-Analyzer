@@ -170,6 +170,44 @@ class EndAndFailureTests(unittest.TestCase):
             c.add_window('caller', 0.8)
         self.assertEqual((c.state, c.driving_direction, c.sessions['caller'].windows), before)
 
+    # Phase-4 QA L2 cases (Claude-authored, 10 Nov 2026).
+    def test_agent_enabled_but_never_answered_ends_with_caller_only(self):
+        c = scorer()
+        c.add_window('agent', 0.9)
+        for p in (0.1, 0.1):
+            c.add_window('caller', p)
+        with self.assertRaises(ValueError):  # the agent was never scored, so it is not expected
+            c.end('bye', speech_seconds={'caller': 4, 'agent': 0})
+        ended = c.end('bye', speech_seconds={'caller': 4})
+        self.assertEqual([e.data.get('direction') for e in ended[:-1]], ['caller'])
+        self.assertEqual((ended[-1].data['verdict'], ended[-1].data['ignored']['before_human_answer']),
+                         ('monitoring', 1))
+
+    def test_drops_in_both_directions_give_one_quality_event(self):
+        c = scorer()
+        c.human_agent_answered()
+        types = []
+        for direction in ('caller', 'agent', 'caller', 'agent'):
+            types += [e.type for e in c.add_window(direction, 0.5, concealed_fraction=0.5)]
+        self.assertEqual(types, ['call.quality'])
+        self.assertEqual(c.dropped_low_quality, {'caller': 2, 'agent': 2})
+
+    def test_gated_windows_can_leave_a_call_undetermined(self):
+        c = scorer(CALLER)
+        c.add_window('caller', 0.9)
+        for _ in range(5):
+            c.add_window('caller', 0.9, concealed_fraction=0.2)
+        summary = c.end('bye', speech_seconds={'caller': 12})[-1].data
+        self.assertEqual((summary['verdict'], summary['quality']), ('undetermined', 'low'))
+
+    def test_huge_integer_inputs_are_value_errors(self):
+        c = scorer(CALLER)
+        for kwargs in (dict(p_synthetic=10 ** 400), dict(p_synthetic=0.5, concealed_fraction=10 ** 400)):
+            with self.subTest(kwargs=kwargs):
+                with self.assertRaises(ValueError):
+                    c.add_window('caller', **kwargs)
+        self.assertEqual(c.sessions['caller'].windows, 0)
+
     def test_all_directions_short_is_undetermined(self):
         c = scorer()
         c.human_agent_answered()

@@ -136,6 +136,11 @@ class ParseConfigTests(unittest.TestCase):
                         parse(document(**{key: value}))
         with self.assertRaisesRegex(ConfigError, 'min_windows must be an integer'):
             parse(changed(scoring__min_windows='2'))
+        # Phase-4 QA L1 (Claude-authored, 10 Nov): an integer too large for a float.
+        for key in ('scoring.ema_alpha', 'audio.hop_s', 'audio.vad_threshold'):
+            with self.subTest(huge=key):
+                with self.assertRaises(ConfigError):
+                    parse(document(**{key: 10 ** 400}))
 
     def test_vad_keys_get_sanity_range_only(self):
         parse(changed(audio__vad_threshold=0, audio__min_speech_fraction=1, audio__max_concealed_fraction=0.5))
@@ -345,6 +350,13 @@ class LoadJsonConfigTests(unittest.TestCase):
             with self.subTest(name):
                 with self.assertRaisesRegex(ConfigError, pattern):
                     load_json_config(self.write(name, payload), model_window_s=MODEL_WINDOW)
+
+    def test_file_of_exactly_the_size_limit_is_accepted(self):
+        body = json.dumps(AVA_DOCUMENT).encode()
+        payload = body + b' ' * (MAX_CONFIG_BYTES - len(body))
+        self.assertEqual(len(payload), MAX_CONFIG_BYTES)
+        self.assertEqual(load_json_config(self.write('exact.json', payload), model_window_s=MODEL_WINDOW),
+                         ScoringConfig())
 
     def test_missing_file_is_an_os_error(self):
         with self.assertRaises(FileNotFoundError):

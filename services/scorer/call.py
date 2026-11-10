@@ -15,7 +15,9 @@ Pure domain logic over `DirectionSession`. Rules:
   direction shown. Interpretation choices: ties go to the caller; no driver while
   everything is `monitoring`.
 - `no_speech` (needs the VAD, backlog 3.2) and `unmonitored` (degraded mode, backlog
-  8.2) are not produced here. Event window numbers count that direction's scored
+  8.2) are not produced here.
+- Not thread-safe: one owner per call, calls serialized, windows in order per
+  direction (same contract as `session.py`). Event window numbers count that direction's scored
   windows; directions do not share one timeline.
 """
 from .config import DIRECTIONS, ScoringConfig

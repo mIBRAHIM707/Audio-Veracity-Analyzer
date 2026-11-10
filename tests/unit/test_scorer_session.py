@@ -227,7 +227,7 @@ class EndAndFailureTests(unittest.TestCase):
         feed(s, [0.0, 0.8, 0.8])  # in alert, so alert_id is set
         before = self.snapshot(s)
         self.assertEqual(before[2], 'alert')
-        for value in (float('nan'), float('inf'), -0.01, 1.01, True, '0.5', None, 0.5j):
+        for value in (float('nan'), float('inf'), -0.01, 1.01, True, '0.5', None, 0.5j, 10 ** 400):
             with self.subTest(value=value):
                 with self.assertRaises(ValueError):  # ValueError for every bad score, by design
                     s.add_window(value)

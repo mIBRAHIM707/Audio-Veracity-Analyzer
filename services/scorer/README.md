@@ -3,6 +3,14 @@
 Pure, dependency-free domain logic for live scoring. No I/O beyond reading a
 configuration file; no Redis, PostgreSQL or events yet (backlog 5).
 
+Concurrency contract: `ConfigStore` is thread-safe. `DirectionSession` and
+`CallScorer` are not: each call has one owner, `add_window`/`end` must not overlap,
+and windows must arrive in order per direction. Their "invalid input changes nothing"
+guarantee holds within that single owner. Backlog 5 must serialize per call, reject
+reordered or duplicate inference results (monotonic window index at the boundary) and
+copy event `data` before publishing (the dicts are not frozen). Independent QA:
+`docs/qa/phase-4-qa.md`.
+
 ## Configuration (backlog 4.1; PRD FR-I4, FR-A9 subset; architecture §2.4, §7.3)
 
 `config.parse_config(document, model_window_s=...)` validates an `ava.yaml`-shaped

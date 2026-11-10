@@ -126,6 +126,10 @@ and about 50,000 original clips, excluding codec copies.
   for an alert open at the end. Pure logic; persistence/events are backlog 5. Open
   for the PRD: FR-I7 `ended_open` wording for `suspicious`, threshold ordering,
   end-of-call verdict vocabulary, `state.changed` as an internal event.
+- **Phase 4 QA (10 Nov): conditional pass as infrastructure** (`docs/qa/phase-4-qa.md`).
+  The scorer objects are single-owner and not thread-safe (documented); backlog 5 must
+  serialize per call, reject reordered/duplicate results and copy event data on
+  publish. Ten interpretation choices await PRD decisions.
 - **Backlog 4.3 complete (10 Nov): call-level scoring.** `services/scorer/call.py`
   scores only configured directions (caller by default), starts the agent direction
   at the human answer (IVR windows ignored), drops windows over the FR-I2 10 %

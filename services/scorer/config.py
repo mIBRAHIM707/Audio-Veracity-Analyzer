@@ -78,8 +78,12 @@ def fingerprint(config):
 
 
 def _number(value):
-    return (not isinstance(value, bool) and isinstance(value, (int, float))
-            and math.isfinite(value))
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return False
+    try:
+        return math.isfinite(value)
+    except OverflowError:  # an integer too large for a float is not a usable setting
+        return False
 
 
 def _section(document, name, allowed, problems):
@@ -223,7 +227,9 @@ class ConfigStore:
             return self._swap(parse_config(document, model_window_s=model_window_s))
 
     def reload_file(self, path, *, model_window_s):
-        """Reload from a JSON file through the hardened reader (FR-A9 file plus reload)."""
+        """Reload from a JSON file through the hardened reader (FR-A9 file plus reload).
+        Raises ConfigError for invalid content and OSError (e.g. FileNotFoundError) when
+        the file cannot be read; either way the current snapshot is unchanged."""
         with self._reload_lock:
             return self._swap(load_json_config(path, model_window_s=model_window_s))
 
