@@ -39,7 +39,16 @@ point; `cohort='available'` mixes populations and is labelled in each row. Point
 fewer than `min_clips_per_class` (default 10, a local choice) clips per class are
 'insufficient data'. Rows carry the `codec` label; run once per codec.
 
-Not done: subset slicing over manifests (FR-M5 a-g), reliability-diagram output, the report generator, and any metric on real AVA scores.
+`subset_report(records, fields, costs=)` builds the FR-M5 table: a full-set row and
+one row per value of each string subset field (language, codec, generator partition,
+code-switched, call set), each with EER, FAR at FRR 5 % (per-row threshold), minDCF and
+intervals for all three, missing counts split by class, 'insufficient data' below 10
+clips per class and 'no values' for a field no record carries. FR-M10 dialect FAR at the
+deployed threshold is separate. `reliability_bins` gives the FR-M6 reliability-diagram
+data on the same bins as `ece`.
+
+Not done: building the records from real manifests and scores, plotting/report files,
+FR-M10 fixed-threshold dialect FAR, the report generator, and any metric on real AVA scores.
 These are known-answer arithmetic tests, not model results.
 
 ```text

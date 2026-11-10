@@ -231,6 +231,97 @@ def evidence_curve(genuine_clips, synthetic_clips, *, alpha=0.4, lengths=EVIDENC
     return rows
 
 
+LABELS = ('genuine', 'synthetic')
+
+
+def subset_report(records, fields, *, costs, min_clips_per_class=10, seed=0, n_resamples=1000,
+                  target_frr=0.05):
+    """FR-M5 per-subset table (subsets such as 'language', 'codec',
+    'generator_partition', 'code_switched', 'call_set'). `records` are dicts with 'label'
+    ('genuine' or 'synthetic'), 'score' (p_synthetic, 0-1) and string subset fields;
+    `costs` is exactly {c_miss, c_fa, pi_spoof} for minDCF (see module docstring).
+
+    Returns one row for the full set (field None), then per field one row per value in
+    sorted order, with counts, EER, FAR at each row's own FRR = target_frr threshold,
+    minDCF and bootstrap intervals for all three, or 'insufficient data' when either
+    class has fewer than `min_clips_per_class` records. `missing` is the whole-field
+    count of records where the field is absent or None (split by class in
+    `missing_genuine`/`missing_synthetic`), repeated on each of that field's rows; a field
+    present on no record gets one row with status 'no values'.
+
+    Not for FR-M10 dialects: those sets are genuine-only and need FAR at the fixed
+    deployed threshold, gated by `dialect_reportable`, which is separate work."""
+    if not isinstance(fields, (list, tuple)) or not all(isinstance(f, str) and f for f in fields):
+        raise ValueError('fields must be a list of field names')
+    if len(set(fields)) != len(fields) or set(fields) & {'label', 'score'}:
+        raise ValueError("fields must be distinct and must not be 'label' or 'score'")
+    if not _int(min_clips_per_class) or min_clips_per_class < 1:
+        raise ValueError('min_clips_per_class must be a positive integer')
+    if not _int(seed) or seed < 0 or not _int(n_resamples) or n_resamples < 100:
+        raise ValueError('seed must be a non-negative integer and n_resamples an integer >= 100')
+    if not isinstance(costs, dict) or set(costs) != {'c_miss', 'c_fa', 'pi_spoof'}:
+        raise ValueError('costs must be a dict with exactly c_miss, c_fa and pi_spoof')
+    min_dcf([0.0], [1.0], **costs)  # validate the cost values once, before any work
+    clean = []
+    for index, record in enumerate(records):
+        if not isinstance(record, dict) or record.get('label') not in LABELS:
+            raise ValueError(f'record {index} needs a label from {LABELS}')
+        score = record.get('score')
+        if isinstance(score, bool) or not isinstance(score, numbers.Real) \
+                or not math.isfinite(score) or not 0 <= score <= 1:
+            raise ValueError(f'record {index} needs a score from 0 to 1')
+        for field in fields:
+            if record.get(field) is not None and not isinstance(record[field], str):
+                raise ValueError(f'record {index} field {field!r} must be a string or None')
+        clean.append(record)
+
+    def row(field, value, group, absent=()):
+        g = [r['score'] for r in group if r['label'] == 'genuine']
+        s = [r['score'] for r in group if r['label'] == 'synthetic']
+        out = {'field': field, 'value': value, 'genuine': len(g), 'synthetic': len(s),
+               'missing': len(absent),
+               'missing_genuine': sum(r['label'] == 'genuine' for r in absent),
+               'missing_synthetic': sum(r['label'] == 'synthetic' for r in absent)}
+        if min(len(g), len(s)) < min_clips_per_class:
+            out['status'] = 'insufficient data'
+            return out
+        far, threshold = far_at_frr(g, s, target_frr)
+        kw = dict(seed=seed, n_resamples=n_resamples)
+        out.update(status='ok', eer=eer(g, s), far_at_frr=far, threshold=threshold,
+                   min_dcf=min_dcf(g, s, **costs),
+                   eer_ci=bootstrap_ci(eer, g, s, **kw),
+                   far_ci=bootstrap_ci(lambda a, b: far_at_frr(a, b, target_frr)[0], g, s, **kw),
+                   min_dcf_ci=bootstrap_ci(lambda a, b: min_dcf(a, b, **costs), g, s, **kw))
+        return out
+
+    rows = [row(None, None, clean)]
+    for field in fields:
+        present = [r for r in clean if r.get(field) is not None]
+        absent = [r for r in clean if r.get(field) is None]
+        values = sorted({r[field] for r in present})
+        if not values:
+            empty = row(field, None, [], absent)
+            empty['status'] = 'no values'
+            rows.append(empty)
+        for value in values:
+            rows.append(row(field, value, [r for r in present if r[field] == value], absent))
+    return rows
+
+
+def reliability_bins(p_synthetic, is_synthetic, n_bins=15):
+    """Reliability-diagram data (FR-M6) on the same bins as `ece`: per nonempty bin its
+    nominal edges, count, mean p_synthetic and synthetic fraction. Edges are nominal:
+    floating-point multiplication can put a value on an edge into the bin below, and
+    the last bin includes 1.0 (both exactly as in `ece`)."""
+    ece(p_synthetic, is_synthetic, n_bins)  # same validation
+    p = np.asarray(p_synthetic, dtype=np.float64)
+    y = np.asarray(is_synthetic)
+    bins = np.minimum((p * n_bins).astype(int), n_bins - 1)
+    return [{'low': b / n_bins, 'high': (b + 1) / n_bins, 'count': int((bins == b).sum()),
+             'mean_p': float(p[bins == b].mean()), 'fraction_synthetic': float(y[bins == b].mean())}
+            for b in np.unique(bins)]
+
+
 def dialect_reportable(speakers, genuine_clips):
     """FR-M10: a dialect is reported only with >= 10 speakers and >= 500 genuine clips;
     otherwise it is listed as 'insufficient data'."""

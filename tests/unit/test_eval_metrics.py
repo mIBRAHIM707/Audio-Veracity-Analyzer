@@ -11,7 +11,7 @@ import numpy as np
 
 from models.evaluation.metrics import (bootstrap_ci, dialect_reportable, ece, eer, ema_first,
                                        error_rates, evidence_curve, far_at_frr, fit_temperature,
-                                       min_dcf)
+                                       min_dcf, reliability_bins, subset_report)
 
 # Three genuine and four synthetic scores; thresholds .1 .2 .4 .5 .6 .7 .8 inf give
 # FAR 1, 2/3, 1/3, 1/3, 1/3, 0, 0, 0 and FRR 0, 0, 0, 1/4, 1/2, 1/2, 3/4, 1.
@@ -205,6 +205,92 @@ class EvidenceCurveTests(unittest.TestCase):
             with self.subTest(bad=bad):
                 with self.assertRaises(ValueError):
                     evidence_curve(bad, [[0.9]])
+
+
+def records():
+    """Urdu: GENUINE/SYNTHETIC scores (EER 1/3); Punjabi: separated; plus codec field."""
+    rows = [dict(label='genuine', score=p, language='urd', codec='g711') for p in GENUINE]
+    rows += [dict(label='synthetic', score=p, language='urd', codec='gsm') for p in SYNTHETIC]
+    rows += [dict(label='genuine', score=0.1, language='pnb', codec='g711'),
+             dict(label='synthetic', score=0.9, language='pnb')]  # no codec on this one
+    return rows
+
+
+class SubsetReportTests(unittest.TestCase):
+    def test_rows_counts_and_values(self):
+        rows = subset_report(records(), ['language', 'codec'], costs=COSTS, min_clips_per_class=1,
+                             n_resamples=100)
+        summary = [(r['field'], r['value'], r['genuine'], r['synthetic'], r['missing'], r['status'])
+                   for r in rows]
+        self.assertEqual(summary, [
+            (None, None, 4, 5, 0, 'ok'),
+            ('language', 'pnb', 1, 1, 0, 'ok'),
+            ('language', 'urd', 3, 4, 0, 'ok'),
+            ('codec', 'g711', 4, 0, 1, 'insufficient data'),
+            ('codec', 'gsm', 0, 4, 1, 'insufficient data')])
+        urdu = rows[2]
+        self.assertAlmostEqual(urdu['eer'], 1 / 3)
+        self.assertEqual((urdu['far_at_frr'], urdu['threshold']), (1 / 3, 0.4))
+        self.assertAlmostEqual(urdu['min_dcf'], 0.5)
+        self.assertEqual((rows[1]['eer'], rows[1]['min_dcf']), (0.0, 0.0))
+        self.assertNotIn('eer', rows[3])
+        self.assertEqual(len(urdu['min_dcf_ci']), 2)  # FR-M5: interval on every metric
+        self.assertEqual((rows[3]['missing_genuine'], rows[3]['missing_synthetic']), (0, 1))
+        again = subset_report(records(), ['language', 'codec'], costs=COSTS, min_clips_per_class=1,
+                              n_resamples=100)
+        self.assertEqual(again, rows)  # seeded intervals reproduce
+
+    def test_field_with_no_values_is_reported(self):
+        rows = subset_report(records(), ['code_switched'], costs=COSTS, min_clips_per_class=1,
+                             n_resamples=100)
+        self.assertEqual((rows[1]['field'], rows[1]['status'], rows[1]['missing']),
+                         ('code_switched', 'no values', 9))
+
+    def test_minimum_clips_default(self):
+        rows = subset_report(records(), ['language'], costs=COSTS, n_resamples=100)
+        self.assertEqual({r['status'] for r in rows}, {'insufficient data'})  # nothing reaches 10
+
+    def test_validation(self):
+        bad_records = ([dict(label='real', score=0.5)], [dict(label='genuine', score=1.5)],
+                       [dict(label='genuine', score=True)], [dict(label='genuine')], ['row'])
+        for bad in bad_records:
+            with self.subTest(records=bad):
+                with self.assertRaises(ValueError):
+                    subset_report(bad, [], costs=COSTS)
+        for kw in (dict(costs={}), dict(costs=dict(COSTS, pi_spoof=2)), dict(costs=[1, 10, 0.05]),
+                   dict(costs=dict(COSTS, extra=1)), dict(costs=COSTS, seed=-1),
+                   dict(costs=COSTS, n_resamples=5)):
+            with self.subTest(kw=kw):
+                with self.assertRaises(ValueError):  # refused even though every row is insufficient
+                    subset_report(records(), ['language'], **kw)
+        for fields in ('language', ['language', 'language'], ['score'], ['label'], ['']):
+            with self.subTest(fields=fields):
+                with self.assertRaises(ValueError):
+                    subset_report(records(), fields, costs=COSTS)
+        for value in (['urd'], True, 1):
+            with self.subTest(value=value):
+                with self.assertRaises(ValueError):
+                    subset_report([dict(label='genuine', score=0.1, language=value)], ['language'], costs=COSTS)
+
+
+class ReliabilityTests(unittest.TestCase):
+    def test_bins_by_hand(self):
+        bins = reliability_bins([0.05, 0.15, 0.95, 1.0], [0, 1, 1, 1], n_bins=10)
+        self.assertEqual([(b['low'], b['count'], b['fraction_synthetic']) for b in bins],
+                         [(0.0, 1, 0.0), (0.1, 1, 1.0), (0.9, 2, 1.0)])
+        self.assertAlmostEqual(bins[2]['mean_p'], 0.975)
+        self.assertEqual([b['high'] for b in bins], [0.1, 0.2, 1.0])
+        with self.assertRaises(ValueError):
+            reliability_bins([0.5], [3])
+
+    def test_bins_agree_with_ece(self):
+        rng = np.random.default_rng(5)
+        p = rng.random(500)
+        y = (rng.random(500) < p ** 2).astype(int)
+        bins = reliability_bins(p, y)  # default 15 bins, as ece
+        weighted = sum(b['count'] * abs(b['fraction_synthetic'] - b['mean_p']) for b in bins) / 500
+        self.assertAlmostEqual(weighted, ece(p, y))
+        self.assertEqual(sum(b['count'] for b in bins), 500)
 
 
 class DialectRuleTests(unittest.TestCase):
