@@ -125,6 +125,16 @@ The record keeps `packet_loss` and `jitter` separately plus `packet_concealment`
 expected rates per mechanism, so loss and late packets together can conceal more
 than 5 % of a clip's packets; the PRD does not say whether FR-D6's 0-5 % bounds the
 sum. Plans for different clip IDs or master seeds are refused.
+Concealment modes: `silence`, `repeat` (current default) and `repeat_then_silence`,
+the architecture §2.2 jitter-buffer rule ("repeat last 20 ms frame, then zero-fill
+after 3 consecutive losses", read as three repeats, silence from the fourth lost
+packet; a burst with nothing received before it is silence throughout). The switch is
+a hard cut, not a fade, as in §2.2. Records carry `concealment` and `repeat_limit` (3,
+or None for the other modes). Zero-fill is the G.711 silence code: 0 for mu-law, +8
+for A-law, so a serving buffer that zero-fills decoded PCM differs by +8 on A-law.
+Training chains meant to match serving need `concealment='repeat_then_silence'`; the
+manifest wiring must choose it explicitly, and the serving jitter buffer should reuse
+`REPEAT_LIMIT` and `_conceal` rather than copy them.
 It is a library only: not yet wired into `prepare_audio.py`, and GSM and AMR-NB
 are not implemented.
 

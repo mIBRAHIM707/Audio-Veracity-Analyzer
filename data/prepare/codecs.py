@@ -95,7 +95,19 @@ def decode(encoded, law):
 
 FRAME_SAMPLES = 160  # 20 ms G.711 packet at 8 kHz
 MAX_LOSS_RATE = 0.05  # PRD FR-D6: randomized packet loss from 0 to 5%
-CONCEALMENTS = ('silence', 'repeat')
+CONCEALMENTS = ('silence', 'repeat', 'repeat_then_silence')
+# Architecture §2.2 jitter buffer: repeat the last 20 ms frame, then zero-fill after
+# 3 consecutive losses ('repeat_then_silence'; read as three repeats, silence from the
+# fourth lost packet). Zero-fill here is the G.711 silence code, which decodes to 0
+# (mu-law) or +8 (A-law), as for 'silence'; a serving buffer that fills decoded PCM
+# with zeros differs by that +8 offset for A-law. The switch is a hard cut, not a fade.
+REPEAT_LIMIT = 3
+
+
+def _concealment_fields(concealment):
+    """Record fields that identify the concealment rule exactly."""
+    return {'concealment': concealment,
+            'repeat_limit': REPEAT_LIMIT if concealment == 'repeat_then_silence' else None}
 _SILENCE_CODE = {'ulaw': 0xFF, 'alaw': 0xD5}
 
 
@@ -120,15 +132,18 @@ def derive_loss(master_seed, clip_id):
 
 
 def _conceal(codes, lost, law, concealment):
-    """Replace each lost 20 ms packet by the previous received packet ('repeat') or the
-    silence code (no previous packet, or 'silence')."""
-    output, previous = codes.copy(), None
+    """Replace each lost 20 ms packet by the previous received packet ('repeat'; for
+    'repeat_then_silence' only the first REPEAT_LIMIT packets of a burst) or the silence
+    code (no previous packet, later packets of a long burst, or 'silence')."""
+    output, previous, run = codes.copy(), None, 0
     for index in range(len(lost)):
         frame = slice(index * FRAME_SAMPLES, (index + 1) * FRAME_SAMPLES)
         if not lost[index]:
-            previous = codes[frame]
+            previous, run = codes[frame], 0
             continue
-        if concealment == 'repeat' and previous is not None:
+        run += 1
+        repeat = concealment == 'repeat' or (concealment == 'repeat_then_silence' and run <= REPEAT_LIMIT)
+        if repeat and previous is not None:
             output[frame] = np.resize(previous, len(output[frame]))
         else:
             output[frame] = _SILENCE_CODE[law]
@@ -181,7 +196,7 @@ def drop_late_packets(encoded, law, jitter_ms, buffer_ms, seed, concealment='rep
     if concealment not in CONCEALMENTS:
         raise ValueError(f'concealment must be one of {CONCEALMENTS}')
     late, record = _late_mask(-(-len(codes) // FRAME_SAMPLES), jitter_ms, buffer_ms, seed)
-    return _conceal(codes, late, law, concealment).tobytes(), {**record, 'concealment': concealment}
+    return _conceal(codes, late, law, concealment).tobytes(), {**record, **_concealment_fields(concealment)}
 
 
 JITTER_DERIVATION = 'ava-jitter-v1'
@@ -208,15 +223,16 @@ def derive_jitter(master_seed, clip_id):
 
 
 def drop_packets(encoded, law, loss_rate, seed, concealment='repeat'):
-    """Seeded Bernoulli loss of 20 ms G.711 packets, concealed by the silence code or by
-    repeating the previous received packet (silence when none precedes). Returns
-    (concealed bytes, record). A final short packet is a packet too."""
+    """Seeded Bernoulli loss of 20 ms G.711 packets, concealed by one of CONCEALMENTS
+    (see `_conceal`; 'repeat_then_silence' is the architecture §2.2 serving rule, the
+    default 'repeat' is kept for existing callers). Returns (concealed bytes, record).
+    A final short packet is a packet too."""
     _check_law(law)
     codes = _codes(encoded).astype(np.uint8)
     if concealment not in CONCEALMENTS:
         raise ValueError(f'concealment must be one of {CONCEALMENTS}')
     lost, record = _loss_mask(-(-len(codes) // FRAME_SAMPLES), loss_rate, seed)
-    return _conceal(codes, lost, law, concealment).tobytes(), {**record, 'concealment': concealment}
+    return _conceal(codes, lost, law, concealment).tobytes(), {**record, **_concealment_fields(concealment)}
 
 
 def _loss_mask(count, loss_rate, seed):
@@ -245,7 +261,9 @@ def telephone_roundtrip(canonical, law, *, rate=16000, loss_rate=0.0, seed=None,
     """Canonical PCM16 at `rate` -> soxr HQ 8 kHz -> G.711 encode -> optional seeded packet
     loss and/or jitter (late packets, `jitter_plan` from derive_jitter) -> decode -> 8 kHz
     PCM16. Returns (decoded bytes, lineage record). Lost and late packets form one mask,
-    concealed once, so 'repeat' only ever repeats a packet that arrived in time (concealing
+    concealed once with `concealment` (one of CONCEALMENTS; pass 'repeat_then_silence'
+    to match the architecture §2.2 serving buffer; the default stays 'repeat' until the
+    manifest wiring chooses explicitly), so repeats only ever copy a packet that arrived in time (concealing
     loss and then jitter separately would differ when the two are adjacent). The 5 % loss
     bound and the about 5 % late-packet bound are expected rates for each mechanism
     separately, not a cap on the realized union: `packet_concealment` records the union
@@ -283,12 +301,12 @@ def telephone_roundtrip(canonical, law, *, rate=16000, loss_rate=0.0, seed=None,
     elif loss_rate or seed is not None:
         lost, loss = _loss_mask(count, loss_rate, seed)
     if loss is not None:
-        loss.update(concealment=concealment, applied_via='packet_concealment')
+        loss.update(applied_via='packet_concealment', **_concealment_fields(concealment))
         missing |= lost
     if jitter_plan is not None:
         late, jitter = _late_mask(count, jitter_plan['jitter_ms'], jitter_plan['buffer_ms'],
                                   jitter_plan['seed'])
-        jitter.update(concealment=concealment, applied_via='packet_concealment',
+        jitter.update(applied_via='packet_concealment', **_concealment_fields(concealment),
                       **_plan_fields(jitter_plan))
         missing |= late
     impairment = None
@@ -298,7 +316,7 @@ def telephone_roundtrip(canonical, law, *, rate=16000, loss_rate=0.0, seed=None,
         received = _conceal(codes, missing, law, concealment).tobytes()
         both = loss is not None and jitter is not None
         impairment = {
-            'mask': 'lost_or_late', 'concealment': concealment, 'packets': count,
+            'mask': 'lost_or_late', **_concealment_fields(concealment), 'packets': count,
             'concealed_packets': int(missing.sum()),
             'concealed_fraction': float(missing.sum()) / count,
             'lost_and_late_packets': int((lost & late).sum()) if both else None,
