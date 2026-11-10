@@ -31,8 +31,15 @@ convex-hull (ROCCH) EER, which can differ slightly on small sets, so record the 
 or cross-check against the reference implementation when comparing with published
 numbers.
 
-Not done: subset slicing over manifests (FR-M5 a-g), evidence-length curves (FR-M9),
-reliability-diagram output, the report generator, and any metric on real AVA scores.
+`evidence_curve` (FR-M9 / RQ-A) gives EER and FAR at FRR 5 % with intervals at 1, 2,
+3, 4 and 6 windows, aggregating each clip with `ema_first`, the live scorer's EMA (a
+parity test feeds the same scores through `DirectionSession`). Default
+`cohort='fixed'` keeps the same clips (those with at least the longest length) at every
+point; `cohort='available'` mixes populations and is labelled in each row. Points with
+fewer than `min_clips_per_class` (default 10, a local choice) clips per class are
+'insufficient data'. Rows carry the `codec` label; run once per codec.
+
+Not done: subset slicing over manifests (FR-M5 a-g), reliability-diagram output, the report generator, and any metric on real AVA scores.
 These are known-answer arithmetic tests, not model results.
 
 ```text

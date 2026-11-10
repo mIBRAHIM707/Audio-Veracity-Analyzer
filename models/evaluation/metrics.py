@@ -159,6 +159,78 @@ def fit_temperature(logits, is_synthetic, *, low=0.05, high=20.0, iterations=100
     return math.exp(log_t)
 
 
+EVIDENCE_LENGTHS = (1, 2, 3, 4, 6)  # PRD FR-M9
+
+
+def _alpha(alpha):
+    if isinstance(alpha, bool) or not isinstance(alpha, numbers.Real) or not 0 < alpha <= 1:
+        raise ValueError('alpha must be a number in (0, 1]')
+    return float(alpha)
+
+
+def ema_first(scores, n, alpha):
+    """Live-scorer EMA (first window seeds it, as `services/scorer/session.py`) over the
+    first n window scores; a parity test ties the two together."""
+    alpha = _alpha(alpha)
+    if not _int(n) or n < 1 or len(scores) < n:
+        raise ValueError('n must be an integer from 1 to the number of scores')
+    value = float(scores[0])
+    for score in scores[1:n]:
+        value = alpha * score + (1 - alpha) * value
+    return float(value)
+
+
+def evidence_curve(genuine_clips, synthetic_clips, *, alpha=0.4, lengths=EVIDENCE_LENGTHS,
+                   cohort='fixed', min_clips_per_class=10, codec=None, seed=0,
+                   n_resamples=1000, target_frr=0.05):
+    """FR-M9 / RQ-A: EER and FAR at FRR = target_frr against evidence length. Each clip
+    is a sequence of per-window p_synthetic (0-1) in time order, aggregated at length n
+    with `ema_first` (the live EMA). This measures evidence quality at exactly n
+    windows, not the alert rule (2 consecutive windows, hysteresis).
+
+    `cohort='fixed'` (default) uses only clips with at least max(lengths) windows at
+    every length, so each point has the same clips; `cohort='available'` uses every clip
+    with at least n windows, which mixes populations (long clips only at large n) and
+    can bias the curve. A length with fewer than `min_clips_per_class` clips in either
+    class is 'insufficient data'. Intervals are clip-level (too narrow when few speakers
+    or calls contribute many clips; clustering is an FR-M5 question), and the FAR
+    interval re-picks the threshold in each resample (it describes the method, not a
+    fixed deployed threshold). FR-M11: evaluate only the live-call campaign and
+    concatenated clips of at least 8 s; that selection, and running once per codec
+    (recorded via `codec`), are the caller's job."""
+    alpha = _alpha(alpha)
+    if not lengths or any(not _int(n) or n < 1 for n in lengths):
+        raise ValueError('lengths must be positive integers')
+    lengths = sorted(set(int(n) for n in lengths))
+    if cohort not in ('fixed', 'available'):
+        raise ValueError("cohort must be 'fixed' or 'available'")
+    if not _int(min_clips_per_class) or min_clips_per_class < 1:
+        raise ValueError('min_clips_per_class must be a positive integer')
+    clips = {}
+    for name, group in (('genuine', genuine_clips), ('synthetic', synthetic_clips)):
+        clips[name] = [_scores(clip, f'{name} clip') for clip in group]
+        if any(((c < 0) | (c > 1)).any() for c in clips[name]):
+            raise ValueError(f'{name} window scores must be from 0 to 1')
+    needed = max(lengths) if cohort == 'fixed' else None
+    rows = []
+    for n in lengths:
+        floor = needed or n
+        g = [ema_first(c, n, alpha) for c in clips['genuine'] if c.size >= floor]
+        s = [ema_first(c, n, alpha) for c in clips['synthetic'] if c.size >= floor]
+        row = {'windows': n, 'cohort': cohort, 'codec': codec,
+               'genuine_clips': len(g), 'synthetic_clips': len(s)}
+        if min(len(g), len(s)) < min_clips_per_class:
+            row['status'] = 'insufficient data'
+        else:
+            far, _ = far_at_frr(g, s, target_frr)
+            row.update(status='ok', eer=eer(g, s), far_at_frr=far,
+                       eer_ci=bootstrap_ci(eer, g, s, seed=seed, n_resamples=n_resamples),
+                       far_ci=bootstrap_ci(lambda a, b: far_at_frr(a, b, target_frr)[0], g, s,
+                                           seed=seed, n_resamples=n_resamples))
+        rows.append(row)
+    return rows
+
+
 def dialect_reportable(speakers, genuine_clips):
     """FR-M10: a dialect is reported only with >= 10 speakers and >= 500 genuine clips;
     otherwise it is listed as 'insufficient data'."""

@@ -9,8 +9,9 @@ import unittest
 
 import numpy as np
 
-from models.evaluation.metrics import (bootstrap_ci, dialect_reportable, ece, eer, error_rates,
-                                       far_at_frr, fit_temperature, min_dcf)
+from models.evaluation.metrics import (bootstrap_ci, dialect_reportable, ece, eer, ema_first,
+                                       error_rates, evidence_curve, far_at_frr, fit_temperature,
+                                       min_dcf)
 
 # Three genuine and four synthetic scores; thresholds .1 .2 .4 .5 .6 .7 .8 inf give
 # FAR 1, 2/3, 1/3, 1/3, 1/3, 0, 0, 0 and FRR 0, 0, 0, 1/4, 1/2, 1/2, 3/4, 1.
@@ -133,6 +134,77 @@ class CalibrationTests(unittest.TestCase):
             with self.subTest(target=bad):
                 with self.assertRaises(ValueError):
                     far_at_frr(GENUINE, SYNTHETIC, bad)
+
+
+class EvidenceCurveTests(unittest.TestCase):
+    def test_ema_first_by_hand(self):
+        self.assertEqual(ema_first([0.5], 1, 0.4), 0.5)
+        self.assertAlmostEqual(ema_first([1.0, 0.0], 2, 0.4), 0.6)            # 0.4*0 + 0.6*1
+        self.assertAlmostEqual(ema_first([1.0, 0.0, 0.5, 0.9], 3, 0.4), 0.56)  # 4th ignored
+
+    def test_curve_counts_and_values(self):
+        # Genuine clips start low then drift; synthetic clips start ambiguous then rise.
+        genuine = [[0.6, 0.1, 0.1], [0.2, 0.2], [0.1]]
+        synthetic = [[0.5, 0.9, 0.9], [0.4, 0.9]]
+        rows = evidence_curve(genuine, synthetic, lengths=(6, 1, 2, 3, 2), cohort='available',
+                              min_clips_per_class=1, codec='g711_ulaw', n_resamples=100)
+        self.assertEqual([(r['windows'], r['genuine_clips'], r['synthetic_clips'], r['status']) for r in rows],
+                         [(1, 3, 2, 'ok'), (2, 2, 2, 'ok'), (3, 1, 1, 'ok'), (6, 0, 0, 'insufficient data')])
+        self.assertEqual({(r['cohort'], r['codec']) for r in rows}, {('available', 'g711_ulaw')})
+        # n=1: genuine 0.6, 0.2, 0.1 vs synthetic 0.5, 0.4 -> FAR at FRR 5 % uses
+        # threshold 0.4 (FRR 0): genuine >= 0.4 is 1 of 3.
+        self.assertAlmostEqual(rows[0]['far_at_frr'], 1 / 3)
+        # n=2: genuine EMA 0.4*0.1+0.6*0.6 = 0.40, 0.20; synthetic 0.66, 0.60 -> separated.
+        self.assertEqual((rows[1]['eer'], rows[1]['far_at_frr']), (0.0, 0.0))
+        self.assertEqual(rows[1]['eer_ci'], (0.0, 0.0))
+        self.assertNotIn('eer', rows[3])
+
+    def test_fixed_cohort_uses_the_same_clips_at_every_length(self):
+        # Short clips are easy, long clips hard: 'available' mixes them, 'fixed' does not.
+        genuine = [[0.1], [0.1], [0.5, 0.5, 0.5]]
+        synthetic = [[0.9], [0.9], [0.45, 0.45, 0.45]]
+        available = evidence_curve(genuine, synthetic, lengths=(1, 3), cohort='available',
+                                   min_clips_per_class=1, n_resamples=100)
+        fixed = evidence_curve(genuine, synthetic, lengths=(1, 3), min_clips_per_class=1, n_resamples=100)
+        self.assertEqual([r['genuine_clips'] for r in available], [3, 1])
+        self.assertEqual([r['genuine_clips'] for r in fixed], [1, 1])
+        self.assertAlmostEqual(available[0]['eer'], 1 / 3)   # n=1 over all clips: by hand
+        self.assertEqual(fixed[0]['eer'], 1.0)               # n=1 over the long pair only (inverted)
+
+    def test_min_clips_rule_default_is_ten(self):
+        rows = evidence_curve([[0.1]] * 9, [[0.9]] * 12, lengths=(1,), n_resamples=100)
+        self.assertEqual((rows[0]['status'], rows[0]['genuine_clips']), ('insufficient data', 9))
+        rows = evidence_curve([[0.1]] * 10, [[0.9]] * 10, lengths=(1,), n_resamples=100)
+        self.assertEqual(rows[0]['status'], 'ok')
+
+    def test_ema_matches_live_scorer(self):
+        from services.scorer.config import ScoringConfig
+        from services.scorer.session import DirectionSession
+        scores = [0.9, 0.1, 0.7, 0.3, 0.95, 0.05]
+        session = DirectionSession(ScoringConfig(), call_id='parity')
+        live = [session.add_window(p)[0].data['ema'] for p in scores]
+        self.assertEqual(live, [ema_first(scores, n, 0.4) for n in range(1, 7)])
+
+    def test_ema_first_validation(self):
+        for args in (([0.5], 0, 0.4), ([0.5], 2, 0.4), ([], 1, 0.4), ([0.5], 1, 0), ([0.5], 1, True)):
+            with self.subTest(args=args):
+                with self.assertRaises(ValueError):
+                    ema_first(*args)
+
+    def test_curve_validation(self):
+        for kw in (dict(alpha=0), dict(alpha=1.5), dict(alpha=True), dict(lengths=()), dict(lengths=(0,)),
+                   dict(lengths=(1.0,)), dict(cohort='all'), dict(min_clips_per_class=0)):
+            with self.subTest(kw=kw):
+                with self.assertRaises(ValueError):
+                    evidence_curve([[0.1]], [[0.9]], **kw)
+        with self.assertRaises(ValueError):
+            evidence_curve([[]], [[0.9]])   # an empty clip is malformed
+        with self.assertRaises(ValueError):
+            evidence_curve([[float('nan')]], [[0.9]])
+        for bad in ([[1.5]], [[-0.2]]):
+            with self.subTest(bad=bad):
+                with self.assertRaises(ValueError):
+                    evidence_curve(bad, [[0.9]])
 
 
 class DialectRuleTests(unittest.TestCase):
