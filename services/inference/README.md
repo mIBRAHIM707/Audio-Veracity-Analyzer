@@ -40,6 +40,33 @@ clip gave three windows, `synthetic`, mean 0.97; load 24.8 s, scoring 6.5 s. Two
 clips are infrastructure evidence, not accuracy.
 
 Not yet: VAD and speech-only windows, 8 kHz telephone path, codecs and MP3/AMR
-decode (backlog 3.x), streaming EMA/hysteresis (4.x), API and jobs (2.2, 5.x),
-calibration and any accuracy claim (9.x). The baseline was not trained or
-validated on AVA Urdu/Punjabi data.
+decode (backlog 3.x), API and jobs (2.2, 5.x), calibration and any accuracy claim
+(9.x). The live scorer (EMA/hysteresis) is in `services/scorer` (4.x). The baseline
+was not trained or validated on AVA Urdu/Punjabi data.
+
+## Capacity and micro-batching (backlog 8.1 partial; PRD FR-I9; architecture §2.2, §2.3)
+
+`capacity.py` is pure scheduling logic with an explicit clock:
+
+- `CallGate(max_calls=8)`: above the limit a new call is not admitted and `admit`
+  returns a `system.health` payload with reason `capacity`; it never raises for
+  capacity, so the call itself continues. Thread-safe.
+- `MicroBatcher(capacity_windows_per_s=...)`: windows wait up to 100 ms; live batches
+  of at most 4 go first; file batches of at most 8 run only when no live window
+  waits. While any live call is active, file batches hold one window
+  (`max_file_while_live`) and draw from a token bucket earning 25 % of
+  `capacity_windows_per_s` (empty at activation, capped at one batch), so batch work
+  averages at most 25 % of capacity, a live window waits behind at most one file
+  window, and file work still progresses while a live call is silent. Live and file
+  queues have separate limits: `LiveBacklogFull` means degrade the call's stride
+  (FR-I10); `FileBacklogFull` means hold the file producer, and file work can never
+  crowd out live windows. Single owner.
+
+Interpretation choices: window count stands in for inference time (all windows are
+4 s); the token bucket, its cap and its empty start; small file batches while live.
+`capacity_windows_per_s` must be measured (8.QA) at the file batch size used while live,
+so there is no default. A running file batch is not preempted; 8.QA measures that
+delay. Config names: `collect_s` = §7.3 `batch_wait_ms` / 1000; the capacity, pending
+limits and `max_file_while_live` have no §7.3 key yet (proposed). Not done: ONNX Runtime thread settings,
+warm-up inference and `/readyz` (need the exported model, backlog 10), and wiring
+into a real inference loop.

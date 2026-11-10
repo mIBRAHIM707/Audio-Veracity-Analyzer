@@ -132,6 +132,11 @@ items needing that data are listed at the end and stay out of the queue.
 
 ## 8 — CPU capacity (FR-I9/I10)
 - [ ] 8.1 Warm-up, batching, thread limits, live/batch priority and capacity refusal.
+  Progress (10 Nov): `services/inference/capacity.py` call gate (refusal with
+  `system.health reason=capacity`) and live-first micro-batcher with a 25 % token
+  bucket and separate live/file queue limits; 14 Claude-authored tests; review fixed.
+  Remaining: ONNX thread settings, warm-up/`/readyz` (need the exported model, 10.x),
+  wiring into an inference loop, measured `capacity_windows_per_s` (8.QA).
 - [ ] 8.2 Degraded stride/unmonitored behavior and resource bounds.
   Progress (10 Nov): `services/scorer/degraded.py` stride controller (grow per behind
   report, cap, unmonitored, 30 s recovery), 13 Claude-authored tests, review fixed.
