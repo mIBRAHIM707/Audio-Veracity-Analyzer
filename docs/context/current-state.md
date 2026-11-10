@@ -126,6 +126,14 @@ and about 50,000 original clips, excluding codec copies.
   for an alert open at the end. Pure logic; persistence/events are backlog 5. Open
   for the PRD: FR-I7 `ended_open` wording for `suspicious`, threshold ordering,
   end-of-call verdict vocabulary, `state.changed` as an internal event.
+- **Backlog 4.3 complete (10 Nov): call-level scoring.** `services/scorer/call.py`
+  scores only configured directions (caller by default), starts the agent direction
+  at the human answer (IVR windows ignored), drops windows over the FR-I2 10 %
+  concealment gate and marks the call `quality=low`, and reports the more severe
+  direction with the driving direction. Interpretations awaiting the PRD: quality
+  stays low for the call, ties go to the caller, a call is `undetermined` unless every
+  scored direction has enough evidence or one is suspicious/alert. `no_speech`,
+  `unmonitored` and answer detection belong to 3.2, 8.2 and 6.
 - **Backlog 3.4 in progress (9 Nov): additive noise at SNR (FR-D7).**
   `data/prepare/noise.py` mixes same-rate PCM16 noise at 0-20 dB whole-clip SNR
   from a seeded, recorded offset with clipping and achieved SNR recorded, plus

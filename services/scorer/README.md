@@ -75,6 +75,44 @@ The transitions are the §2.4 list. Interpretation choices the PRD leaves open:
 - `score.updated` does not yet carry `degraded` and the effective stride (FR-I6,
   FR-I10; backlog 8.2).
 
+## Call-level scoring (backlog 4.3; PRD FR-I8, FR-I2 gate, FR-U1 flags)
+
+`call.CallScorer(config, call_id=)` routes windows to per-direction sessions:
+
+- only directions in `score_directions` are scored (caller by default); others are
+  counted in `ignored['direction_not_scored']`;
+- the agent direction starts at `human_agent_answered()`; agent windows before it
+  (IVR prompts) are counted in `ignored['before_human_answer']` and are not evidence;
+- a window whose `concealed_fraction` is above `audio.max_concealed_fraction` (0.10,
+  FR-I2) is not scored, and the call shows `quality=low` (one `call.quality` event);
+- the call state is the more severe direction state, with `driving_direction`; a
+  `call.state` event (with the `window_direction` that caused it) is emitted when
+  either changes;
+- `end(reason, speech_seconds={direction: seconds})` (a plain dict) validates the
+  reason and every direction before ending any, and returns each `call.ended` plus a
+  `call.summary` (final state, driving direction, verdict, quality, drop and ignore
+  counts, open alert IDs per direction).
+
+Interpretation choices (PRD clarification requested under FR-I2/FR-I5/FR-I8):
+
+- `quality=low` stays low for the rest of the call and is call-level (architecture
+  §2.4 lists quality per direction; drop counts are kept per direction); only windows
+  that would otherwise be scored are gated;
+- on a tie the caller drives; there is no driving direction while every direction is
+  `monitoring`;
+- call verdict: `suspicious`/`alert` when some direction is in that state (only a
+  direction with enough evidence can be); `monitoring` only when every scored
+  direction reached `min_windows`; otherwise `undetermined`, so a clean agent side
+  never makes an under-evidenced caller look genuine;
+- event window numbers count that direction's scored windows; the two directions do
+  not share one timeline.
+
+`call.quality`, `call.state` and `call.summary` are internal domain events like
+`state.changed`. Not here: `no_speech` (needs the VAD, backlog 3.2), `unmonitored`
+and the degraded flag (backlog 8.2), the `system.health` media-quality event for
+sustained loss (FR-I2, needs the live jitter buffer, backlog 6), and detecting the
+human answer itself (telephony, backlog 6).
+
 Not specified by the PRD and therefore not enforced in configuration: ordering between the
 suspicious and alert thresholds (for example `alert_enter >= suspicious_enter`), an
 upper bound on `min_windows`, or whether `agent` may be scored without `caller`.

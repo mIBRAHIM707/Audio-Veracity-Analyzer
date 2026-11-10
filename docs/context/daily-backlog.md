@@ -96,7 +96,11 @@ items needing that data are listed at the end and stay out of the queue.
   ended_open, new alert IDs, atomic commit), 25 Claude-authored tests incl. a 300-trial
   comparison with an independent reference model; review fixed. File-mode mean vs
   EMA and the ended_open-in-suspicious wording remain PRD questions.
-- [ ] 4.3 Quality flags, direction selection and agent-direction semantics.
+- [x] 4.3 Quality flags, direction selection and agent-direction semantics.
+  Evidence (10 Nov): `services/scorer/call.py` (caller default, agent after human
+  answer, >10 % concealed windows not scored with quality=low, more severe direction
+  drives, call verdict), 17 Claude-authored tests with hand-worked timelines; review
+  fixed. Interpretations (sticky quality, tie to caller, verdict rule) await the PRD.
 - [ ] 4.QA Boundary/state-transition/concurrency tests and independent review.
 
 ## 5 — Backend persistence/events (FR-A, FR-I11)

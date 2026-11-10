@@ -24,8 +24,10 @@ import threading
 DIRECTIONS = ('caller', 'agent')
 MAX_CONFIG_BYTES = 64 * 1024
 TOP_LEVEL_KEYS = {'audio', 'scoring', 'capacity', 'tap', 'retention', 'inference'}  # §7.3
-VAD_FRACTION_KEYS = ('vad_threshold', 'min_speech_fraction', 'max_concealed_fraction')
-AUDIO_KEYS = {'window_s', 'hop_s', *VAD_FRACTION_KEYS}
+# Fractions from 0 to 1. max_concealed_fraction is kept (FR-I2 quality gate); the two
+# VAD keys are only range-checked until the VAD exists (backlog 3.2).
+AUDIO_FRACTION_KEYS = ('vad_threshold', 'min_speech_fraction', 'max_concealed_fraction')
+AUDIO_KEYS = {'window_s', 'hop_s', *AUDIO_FRACTION_KEYS}
 SCORING_KEYS = {'ema_alpha', 'min_windows', 'thresholds', 'score_directions',
                 'degraded_max_stride_factor', 'degraded_recovery_s'}
 THRESHOLD_KEYS = ('suspicious_enter', 'alert_enter', 'alert_exit', 'suspicious_exit')
@@ -58,6 +60,7 @@ class ScoringConfig:
     score_directions: tuple = ('caller',)
     degraded_max_stride_factor: int = 4
     degraded_recovery_s: float = 30.0
+    max_concealed_fraction: float = 0.10  # FR-I2 quality gate (audio section)
 
 
 @dataclass(frozen=True)
@@ -139,7 +142,7 @@ def parse_config(document, *, model_window_s):
         problems.append('audio requires 0 < hop_s <= window_s')
     if window is not None and not math.isclose(window, model_window_s, rel_tol=0, abs_tol=1e-9):
         problems.append(f'audio.window_s {window} differs from the model card window {model_window_s}')
-    for key in VAD_FRACTION_KEYS:  # sanity only; the VAD (backlog 3.2) owns their meaning
+    for key in AUDIO_FRACTION_KEYS:  # range check; see AUDIO_FRACTION_KEYS for which are used
         if key in audio and (not _number(audio[key]) or not 0 <= audio[key] <= 1):
             problems.append(f'audio.{key} must be a finite number from 0 to 1')
     if alpha is not None and not 0 < alpha <= 1:
@@ -161,7 +164,9 @@ def parse_config(document, *, model_window_s):
         raise ConfigError(problems)
     return ScoringConfig(window_s=window, hop_s=hop, ema_alpha=alpha, min_windows=min_windows,
                          thresholds=Thresholds(**levels), score_directions=tuple(directions),
-                         degraded_max_stride_factor=stride, degraded_recovery_s=recovery)
+                         degraded_max_stride_factor=stride, degraded_recovery_s=recovery,
+                         max_concealed_fraction=float(audio.get('max_concealed_fraction',
+                                                                defaults.max_concealed_fraction)))
 
 
 def read_json_document(path):
