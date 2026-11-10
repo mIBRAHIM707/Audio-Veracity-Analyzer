@@ -6,9 +6,9 @@ configuration file; no Redis, PostgreSQL or events yet (backlog 5).
 Concurrency contract: `ConfigStore` is thread-safe. `DirectionSession` and
 `CallScorer` are not: each call has one owner, `add_window`/`end` must not overlap,
 and windows must arrive in order per direction. Their "invalid input changes nothing"
-guarantee holds within that single owner. Backlog 5 must serialize per call, reject
-reordered or duplicate inference results (monotonic window index at the boundary) and
-copy event `data` before publishing (the dicts are not frozen). Independent QA:
+guarantee holds within that single owner. `OrderedCallScorer` (below) is the boundary
+that serializes per call, rejects reordered or duplicate inference results and returns
+copied event `data` (the dicts are not frozen); integrations must go through it. Independent QA:
 `docs/qa/phase-4-qa.md`.
 
 ## Configuration (backlog 4.1; PRD FR-I4, FR-A9 subset; architecture §2.4, §7.3)
@@ -143,6 +143,19 @@ sees windows in time order. Memory is at most `max_pending` windows, which the c
 must choose (no documented value). These are interpretation choices and give one
 concrete meaning to "behind" for FR-I10; the PRD should confirm or replace it.
 Remaining 8.2 work: wiring the queue into a live inference loop (needs backlog 6/8.1).
+
+## Ordered boundary (backlog 5; phase-4 QA M1 and L3)
+
+`ordered.OrderedCallScorer(call_scorer)` is the boundary where micro-batched
+inference results re-enter a call. One lock per call serializes `add_result`,
+`human_agent_answered`, `end` and `snapshot`. Each result carries the window
+builder's per-direction `window_idx`, which must strictly increase: a duplicate or
+stale (late) result is not applied and is counted in `rejected`; gaps are allowed
+because the stride and the pending queue skip or drop windows. Interpretation
+choices: late results are dropped, not re-ordered; a window the scorer ignores (agent
+before the human answer, direction not scored) still consumes its index; a scorer
+error leaves the index unchanged so the result may be retried. Returned events are
+deep copies, so consumers cannot change the stored `call.ended`/`call.summary`.
 
 Not specified by the PRD and therefore not enforced in configuration: ordering between the
 suspicious and alert thresholds (for example `alert_enter >= suspicious_enter`), an

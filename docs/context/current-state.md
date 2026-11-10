@@ -132,9 +132,10 @@ and about 50,000 original clips, excluding codec copies.
   micro-batcher with a 25 % token bucket; `services/scorer/degraded.py` FR-I10 stride
   controller and `services/scorer/pending.py` bounded per-call pending-window queue
   that defines "behind" (a waiting window at acceptance; interpretation for the PRD);
+  `services/scorer/ordered.py` serialized in-order per-call boundary (phase-4 QA M1/L3);
   `models/evaluation/metrics.py` EER, FAR at FRR 5 %, minDCF (costs required:
   ASVspoof 5 constants unverified), bootstrap, ECE, temperature, FR-M9 evidence curve,
-  FR-M5 subset table, reliability bins and FR-M10 per-dialect FAR. Unit suite 460 OK
+  FR-M5 subset table, reliability bins and FR-M10 per-dialect FAR. Unit suite 472 OK
   (9 skips) on 10 Nov; daily report `docs/context/daily-runs/2026-11-10.md`. Blocked:
   PostgreSQL/Redis need a driver/Redis decision (PostgreSQL 18 binaries present, the
   architecture names 16); warm-up/threads need the exported model; capacity needs

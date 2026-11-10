@@ -115,6 +115,10 @@ items needing that data are listed at the end and stay out of the queue.
   schema/migrations and Redis need a dependency decision: PostgreSQL 18 binaries are
   installed (architecture names 16) but no Python driver or Redis is pinned/installed.
 - [ ] 5.2 Jobs/cancellation/idempotency, calls/alerts API and WebSocket events.
+  Progress (10 Nov): `services/scorer/ordered.py` per-call serialized boundary
+  (phase-4 QA M1/L3): monotonic per-direction `window_idx`, duplicate/stale results
+  rejected and counted, copied events; 12 Claude-authored tests incl. a deterministic
+  lock test; review fixed. Open: index restart after a stream reconnect (PRD/6.x).
 - [ ] 5.3 Restart recovery, in-flight handling and default no-audio-retention behavior.
 - [ ] 5.QA Real service integration, disconnects, failures and state recovery.
 
