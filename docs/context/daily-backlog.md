@@ -149,9 +149,9 @@ items needing that data are listed at the end and stay out of the queue.
 - [ ] 9.3 EER/minDCF/FAR, calibration/ECE, bootstrap and subset/evidence-length reports.
   Progress (10 Nov): `models/evaluation/metrics.py` core metrics, 15 Claude-authored
   known-answer tests, review fixed; FR-M9 evidence-length curve with a fixed cohort and
-  scorer EMA parity; FR-M5 subset table and FR-M6 reliability bins (28 tests total).
-  Remaining: report generation from real manifests/scores, FR-M10 fixed-threshold
-  dialect FAR, clustered intervals. Needs a human: confirm
+  scorer EMA parity; FR-M5 subset table, FR-M6 reliability bins and FR-M10 dialect FAR
+  (30 tests total). Remaining: report generation from real manifests/scores; PRD
+  decisions on speaker-clustered intervals and EER method; ASVspoof 5 cost constants. Needs a human: confirm
   ASVspoof 5 cost constants (no web access); speaker-clustered intervals and EER method.
 - [ ] 9.QA Known-answer metrics, insufficient-data cases and training smoke evidence.
 

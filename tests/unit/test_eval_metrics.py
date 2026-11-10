@@ -9,7 +9,7 @@ import unittest
 
 import numpy as np
 
-from models.evaluation.metrics import (bootstrap_ci, dialect_reportable, ece, eer, ema_first,
+from models.evaluation.metrics import (bootstrap_ci, dialect_far, dialect_reportable, ece, eer, ema_first,
                                        error_rates, evidence_curve, far_at_frr, fit_temperature,
                                        min_dcf, reliability_bins, subset_report)
 
@@ -294,6 +294,52 @@ class ReliabilityTests(unittest.TestCase):
 
 
 class DialectRuleTests(unittest.TestCase):
+    def test_dialect_far_at_fixed_threshold(self):
+        # Pothwari: 10 speakers x 50 clips, 1 clip in 10 at 0.9 (flagged), others 0.1.
+        pothwari = [dict(dialect='pothwari', speaker=f's{k}', score=0.9 if n % 10 == 0 else 0.1)
+                    for k in range(10) for n in range(50)]
+        # Saraiki: only 9 speakers -> insufficient even with 900 clips.
+        saraiki = [dict(dialect='saraiki', speaker=f't{k}', score=0.1) for k in range(9) for _ in range(100)]
+        listed = ['saraiki', 'pothwari', 'hindko']
+        rows = dialect_far(pothwari + saraiki, dialects=listed, threshold=0.5, n_resamples=200)
+        self.assertEqual([(r['dialect'], r['speakers'], r['genuine_clips'], r['status']) for r in rows],
+                         [('saraiki', 9, 900, 'insufficient data'), ('pothwari', 10, 500, 'ok'),
+                          ('hindko', 0, 0, 'insufficient data')])  # listed order; no-data dialect kept
+        self.assertEqual(rows[1]['far'], 0.1)              # 50 of 500 at or above 0.5
+        low, high = rows[1]['far_ci']
+        self.assertTrue(low < 0.1 < high)
+        self.assertFalse(rows[1]['ci_degenerate'])
+        self.assertNotIn('far', rows[0])
+        at_score = dialect_far(pothwari, dialects=['pothwari'], threshold=0.9, n_resamples=200)[0]['far']
+        self.assertEqual(at_score, 0.1)                     # score equal to threshold is flagged
+        clean = dialect_far([dict(r, score=0.1) for r in pothwari], dialects=['pothwari'],
+                            threshold=0.5, n_resamples=200)[0]
+        self.assertEqual((clean['far'], clean['far_ci'], clean['ci_degenerate']), (0.0, (0.0, 0.0), True))
+        short = pothwari[:499]
+        self.assertEqual(dialect_far(short, dialects=['pothwari'], threshold=0.5)[0]['status'],
+                         'insufficient data')
+
+    def test_dialect_far_validation(self):
+        good = dict(dialect='majhi', speaker='a', score=0.2)
+        for bad in ([dict(good, dialect='')], [dict(good, speaker=None)], [dict(good, score=2)], ['x'],
+                    [dict(good, score=float('nan'))], [dict(good, label='synthetic')],
+                    [dict(good, dialect='Majhi')], [dict(good, dialect=5)]):
+            with self.subTest(bad=bad):
+                with self.assertRaises(ValueError):
+                    dialect_far(bad, dialects=['majhi'], threshold=0.5)
+        for kw in (dict(threshold=1.5), dict(threshold=True), dict(threshold=0.5, seed=-1),
+                   dict(threshold=0.5, n_resamples=10), dict(threshold=0.5, confidence='0.95'),
+                   dict(threshold=0.5, confidence=True), dict(threshold=0.5, dialects=[]),
+                   dict(threshold=0.5, dialects=['majhi', 'majhi'])):
+            with self.subTest(kw=kw):
+                with self.assertRaises(ValueError):
+                    dialect_far([good], **{'dialects': ['majhi'], **kw})
+        for edge in (0, 1):
+            dialect_far([good], dialects=['majhi'], threshold=edge)  # boundaries accepted
+        dialect_far([dict(good, label='genuine')], dialects=['majhi'], threshold=0.5)
+        with self.assertRaises(TypeError):
+            dialect_far([good], dialects=['majhi'])  # the deployed threshold must be given
+
     def test_fr_m10_boundaries(self):
         self.assertTrue(dialect_reportable(10, 500))
         self.assertFalse(dialect_reportable(9, 5000))

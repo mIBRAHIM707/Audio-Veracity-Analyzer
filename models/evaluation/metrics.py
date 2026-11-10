@@ -250,7 +250,7 @@ def subset_report(records, fields, *, costs, min_clips_per_class=10, seed=0, n_r
     present on no record gets one row with status 'no values'.
 
     Not for FR-M10 dialects: those sets are genuine-only and need FAR at the fixed
-    deployed threshold, gated by `dialect_reportable`, which is separate work."""
+    deployed threshold; use `dialect_far`."""
     if not isinstance(fields, (list, tuple)) or not all(isinstance(f, str) and f for f in fields):
         raise ValueError('fields must be a list of field names')
     if len(set(fields)) != len(fields) or set(fields) & {'label', 'score'}:
@@ -320,6 +320,65 @@ def reliability_bins(p_synthetic, is_synthetic, n_bins=15):
     return [{'low': b / n_bins, 'high': (b + 1) / n_bins, 'count': int((bins == b).sum()),
              'mean_p': float(p[bins == b].mean()), 'fraction_synthetic': float(y[bins == b].mean())}
             for b in np.unique(bins)]
+
+
+def _unit_real(value):
+    return (not isinstance(value, bool) and isinstance(value, numbers.Real)
+            and math.isfinite(value))
+
+
+def dialect_far(records, *, dialects, threshold, seed=0, n_resamples=1000, confidence=0.95):
+    """FR-M10 / RQ-B: FAR per dialect at the fixed deployed `threshold` on genuine
+    records (dicts with 'dialect', 'speaker', 'score' and, if present, label 'genuine').
+    `dialects` lists every dialect to report (e.g. Majhi, Pothwari, Saraiki, Hindko,
+    Standard Urdu, code-switched); each gets a row, and one with no or too little data
+    (`dialect_reportable`: 10 speakers, 500 clips) says 'insufficient data'. Records for
+    an unlisted dialect, or with a non-genuine label, are refused. Names are matched
+    exactly. Supplying dialect-held-out sets is the caller's job.
+
+    Intervals are a clip-level percentile bootstrap (`ci_method`), too narrow when false
+    alarms cluster by speaker (FR-M5 clustering question); a zero-width interval, as at
+    FAR 0 or 1, is flagged `ci_degenerate` because it does not mean certainty."""
+    if not isinstance(dialects, (list, tuple)) or not dialects \
+            or not all(isinstance(d, str) and d for d in dialects) or len(set(dialects)) != len(dialects):
+        raise ValueError('dialects must be a nonempty list of distinct names')
+    if not _unit_real(threshold) or not 0 <= threshold <= 1:
+        raise ValueError('threshold must be the deployed operating point, from 0 to 1')
+    if not _int(seed) or seed < 0 or not _int(n_resamples) or n_resamples < 100 \
+            or not _unit_real(confidence) or not 0 < confidence < 1:
+        raise ValueError('seed >= 0, n_resamples >= 100 and confidence in (0, 1) are required')
+    groups = {d: [] for d in dialects}
+    for index, record in enumerate(records):
+        if not isinstance(record, dict):
+            raise ValueError(f'record {index} must be a dict')
+        if record.get('label', 'genuine') != 'genuine':
+            raise ValueError(f'record {index} is not genuine; FR-M10 FAR uses genuine clips only')
+        dialect, speaker, score = record.get('dialect'), record.get('speaker'), record.get('score')
+        if not isinstance(dialect, str) or not dialect or not isinstance(speaker, str) or not speaker:
+            raise ValueError(f'record {index} needs string dialect and speaker')
+        if dialect not in groups:
+            raise ValueError(f'record {index} has unlisted dialect {dialect!r}')
+        if isinstance(score, bool) or not isinstance(score, numbers.Real) \
+                or not math.isfinite(score) or not 0 <= score <= 1:
+            raise ValueError(f'record {index} needs a score from 0 to 1')
+        groups[dialect].append((speaker, float(score)))
+    rows = []
+    for dialect in dialects:
+        scores = np.array([s for _, s in groups[dialect]])
+        speakers = len({sp for sp, _ in groups[dialect]})
+        row = {'dialect': dialect, 'speakers': speakers, 'genuine_clips': int(scores.size),
+               'threshold': float(threshold)}
+        if not dialect_reportable(speakers, int(scores.size)):
+            row['status'] = 'insufficient data'
+        else:
+            rng = np.random.default_rng(seed)
+            draws = [(rng.choice(scores, scores.size) >= threshold).mean() for _ in range(n_resamples)]
+            tail = (1 - confidence) / 2
+            low, high = float(np.quantile(draws, tail)), float(np.quantile(draws, 1 - tail))
+            row.update(status='ok', far=float((scores >= threshold).mean()), far_ci=(low, high),
+                       ci_method='clip-level percentile bootstrap', ci_degenerate=low == high)
+        rows.append(row)
+    return rows
 
 
 def dialect_reportable(speakers, genuine_clips):

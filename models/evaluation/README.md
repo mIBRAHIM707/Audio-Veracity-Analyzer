@@ -47,8 +47,12 @@ clips per class and 'no values' for a field no record carries. FR-M10 dialect FA
 deployed threshold is separate. `reliability_bins` gives the FR-M6 reliability-diagram
 data on the same bins as `ece`.
 
-Not done: building the records from real manifests and scores, plotting/report files,
-FR-M10 fixed-threshold dialect FAR, the report generator, and any metric on real AVA scores.
+`dialect_far(records, dialects=, threshold=)` gives FR-M10 / RQ-B FAR per listed
+dialect at the fixed deployed threshold on genuine clips: every listed dialect gets a
+row (no data is 'insufficient data'), unlisted dialects and non-genuine records are
+refused, and rows name the interval method and flag zero-width intervals.
+
+Not done: building the records from real manifests and scores, plotting/report files, the report generator, and any metric on real AVA scores.
 These are known-answer arithmetic tests, not model results.
 
 ```text
