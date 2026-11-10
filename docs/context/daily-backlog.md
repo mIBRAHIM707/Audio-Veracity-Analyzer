@@ -91,7 +91,11 @@ items needing that data are listed at the end and stay out of the queue.
   Evidence (10 Nov): `services/scorer/config.py` (FR-I4 rules, §7.3 defaults, JSON
   loader, serialized atomic reload with fingerprint), 22 Claude-authored tests incl. a
   mutation-checked overlapping-reload case; independent review fixed. No YAML/Pydantic.
-- [ ] 4.2 EMA, minimum evidence, hysteresis and undetermined outcomes.
+- [x] 4.2 EMA, minimum evidence, hysteresis and undetermined outcomes.
+  Evidence (10 Nov): `services/scorer/session.py` (§2.4 FSM, provisional/undetermined,
+  ended_open, new alert IDs, atomic commit), 25 Claude-authored tests incl. a 300-trial
+  comparison with an independent reference model; review fixed. File-mode mean vs
+  EMA and the ended_open-in-suspicious wording remain PRD questions.
 - [ ] 4.3 Quality flags, direction selection and agent-direction semantics.
 - [ ] 4.QA Boundary/state-transition/concurrency tests and independent review.
 

@@ -119,6 +119,13 @@ and about 50,000 original clips, excluding codec copies.
   Deviation: no YAML parser or Pydantic is pinned, so JSON stands in. Open for the
   PRD: ordering between suspicious and alert thresholds, `min_windows` upper bound,
   agent-only scoring.
+- **Backlog 4.2 complete (10 Nov): per-direction scoring session.**
+  `services/scorer/session.py`: EMA (α from config, first window seeds), provisional
+  until `min_windows`, `undetermined` below it, the architecture §2.4 hysteresis
+  transitions with a 2-window alert streak, a new alert ID per alert, `ended_open`
+  for an alert open at the end. Pure logic; persistence/events are backlog 5. Open
+  for the PRD: FR-I7 `ended_open` wording for `suspicious`, threshold ordering,
+  end-of-call verdict vocabulary, `state.changed` as an internal event.
 - **Backlog 3.4 in progress (9 Nov): additive noise at SNR (FR-D7).**
   `data/prepare/noise.py` mixes same-rate PCM16 noise at 0-20 dB whole-clip SNR
   from a seeded, recorded offset with clipping and achieved SNR recorded, plus

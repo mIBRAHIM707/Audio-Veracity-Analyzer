@@ -39,6 +39,42 @@ counts reloads in this process only; `fingerprint` (SHA-256 of the canonical JSO
 the settings) identifies them across restarts and is what persisted call state should
 store (backlog 5).
 
-Not specified by the PRD and therefore not enforced: ordering between the
+## Session state machine (backlog 4.2; PRD FR-I5, FR-I7; architecture §2.4, ADR-11)
+
+`session.DirectionSession(config, call_id=, direction=)` holds one direction's EMA
+(first window seeds it), window count, max score, last 30 scores and alert state.
+`add_window(p_synthetic)` returns `score.updated` (with the state after the window,
+`provisional` while fewer than `min_windows` windows) followed by any `state.changed`
+and `alert.raised`/`alert.cleared`. `end(reason, speech_seconds=)` returns
+`call.ended` with `final_state`, `verdict` (`undetermined` below `min_windows`,
+otherwise the final state; never "genuine") and `ended_open_alert_id` when the call
+ends in `alert` (no `alert.cleared` is emitted). Alert IDs come from an injected
+generator (UUID4 by default). Scores may be any finite real number from 0 to 1,
+including NumPy scalars. Invalid scores, end arguments or a failing ID generator
+change nothing (the new state is committed only after everything succeeds).
+
+The transitions are the §2.4 list. Interpretation choices the PRD leaves open:
+
+- at most one transition per window (alert to monitoring takes two windows);
+- in `suspicious` the alert check runs before the exit check;
+- the "2 consecutive windows at or above alert_enter" streak counts every window from
+  `min_windows` on, whatever the state. With the defaults the earliest alert is
+  window 3. The streak can also build up while still in `monitoring`, so with
+  `alert_enter` below `suspicious_enter` an alert follows one window after entering
+  `suspicious`; with `alert_enter <= suspicious_exit` (allowed by FR-I4) a session can
+  alert while its EMA is below `suspicious_exit`. A threshold-ordering rule is a PRD
+  question.
+- `ended_open`: PRD FR-I7 says a call ending in `suspicious` or `alert` lists "the
+  alert" as `ended_open`; architecture §2.4 covers only an open alert. This follows
+  §2.4: ending in `suspicious` persists the state with no open alert. PRD
+  clarification requested.
+- `verdict` reuses the state names (`monitoring`, `suspicious`, `alert`) or
+  `undetermined`; the PRD defines no end-of-call verdict vocabulary.
+- `state.changed` is an internal domain event, not an addition to the FR-A4
+  published list (which carries the state in `score.updated`).
+- `score.updated` does not yet carry `degraded` and the effective stride (FR-I6,
+  FR-I10; backlog 8.2).
+
+Not specified by the PRD and therefore not enforced in configuration: ordering between the
 suspicious and alert thresholds (for example `alert_enter >= suspicious_enter`), an
 upper bound on `min_windows`, or whether `agent` may be scored without `caller`.
