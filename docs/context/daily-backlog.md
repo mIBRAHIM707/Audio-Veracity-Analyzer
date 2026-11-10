@@ -74,8 +74,11 @@ items needing that data are listed at the end and stay out of the queue.
   Progress (9 Nov): `data/prepare/codecs.py` G.711 mu/A-law + 8 kHz roundtrip with
   lineage; 10 Claude-authored tests (exhaustive audioop oracle). Seeded 0-5 % packet
   loss with concealment; 12 Claude-authored tests. Remaining: GSM, AMR-NB (need a
-  codec library; none installed), jitter, concealment fade-out, manifest wiring.
-  Per-clip rate/seed derivation (`derive_loss`) added 9 Nov.
+  codec library; none installed), concealment fade-out, manifest wiring.
+  Per-clip rate/seed derivation (`derive_loss`) added 9 Nov. Jitter as late-packet
+  loss with per-clip plans (9 Nov); 10 Nov: loss and jitter plans combined in
+  `telephone_roundtrip` as one concealed mask, 13 Claude-authored tests. Remaining:
+  GSM, AMR-NB, concealment fade-out, manifest wiring.
 - [ ] 3.4 Other PRD codec/noise paths with bounded reproducible fixtures.
   Progress (9 Nov): `data/prepare/noise.py` seeded additive noise at 0-20 dB SNR
   (FR-D7) with lineage and per-clip plans (`derive_noise`/`mix_planned`); 18

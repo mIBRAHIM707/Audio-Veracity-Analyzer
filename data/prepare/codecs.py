@@ -5,8 +5,9 @@ reference code (the same tables as CPython's `audioop`, which tests use as an or
 `telephone_roundtrip` takes canonical 16 kHz PCM16 to the 8 kHz telephone band, encodes
 and decodes it, and returns 8 kHz PCM16; bring it back to the model grid through
 `conditioning.canonicalize(decoded, 8000, 1)` so the shared path does the upsampling.
-`drop_packets` applies seeded 20 ms packet loss (0-5 %, PRD FR-D6) with concealment.
-GSM, AMR-NB and jitter are not implemented here yet.
+`drop_packets` applies seeded 20 ms packet loss (0-5 %, PRD FR-D6) with concealment;
+`drop_late_packets` models jitter as late-packet loss behind a fixed buffer; the
+roundtrip combines both from per-clip plans. GSM and AMR-NB are not implemented here yet.
 Inputs must be `bytes` (not bytearray/memoryview), matching `conditioning.py`.
 """
 import hashlib
@@ -138,6 +139,34 @@ MAX_JITTER_MS = 100  # bound on the mean extra network delay accepted for augmen
 MAX_BUFFER_MS = 400
 
 
+def _indices_sha256(mask):
+    return hashlib.sha256(np.flatnonzero(mask).astype('<i4').tobytes()).hexdigest()
+
+
+def _late_mask(count, jitter_ms, buffer_ms, seed):
+    """Validated late-packet mask and its record (no concealment fields)."""
+    for name, value, upper in (('jitter_ms', jitter_ms, MAX_JITTER_MS),
+                               ('buffer_ms', buffer_ms, MAX_BUFFER_MS)):
+        if isinstance(value, bool) or not isinstance(value, (int, float)) \
+                or not np.isfinite(value) or not 0 <= value <= upper:
+            raise ValueError(f'{name} must be a finite number from 0 to {upper}')
+    if jitter_ms and math.exp(-buffer_ms / jitter_ms) > MAX_LOSS_RATE:
+        raise ValueError('expected late-packet fraction exp(-buffer_ms/jitter_ms) exceeds '
+                         f'the FR-D6 loss bound {MAX_LOSS_RATE}')
+    if type(seed) is not int or seed < 0:
+        raise ValueError('seed must be a non-negative integer for reproducible jitter')
+    late = np.random.default_rng(seed).exponential(1.0, count) * jitter_ms > buffer_ms
+    return late, {
+        'jitter_ms': float(jitter_ms), 'buffer_ms': float(buffer_ms), 'seed': seed,
+        'model': 'exponential_delay_fixed_buffer_late_loss',
+        'jitter_definition': 'mean of independent per-packet extra delay (not RFC 3550 interarrival jitter)',
+        'expected_late_fraction': math.exp(-buffer_ms / jitter_ms) if jitter_ms else 0.0,
+        'rng': 'numpy.random.default_rng(seed).exponential(1.0, packets) * jitter_ms > buffer_ms',
+        'numpy_version': np.__version__, 'packet_ms': 20, 'packets': count,
+        'late_packets': int(late.sum()), 'late_indices_sha256': _indices_sha256(late),
+    }
+
+
 def drop_late_packets(encoded, law, jitter_ms, buffer_ms, seed, concealment='repeat'):
     """Seeded jitter as late-packet loss (PRD FR-D6 jitter, FR-I2 jitter buffer): each
     20 ms packet gets an independent exponential extra delay with mean `jitter_ms`; a
@@ -151,31 +180,8 @@ def drop_late_packets(encoded, law, jitter_ms, buffer_ms, seed, concealment='rep
     codes = _codes(encoded).astype(np.uint8)
     if concealment not in CONCEALMENTS:
         raise ValueError(f'concealment must be one of {CONCEALMENTS}')
-    for name, value, upper in (('jitter_ms', jitter_ms, MAX_JITTER_MS),
-                               ('buffer_ms', buffer_ms, MAX_BUFFER_MS)):
-        if isinstance(value, bool) or not isinstance(value, (int, float)) \
-                or not np.isfinite(value) or not 0 <= value <= upper:
-            raise ValueError(f'{name} must be a finite number from 0 to {upper}')
-    if jitter_ms and math.exp(-buffer_ms / jitter_ms) > MAX_LOSS_RATE:
-        raise ValueError('expected late-packet fraction exp(-buffer_ms/jitter_ms) exceeds '
-                         f'the FR-D6 loss bound {MAX_LOSS_RATE}')
-    if type(seed) is not int or seed < 0:
-        raise ValueError('seed must be a non-negative integer for reproducible jitter')
-    count = -(-len(codes) // FRAME_SAMPLES)
-    delays = np.random.default_rng(seed).exponential(1.0, count) * jitter_ms
-    late = delays > buffer_ms
-    output = _conceal(codes, late, law, concealment)
-    indices = np.flatnonzero(late).astype('<i4').tobytes()
-    return output.tobytes(), {
-        'jitter_ms': float(jitter_ms), 'buffer_ms': float(buffer_ms), 'seed': seed,
-        'model': 'exponential_delay_fixed_buffer_late_loss',
-        'jitter_definition': 'mean of independent per-packet extra delay (not RFC 3550 interarrival jitter)',
-        'expected_late_fraction': math.exp(-buffer_ms / jitter_ms) if jitter_ms else 0.0,
-        'rng': 'numpy.random.default_rng(seed).exponential(1.0, packets) * jitter_ms > buffer_ms',
-        'numpy_version': np.__version__, 'packet_ms': 20, 'packets': count,
-        'late_packets': int(late.sum()),
-        'late_indices_sha256': hashlib.sha256(indices).hexdigest(), 'concealment': concealment,
-    }
+    late, record = _late_mask(-(-len(codes) // FRAME_SAMPLES), jitter_ms, buffer_ms, seed)
+    return _conceal(codes, late, law, concealment).tobytes(), {**record, 'concealment': concealment}
 
 
 JITTER_DERIVATION = 'ava-jitter-v1'
@@ -209,51 +215,95 @@ def drop_packets(encoded, law, loss_rate, seed, concealment='repeat'):
     codes = _codes(encoded).astype(np.uint8)
     if concealment not in CONCEALMENTS:
         raise ValueError(f'concealment must be one of {CONCEALMENTS}')
+    lost, record = _loss_mask(-(-len(codes) // FRAME_SAMPLES), loss_rate, seed)
+    return _conceal(codes, lost, law, concealment).tobytes(), {**record, 'concealment': concealment}
+
+
+def _loss_mask(count, loss_rate, seed):
+    """Validated Bernoulli loss mask and its record (no concealment fields)."""
     if isinstance(loss_rate, bool) or not isinstance(loss_rate, (int, float)) \
             or not 0 <= loss_rate <= MAX_LOSS_RATE:
         raise ValueError(f'loss_rate must be a number from 0 to {MAX_LOSS_RATE}')
     if type(seed) is not int or seed < 0:
         raise ValueError('seed must be a non-negative integer for reproducible loss')
-    count = -(-len(codes) // FRAME_SAMPLES)
     lost = np.random.default_rng(seed).random(count) < loss_rate
-    output = _conceal(codes, lost, law, concealment)
-    indices = np.flatnonzero(lost).astype('<i4').tobytes()
-    return output.tobytes(), {
+    return lost, {
         'loss_rate': float(loss_rate), 'seed': seed, 'model': 'bernoulli_per_packet',
         'rng': 'numpy.random.default_rng(seed).random(packets) < loss_rate',
         'numpy_version': np.__version__,
         'packet_ms': 20, 'packets': count, 'lost_packets': int(lost.sum()),
-        'lost_indices_sha256': hashlib.sha256(indices).hexdigest(), 'concealment': concealment,
+        'lost_indices_sha256': _indices_sha256(lost),
     }
 
 
+def _plan_fields(plan):
+    return {key: plan[key] for key in ('derivation', 'master_seed', 'clip_id')}
+
+
 def telephone_roundtrip(canonical, law, *, rate=16000, loss_rate=0.0, seed=None,
-                        concealment='repeat', loss_plan=None):
+                        concealment='repeat', loss_plan=None, jitter_plan=None):
     """Canonical PCM16 at `rate` -> soxr HQ 8 kHz -> G.711 encode -> optional seeded packet
-    loss -> decode -> 8 kHz PCM16. Returns (decoded bytes, lineage record).
-    Raises ValueError on invalid input. Jitter is not modelled yet (record says None)."""
+    loss and/or jitter (late packets, `jitter_plan` from derive_jitter) -> decode -> 8 kHz
+    PCM16. Returns (decoded bytes, lineage record). Lost and late packets form one mask,
+    concealed once, so 'repeat' only ever repeats a packet that arrived in time (concealing
+    loss and then jitter separately would differ when the two are adjacent). The 5 % loss
+    bound and the about 5 % late-packet bound are expected rates for each mechanism
+    separately, not a cap on the realized union: `packet_concealment` records the union
+    count and fraction, which can exceed 5 % of a clip's packets. Raises ValueError on
+    invalid input."""
     _check_law(law)
     if concealment not in CONCEALMENTS:
         raise ValueError(f'concealment must be one of {CONCEALMENTS}')
     if type(rate) is not int or not TELEPHONE_RATE <= rate <= 192000:
         raise ValueError('Expected integer input rate from 8000 to 192000')
-    samples = _pcm(canonical).astype(np.float64)
-    narrow, saturated = resample_to_pcm16(samples, rate, TELEPHONE_RATE)
-    encoded = encode(narrow, law)
-    loss = None
     if loss_plan is not None:
         if loss_rate or seed is not None:
             raise ValueError('Give either loss_plan or loss_rate/seed, not both')
         if not isinstance(loss_plan, dict) or loss_plan != derive_loss(
                 loss_plan.get('master_seed'), loss_plan.get('clip_id')):
             raise ValueError('loss_plan must come unchanged from derive_loss')
-        received, loss = drop_packets(encoded, law, loss_plan['loss_rate'], loss_plan['seed'], concealment)
-        loss.update(derivation=loss_plan['derivation'], master_seed=loss_plan['master_seed'],
-                    clip_id=loss_plan['clip_id'])
     elif loss_rate or seed is not None:
-        received, loss = drop_packets(encoded, law, loss_rate, seed, concealment)
-    else:
+        _loss_mask(0, loss_rate, seed)  # validate before resampling
+    if jitter_plan is not None:
+        if not isinstance(jitter_plan, dict) or jitter_plan != derive_jitter(
+                jitter_plan.get('master_seed'), jitter_plan.get('clip_id')):
+            raise ValueError('jitter_plan must come unchanged from derive_jitter')
+        if loss_plan is not None and (loss_plan['clip_id'], loss_plan['master_seed']) != (
+                jitter_plan['clip_id'], jitter_plan['master_seed']):
+            raise ValueError('loss_plan and jitter_plan name different clips or master seeds')
+    samples = _pcm(canonical).astype(np.float64)
+    narrow, saturated = resample_to_pcm16(samples, rate, TELEPHONE_RATE)
+    encoded = encode(narrow, law)
+    codes = np.frombuffer(encoded, dtype=np.uint8)
+    count = -(-len(codes) // FRAME_SAMPLES)
+    missing, loss, jitter = np.zeros(count, dtype=bool), None, None
+    if loss_plan is not None:
+        lost, loss = _loss_mask(count, loss_plan['loss_rate'], loss_plan['seed'])
+        loss.update(**_plan_fields(loss_plan))
+    elif loss_rate or seed is not None:
+        lost, loss = _loss_mask(count, loss_rate, seed)
+    if loss is not None:
+        loss.update(concealment=concealment, applied_via='packet_concealment')
+        missing |= lost
+    if jitter_plan is not None:
+        late, jitter = _late_mask(count, jitter_plan['jitter_ms'], jitter_plan['buffer_ms'],
+                                  jitter_plan['seed'])
+        jitter.update(concealment=concealment, applied_via='packet_concealment',
+                      **_plan_fields(jitter_plan))
+        missing |= late
+    impairment = None
+    if loss is None and jitter is None:
         received = encoded
+    else:
+        received = _conceal(codes, missing, law, concealment).tobytes()
+        both = loss is not None and jitter is not None
+        impairment = {
+            'mask': 'lost_or_late', 'concealment': concealment, 'packets': count,
+            'concealed_packets': int(missing.sum()),
+            'concealed_fraction': float(missing.sum()) / count,
+            'lost_and_late_packets': int((lost & late).sum()) if both else None,
+            'concealed_indices_sha256': _indices_sha256(missing),
+        }
     decoded = decode(received, law)
     return decoded, {
         'codec': f'g711_{law}', 'codec_implementation': G711_IMPLEMENTATION,
@@ -264,5 +314,6 @@ def telephone_roundtrip(canonical, law, *, rate=16000, loss_rate=0.0, seed=None,
         'saturated_samples': saturated, 'sample_count': len(decoded) // 2,
         'encoded_sha256': hashlib.sha256(encoded).hexdigest(),
         'decoded_pcm_sha256': hashlib.sha256(decoded).hexdigest(),
-        'packet_loss': loss, 'jitter': None, **library_versions(),
+        'packet_loss': loss, 'jitter': jitter, 'packet_concealment': impairment,
+        **library_versions(),
     }

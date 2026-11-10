@@ -27,7 +27,7 @@ ORACLE = {'ulaw': ('lin2ulaw', 'ulaw2lin'), 'alaw': ('lin2alaw', 'alaw2lin')}
 RECORD_KEYS = {'codec', 'codec_implementation', 'codec_rate', 'input_rate', 'input_sample_count',
                'input_sha256', 'resampler', 'quantization', 'saturated_samples', 'sample_count',
                'encoded_sha256', 'decoded_pcm_sha256', 'packet_loss', 'jitter',
-               'numpy_version', 'soxr_version', 'libsoxr_version'}
+               'packet_concealment', 'numpy_version', 'soxr_version', 'libsoxr_version'}
 
 
 def pcm(values):

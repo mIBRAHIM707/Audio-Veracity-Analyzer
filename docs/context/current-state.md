@@ -104,8 +104,12 @@ and about 50,000 original clips, excluding codec copies.
   mu-law/A-law encode/decode (exhaustively equal to CPython 3.11 `audioop`) and an
   8 kHz telephone roundtrip with lineage; seeded 0-5 % 20 ms packet loss with
   silence/repeat concealment; recorded per-clip loss plans (`derive_loss`);
-  28 Claude-authored tests. Library only: GSM, AMR-NB,
-  jitter and manifest wiring remain. 3.2 VAD is blocked on an
+  jitter as late-packet loss behind a fixed buffer with per-clip plans
+  (`derive_jitter`); since 10 Nov `telephone_roundtrip(loss_plan=, jitter_plan=)`
+  conceals lost and late packets as one mask and records both plus the union
+  (`packet_concealment`). Open for Tughral: the per-mechanism 5 % bounds let the
+  union exceed 5 % of a clip's packets; FR-D6 does not say whether 0-5 % bounds the
+  sum. Library only: GSM, AMR-NB and manifest wiring remain. 3.2 VAD is blocked on an
   unprovisioned VAD dependency/model.
 - **Backlog 3.4 in progress (9 Nov): additive noise at SNR (FR-D7).**
   `data/prepare/noise.py` mixes same-rate PCM16 noise at 0-20 dB whole-clip SNR

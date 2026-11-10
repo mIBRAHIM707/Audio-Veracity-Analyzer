@@ -117,8 +117,14 @@ late-packet loss: each packet gets a seeded exponential extra delay (mean
 (`buffer_ms`, at most 400 ms) is concealed like a lost one. Packets are never
 reordered. `derive_jitter(master_seed, clip_id)` gives each clip a plan (mean
 delay uniform 0-20 ms behind a 60 ms buffer, so at most about 5 % late packets;
-seed independent of `derive_loss`). Jitter is not yet called by
-`telephone_roundtrip` (record `jitter` is None).
+seed independent of `derive_loss`). `telephone_roundtrip(..., jitter_plan=plan)`
+applies it together with any loss: lost and late packets form one mask that is
+concealed once, so repeat concealment only repeats packets that arrived in time.
+The record keeps `packet_loss` and `jitter` separately plus `packet_concealment`
+(union count and fraction, overlap count, union index hash). The 5 % bounds are
+expected rates per mechanism, so loss and late packets together can conceal more
+than 5 % of a clip's packets; the PRD does not say whether FR-D6's 0-5 % bounds the
+sum. Plans for different clip IDs or master seeds are refused.
 It is a library only: not yet wired into `prepare_audio.py`, and GSM and AMR-NB
 are not implemented.
 
