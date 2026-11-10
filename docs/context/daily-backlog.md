@@ -133,6 +133,9 @@ items needing that data are listed at the end and stay out of the queue.
 ## 8 — CPU capacity (FR-I9/I10)
 - [ ] 8.1 Warm-up, batching, thread limits, live/batch priority and capacity refusal.
 - [ ] 8.2 Degraded stride/unmonitored behavior and resource bounds.
+  Progress (10 Nov): `services/scorer/degraded.py` stride controller (grow per behind
+  report, cap, unmonitored, 30 s recovery), 13 Claude-authored tests, review fixed.
+  Remaining: bounded per-call pending queue and integration; "behind" undefined in PRD.
 - [ ] 8.QA Measure timings/RSS/load; separate observed results from PRD targets.
 
 ## 9 — Model research tooling (FR-M1–M6/M8–M12)

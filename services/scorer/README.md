@@ -121,6 +121,19 @@ and the degraded flag (backlog 8.2), the `system.health` media-quality event for
 sustained loss (FR-I2, needs the live jitter buffer, backlog 6), and detecting the
 human answer itself (telephony, backlog 6).
 
+## Degraded mode (backlog 8.2 partial; PRD FR-I10, FR-I6)
+
+`degraded.StrideController(config)` turns "behind / under budget" reports into the
+effective stride: each `behind` report adds one hop up to
+`degraded_max_stride_factor` x hop, a `behind` report at the cap sets `unmonitored`,
+and only `degraded_recovery_s` under budget (with no `behind` report) returns to one
+hop. `status()` gives `degraded` and `effective_stride_s` for `score.updated`. What
+"behind" means is the caller's (the documents do not define it). The caller must keep
+reporting at the capped stride while unmonitored, and catch the ValueError for a
+backwards clock. Open: unmonitored versus an open alert on the call card (PRD), the
+see-saw risk under sustained load (8.QA), and the bounded per-call pending queue
+(remaining 8.2 work).
+
 Not specified by the PRD and therefore not enforced in configuration: ordering between the
 suspicious and alert thresholds (for example `alert_enter >= suspicious_enter`), an
 upper bound on `min_windows`, or whether `agent` may be scored without `caller`.
