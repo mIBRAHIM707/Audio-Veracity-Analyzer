@@ -110,6 +110,10 @@ items needing that data are listed at the end and stay out of the queue.
 
 ## 5 — Backend persistence/events (FR-A, FR-I11)
 - [ ] 5.1 PostgreSQL/Redis data and event contracts, migrations and bounded queues.
+  Progress (10 Nov): `services/events/` FR-A4 envelope contract and bounded
+  non-blocking fan-out, 16 Claude-authored tests, review fixed. **Blocked part:**
+  schema/migrations and Redis need a dependency decision: PostgreSQL 18 binaries are
+  installed (architecture names 16) but no Python driver or Redis is pinned/installed.
 - [ ] 5.2 Jobs/cancellation/idempotency, calls/alerts API and WebSocket events.
 - [ ] 5.3 Restart recovery, in-flight handling and default no-audio-retention behavior.
 - [ ] 5.QA Real service integration, disconnects, failures and state recovery.
