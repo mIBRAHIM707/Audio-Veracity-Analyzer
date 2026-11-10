@@ -126,6 +126,15 @@ and about 50,000 original clips, excluding codec copies.
   for an alert open at the end. Pure logic; persistence/events are backlog 5. Open
   for the PRD: FR-I7 `ended_open` wording for `suspicious`, threshold ordering,
   end-of-call verdict vocabulary, `state.changed` as an internal event.
+- **Partial backlog 5.1, 8.1, 8.2, 9.3 (10 Nov), pure logic only.**
+  `services/events/` FR-A4 envelope and bounded non-blocking fan-out;
+  `services/inference/capacity.py` call gate (capacity refusal) and live-first
+  micro-batcher with a 25 % token bucket; `services/scorer/degraded.py` FR-I10 stride
+  controller; `models/evaluation/metrics.py` EER, FAR at FRR 5 %, minDCF (costs required:
+  ASVspoof 5 constants unverified), bootstrap, ECE, temperature, FR-M10 rule. Blocked:
+  PostgreSQL/Redis need a driver/Redis decision (PostgreSQL 18 binaries present, the
+  architecture names 16); warm-up/threads need the exported model; capacity needs
+  measurement.
 - **Phase 4 QA (10 Nov): conditional pass as infrastructure** (`docs/qa/phase-4-qa.md`).
   The scorer objects are single-owner and not thread-safe (documented); backlog 5 must
   serialize per call, reject reordered/duplicate results and copy event data on

@@ -147,6 +147,10 @@ items needing that data are listed at the end and stay out of the queue.
 - [ ] 9.1 SLS and layer-sweep/training harness with tiny smoke runs.
 - [ ] 9.2 Baseline adapters using the same manifests/augmentation contracts.
 - [ ] 9.3 EER/minDCF/FAR, calibration/ECE, bootstrap and subset/evidence-length reports.
+  Progress (10 Nov): `models/evaluation/metrics.py` core metrics, 15 Claude-authored
+  known-answer tests, review fixed. Remaining: subset slicing (FR-M5 a-g),
+  evidence-length curves (FR-M9), reliability diagram/report. Needs a human: confirm
+  ASVspoof 5 cost constants (no web access); speaker-clustered intervals and EER method.
 - [ ] 9.QA Known-answer metrics, insufficient-data cases and training smoke evidence.
 
 ## 10 — Export/deployment (FR-M7, architecture deployment)
