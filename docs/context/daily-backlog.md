@@ -140,7 +140,10 @@ items needing that data are listed at the end and stay out of the queue.
 - [ ] 8.2 Degraded stride/unmonitored behavior and resource bounds.
   Progress (10 Nov): `services/scorer/degraded.py` stride controller (grow per behind
   report, cap, unmonitored, 30 s recovery), 13 Claude-authored tests, review fixed.
-  Remaining: bounded per-call pending queue and integration; "behind" undefined in PRD.
+  10 Nov: `services/scorer/pending.py` bounded per-call pending queue (stride skips,
+  drop-oldest, FIFO, "behind" = a window still waiting at acceptance), 12
+  Claude-authored tests, review fixed. Remaining: wiring into the live inference loop
+  (needs 6.x/8.1); PRD to confirm "behind"; EMA per window vs per second under stride.
 - [ ] 8.QA Measure timings/RSS/load; separate observed results from PRD targets.
 
 ## 9 — Model research tooling (FR-M1–M6/M8–M12)

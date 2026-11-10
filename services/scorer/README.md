@@ -130,9 +130,19 @@ and only `degraded_recovery_s` under budget (with no `behind` report) returns to
 hop. `status()` gives `degraded` and `effective_stride_s` for `score.updated`. What
 "behind" means is the caller's (the documents do not define it). The caller must keep
 reporting at the capped stride while unmonitored, and catch the ValueError for a
-backwards clock. Open: unmonitored versus an open alert on the call card (PRD), the
-see-saw risk under sustained load (8.QA), and the bounded per-call pending queue
-(remaining 8.2 work).
+backwards clock. Open: unmonitored versus an open alert on the call card (PRD) and the
+see-saw risk under sustained load (8.QA).
+
+`pending.PendingWindows(controller, max_pending=)` is the bounded per-call queue in
+front of inference. The window builder offers every window by strictly increasing
+`index`; windows closer than the current stride are skipped (counted, not reported);
+an accepted window is reported to the controller as `behind` when an earlier accepted
+window is still waiting (in-flight windows taken by `take()` do not count); a full
+queue drops its oldest window (counted). `take()` is first in, first out so the EMA
+sees windows in time order. Memory is at most `max_pending` windows, which the caller
+must choose (no documented value). These are interpretation choices and give one
+concrete meaning to "behind" for FR-I10; the PRD should confirm or replace it.
+Remaining 8.2 work: wiring the queue into a live inference loop (needs backlog 6/8.1).
 
 Not specified by the PRD and therefore not enforced in configuration: ordering between the
 suspicious and alert thresholds (for example `alert_enter >= suspicious_enter`), an

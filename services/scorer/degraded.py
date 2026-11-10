@@ -22,8 +22,8 @@ sustained load near capacity, instant growth and a jump back to one hop can cycl
 
 Integration notes: `observe` raises ValueError for a backwards clock; the caller must
 catch it so a clock fault degrades AVA, never the call. Which state wins on the call
-card when unmonitored meets an open alert is a PRD question. Remaining 8.2 work: the
-bounded per-call pending queue this controller assumes. Pure logic with an explicit
+card when unmonitored meets an open alert is a PRD question. `pending.PendingWindows`
+is the bounded per-call queue that drives this controller. Pure logic with an explicit
 clock; one owner per call, not thread-safe.
 """
 import math
