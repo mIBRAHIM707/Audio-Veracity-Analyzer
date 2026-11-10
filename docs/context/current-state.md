@@ -131,7 +131,9 @@ and about 50,000 original clips, excluding codec copies.
   `services/inference/capacity.py` call gate (capacity refusal) and live-first
   micro-batcher with a 25 % token bucket; `services/scorer/degraded.py` FR-I10 stride
   controller; `models/evaluation/metrics.py` EER, FAR at FRR 5 %, minDCF (costs required:
-  ASVspoof 5 constants unverified), bootstrap, ECE, temperature, FR-M10 rule. Blocked:
+  ASVspoof 5 constants unverified), bootstrap, ECE, temperature, FR-M9 evidence curve,
+  FR-M5 subset table, reliability bins and FR-M10 per-dialect FAR. Unit suite 448 OK
+  (9 skips) on 10 Nov; daily report `docs/context/daily-runs/2026-11-10.md`. Blocked:
   PostgreSQL/Redis need a driver/Redis decision (PostgreSQL 18 binaries present, the
   architecture names 16); warm-up/threads need the exported model; capacity needs
   measurement.
