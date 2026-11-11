@@ -74,9 +74,10 @@ class SchedulerTests(unittest.TestCase):
     def save_config(self):
         self.config_path.write_text(json.dumps(self.config), encoding="utf-8")
 
-    def run_main(self, *args, child=None):
+    def run_main(self, *args, child=None, min_seconds=0):
         workspace = {"head": "fictional-revision", "status": "?? sentinel.txt", "prompt": str(self.prompt)}
         with patch.object(runner, "datetime", FixedDateTime), \
+                patch.object(runner, "MIN_PRODUCTIVE_SECONDS", min_seconds), \
                 patch.object(runner, "validate_workspace", return_value=workspace), \
                 patch.object(runner, "run_child", side_effect=child or (lambda *a, **k: 0)) as launch, \
                 redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()):
@@ -131,7 +132,41 @@ class SchedulerTests(unittest.TestCase):
         for call in launch.call_args_list:
             self.assertGreater(call.args[3], 0)
             self.assertLessEqual(call.args[3], 7200)
-        self.assertEqual(self.ledger()["date"], "2026-11-06")
+        catch_up = json.loads((self.state / "2026-11-06-catch-up-1.json").read_text())
+        self.assertEqual(catch_up["date"], "2026-11-06")
+        self.assertFalse((self.state / "2026-11-06.json").exists())
+
+    # Claude-authored, 11 Nov 2026: idle relaunch guard and per-session catch-up ledgers.
+    def test_each_catch_up_gets_its_own_ledger_and_log_names(self):
+        FixedDateTime.value = datetime(2026, 11, 6, 15, 0, tzinfo=runner.PKT)
+        for index in (1, 2, 3):
+            result, launch = self.run_main("--catch-up")
+            self.assertEqual(result, 0)
+            self.assertEqual(launch.call_count, 2)
+            self.assertEqual(launch.call_args.args[2].name, f"2026-11-06-catch-up-{index}-02.jsonl")
+            self.assertEqual(json.loads((self.state / f"2026-11-06-catch-up-{index}.json").read_text())["attempts"], 2)
+        FixedDateTime.value = datetime(2026, 11, 6, 12, tzinfo=runner.PKT)
+        result, launch = self.run_main()
+        self.assertEqual(launch.call_count, 2)
+        self.assertEqual(self.ledger()["attempts"], 2)
+
+    def test_short_attempt_stops_relaunch_but_long_one_continues(self):
+        result, launch = self.run_main(min_seconds=300)
+        self.assertEqual(result, 0)
+        self.assertEqual(launch.call_count, 1)
+        self.assertIn("not relaunching", self.ledger()["stop_reason"])
+        self.assertFalse(self.ledger()["failed"])
+
+    def test_agent_stop_marker_prevents_relaunch_and_prompt_names_it(self):
+        def child(command, prompt, *rest, **kwargs):
+            marker = self.state / "STOP-2026-11-06"
+            self.assertIn(str(marker), prompt)
+            marker.write_text("no ready task fits", encoding="utf-8")
+            return 0
+        result, launch = self.run_main(child=child)
+        self.assertEqual(result, 0)
+        self.assertEqual(launch.call_count, 1)
+        self.assertIn("agent stopped", self.ledger()["stop_reason"])
 
     def test_no_launch_before_noon_or_at_soft_or_hard_cutoff(self):
         for hour, minute, second, microsecond in [(11, 59, 59, 999999), (13, 45, 0, 0),

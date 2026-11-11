@@ -23,6 +23,7 @@ import time as clock
 PKT = timezone(timedelta(hours=5), "Asia/Karachi")
 REMOTE = "https://github.com/mIBRAHIM707/Audio-Veracity-Analyzer.git"
 BRANCH = "feat/4-daily-development"
+MIN_PRODUCTIVE_SECONDS = 300  # 10 Nov 2026: four idle relaunches in a row each wrote only a report.
 MODELS = {"opus", "sonnet", "claude-opus-5-5", "claude-fable-5-1", "claude-sonnet-5"}
 
 
@@ -330,7 +331,14 @@ def main(argv=None) -> int:
         state.mkdir(parents=True, exist_ok=True)
         with FileLock(state / "runner.lock"):
             day = now.date().isoformat()
-            ledger_path = state / f"{day}.json"
+            label = day
+            if args.catch_up:  # Each make-up session has its own ledger; the scheduled day is untouched.
+                index = next((i for i in range(1, 10) if not (state / f"{day}-catch-up-{i}.json").exists()), None)
+                if index is None:
+                    raise ValueError("Too many catch-up sessions today; manual inspection required")
+                label = f"{day}-catch-up-{index}"
+            ledger_path = state / f"{label}.json"
+            stop_marker = state / f"STOP-{label}"
             if ledger_path.exists() and ledger_path.stat().st_size > 131_072:
                 raise ValueError("Daily ledger too large; manual inspection required")
             ledger = json.loads(ledger_path.read_text()) if ledger_path.exists() else {"date": day, "attempts": 0}
@@ -346,6 +354,10 @@ def main(argv=None) -> int:
                 if (state / "PAUSED").exists() or (state / "COMPLETE").exists():
                     print("Skipped: PAUSED or COMPLETE flag present")
                     return 0
+                if stop_marker.exists():
+                    ledger["stop_reason"] = "agent stopped this session (no ready task fits the remaining time)"
+                    atomic_json(ledger_path, ledger)
+                    break
                 current = datetime.now(PKT)
                 remaining = min((deadline - current).total_seconds(), monotonic_deadline - clock.monotonic())
                 if current >= soft or remaining <= 0:
@@ -358,13 +370,15 @@ def main(argv=None) -> int:
                 ledger["attempts"] += 1
                 ledger.update({"last_started": current.isoformat(), "before": workspace})
                 atomic_json(ledger_path, ledger)  # Reserve attempt before any launch.
-                stem = f"{day}-{ledger['attempts']:02d}"
+                stem = f"{label}-{ledger['attempts']:02d}"
                 prompt = Path(workspace["prompt"]).read_text(encoding="utf-8")
                 prompt += (f"\n\nRUN CONTEXT: date={day}; attempt={ledger['attempts']}; "
                            f"soft stop={soft.isoformat()}; absolute deadline={deadline.isoformat()}; remaining seconds={remaining:.0f}. "
                            "Finish and checkpoint before the remaining budget expires. "
                            f"State directory: {state}. Create COMPLETE only when the agreed backlog is finished; "
-                           "create PAUSED when only external blockers remain. Never merge a PR or push main.\n")
+                           "create PAUSED when only external blockers remain. "
+                           f"If you stop early because no ready task can reach a reviewed checkpoint before the soft stop, "
+                           f"create {stop_marker} so this session is not relaunched. Never merge a PR or push main.\n")
                 try:
                     current = datetime.now(PKT)
                     remaining = min((deadline - current).total_seconds(), monotonic_deadline - clock.monotonic())
@@ -372,6 +386,7 @@ def main(argv=None) -> int:
                         ledger["stop_reason"] = "launch cutoff reached during preparation"
                         atomic_json(ledger_path, ledger)
                         break
+                    launched = clock.monotonic()
                     code = run_child(build_command(config), prompt,
                                      state / f"{stem}.jsonl", remaining, state / "PAUSED", deadline,
                                      cwd=config["worktree"])
@@ -386,6 +401,10 @@ def main(argv=None) -> int:
                 atomic_json(ledger_path, ledger)
                 if code:
                     return code
+                if clock.monotonic() - launched < MIN_PRODUCTIVE_SECONDS:
+                    ledger["stop_reason"] = "attempt ended within minutes; not relaunching an idle session"
+                    atomic_json(ledger_path, ledger)
+                    break
             print("Daily session finished; see state directory for logs and handoffs")
             return 0
     except (OSError, ValueError, RuntimeError, subprocess.SubprocessError) as exc:

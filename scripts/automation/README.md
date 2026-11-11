@@ -14,6 +14,11 @@ Text below describing Codex is historical.
 two hours from now (launches stop 15 minutes before the end), only when a person
 starts it. It uses the same daily ledger, attempt limit, lock, PAUSED/COMPLETE
 markers and allowlist, and refuses a window that would cross midnight.
+From 11 November each catch-up has its own ledger and log names
+(`<date>-catch-up-<n>`), so several make-up sessions can run on one day without
+spending the scheduled day's attempts. A session that stops early on purpose creates
+`STOP-<ledger name>`; the runner also stops relaunching after any attempt that
+ends within five minutes.
 Sessions also enable Claude Code's PowerShell tool, and every Bash allow/deny rule is
 mirrored onto it, because this host's Git Bash is missing `usr\bin\bash.exe`.
 
