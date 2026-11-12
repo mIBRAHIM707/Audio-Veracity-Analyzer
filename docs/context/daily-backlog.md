@@ -125,6 +125,11 @@ items needing that data are listed at the end and stay out of the queue.
   rejected and counted, copied events; 12 Claude-authored tests incl. a deterministic
   lock test; review fixed. Open: index restart after a stream reconnect (PRD/6.x).
 - [ ] 5.3 Restart recovery, in-flight handling and default no-audio-retention behavior.
+  Progress (12 Nov): default no-raw-audio retention on the analysis API verified by 3
+  Claude-authored tests (spooled uploads removed with rollover proven, no audio in
+  job records after completion or shutdown, small filename-free responses); review
+  fixed. Remaining: restart recovery and in-flight handling (need durable jobs, 5.1),
+  FR-O5 opt-in snippet retention on the live path.
 - [ ] 5.QA Real service integration, disconnects, failures and state recovery.
 
 ## 6 — Asterisk laboratory (FR-T1–T5/T7, FR-I1/I2)
