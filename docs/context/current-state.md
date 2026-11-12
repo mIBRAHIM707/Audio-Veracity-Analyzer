@@ -171,6 +171,15 @@ and about 50,000 original clips, excluding codec copies.
   shared window and harness contract, `RAWNET2_TRAIN_CONFIG` (1e-4, decay 1e-4,
   weights 0.1/0.9); 13 Claude-authored random-weight tests; review fixed. Written
   without the upstream source: verify fidelity before reporting baseline numbers.
+- **Backlog 7.2 progress (12 Nov): FR-A8 readiness and metrics.** `services/api/app.py`
+  adds `/readyz` (first call runs `AnalysisService.warm_up()`: one silent window with
+  validated logits; sticky; 503 with reason when busy before warm-up, on detector
+  failure or when the job worker stopped) and `/metrics` in Prometheus text 0.0.4.
+  Known gaps: the model still loads lazily (FR-O4 "fail loudly at startup" not met;
+  use a startup probe or longer timeout in k3s), readiness does not revert after
+  later detector faults, `ava_analysis_seconds` is a summary not the planned stage
+  histograms, and FR-O6 telephony metrics are absent. Unit suite 514 OK (2 skips)
+  with API dependencies.
 - **Backlog 8.QA progress (12 Nov): FP32 CPU proxy timings.** `models/ava/benchmark_cpu.py`
   times the real-size truncated MMS-300M + SLS with random weights. On the dev laptop
   (Intel family 6 model 140, 4 physical/8 logical CPUs, torch 2.8.0+cpu, 4 threads,

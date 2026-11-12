@@ -143,10 +143,39 @@ class AnalysisService:
         self._factory, self._detector, self._clock = detector_factory, None, clock
         self._lock = threading.Lock()
         self.model_id = model_id
+        self.warmup_seconds = None  # set by the first successful warm_up (FR-A8 readiness)
 
     @property
     def detector_loaded(self):
         return self._detector is not None
+
+    @property
+    def ready(self):
+        return self.warmup_seconds is not None
+
+    def warm_up(self):
+        """FR-A8: load the detector and score one silent window, validating its logits.
+        Readiness is sticky once reached (a later detector fault fails that request, not
+        readiness), so a busy but warmed service stays ready; before that it refuses
+        (AnalyzerBusy) while an analysis runs."""
+        if self.ready:
+            return self.warmup_seconds
+        if not self._lock.acquire(blocking=False):
+            raise AnalyzerBusy('Analysis or warm-up in progress; retry later')
+        try:
+            if self.ready:
+                return self.warmup_seconds
+            started = self._clock()
+            detector, _ = self._get_detector()
+            try:
+                logits = list(detector(np.zeros(WINDOW_SAMPLES, dtype=np.float32)))
+            except Exception as error:
+                raise DetectorFailure(f'Warm-up inference failed: {type(error).__name__}') from error
+            p_synthetic(logits)  # invalid logits raise DetectorFailure
+            self.warmup_seconds = self._clock() - started
+            return self.warmup_seconds
+        finally:
+            self._lock.release()
 
     def _get_detector(self):
         """Returns (detector, seconds spent loading it in this call). Called under the analysis lock."""

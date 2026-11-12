@@ -136,6 +136,12 @@ items needing that data are listed at the end and stay out of the queue.
 ## 7 — Dashboard and operations (FR-U, FR-A8)
 - [ ] 7.1 Live board, alerts, timeline and batch job states.
 - [ ] 7.2 Health/readiness/metrics and visible unmonitored/low-quality conditions.
+  Progress (12 Nov): FR-A8 on the analysis API: `/readyz` with a validated warm-up
+  inference (sticky once warmed, stays ready while busy), Prometheus `/metrics`
+  without a client library (bounded route labels, job states, queue, uploads in flight,
+  ready/loaded, analysis seconds); 13 Claude-authored tests, review fixed. Remaining:
+  unmonitored/low-quality visibility (needs the live path), FR-O6 histograms and
+  telephony metrics, dashboard (blocked with 2.3).
 - [ ] 7.3 P1 history/search/local authentication/audit and feedback after P0.
 - [ ] 7.QA Astra-designed Playwright suite, offline assets, failures/reconnects.
 

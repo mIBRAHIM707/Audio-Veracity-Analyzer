@@ -4,6 +4,12 @@ POST /v1/analyze  multipart field `file` (PCM16 WAV). Files up to 60 s return 20
                   the analysis; longer files (up to 10 minutes) return 202 with a job ID.
 GET  /v1/jobs/{id} queued | running | done (with result) | failed (with error).
 GET  /healthz     liveness and whether the detector has loaded.
+GET  /readyz      FR-A8 readiness: the first call runs one warm-up inference; 200 once a
+                  validated inference has succeeded (sticky), else 503 with the reason
+                  (busy, detector failure, stopping or job worker gone).
+GET  /metrics     FR-A8 Prometheus text format (no client library): requests by route
+                  and status class, job states, queue depth/capacity, uploads in flight,
+                  detector loaded, ready, analysis seconds (sum/count).
 
 Errors: 411 no Content-Length, 413 oversize/too long, 422 undecodable/unsupported,
 503 busy, too many concurrent uploads or job queue full, 500 detector failure.
@@ -20,22 +26,77 @@ import uuid
 
 from fastapi import FastAPI, File, HTTPException, UploadFile
 from fastapi.concurrency import run_in_threadpool
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, PlainTextResponse
 
-from services.inference.analysis import (AnalysisError, MAX_ASYNC_SECONDS, MAX_BYTES, NeedsAsyncJob,
-                                         decode_wav)
+from services.inference.analysis import (AnalysisError, AnalyzerBusy, MAX_ASYNC_SECONDS, MAX_BYTES,
+                                         NeedsAsyncJob, decode_wav)
 
 MAX_QUEUED_JOBS, MAX_KEPT_JOBS = 4, 64
 CHUNK = 1 << 20
 MULTIPART_OVERHEAD = 64 * 1024
 MAX_CONCURRENT_UPLOADS = 2
+JOB_STATES = ('queued', 'running', 'done', 'failed')
+ROUTES = ('/healthz', '/readyz', '/metrics', '/v1/analyze', '/v1/jobs/:id')
+STATUS_CLASSES = ('2xx', '3xx', '4xx', '5xx')
+
+
+def route_label(path):
+    """Fixed route labels keep metric cardinality bounded (job IDs are never labels)."""
+    if path.startswith('/v1/jobs/'):
+        return '/v1/jobs/:id'
+    return path if path in ROUTES else 'other'
+
+
+class Metrics:
+    """Thread-safe counters rendered in Prometheus text exposition format 0.0.4."""
+
+    def __init__(self):
+        self._lock = threading.Lock()
+        self.requests = {(route, cls): 0 for route in ROUTES + ('other',) for cls in STATUS_CLASSES}
+        self.analysis_seconds_sum, self.analysis_count = 0.0, 0
+
+    def count_request(self, route, status):
+        cls = f'{status // 100}xx'
+        with self._lock:
+            if (route, cls) in self.requests:
+                self.requests[(route, cls)] += 1
+
+    def observe_analysis(self, seconds):
+        if isinstance(seconds, (int, float)) and seconds >= 0:
+            with self._lock:
+                self.analysis_seconds_sum += seconds
+                self.analysis_count += 1
+
+    def render(self, jobs, service, uploads_in_flight):
+        stats = jobs.stats()
+        with self._lock:
+            requests = dict(self.requests)
+            seconds, count = self.analysis_seconds_sum, self.analysis_count
+        lines = ['# HELP ava_api_requests_total HTTP responses by route and status class.',
+                 '# TYPE ava_api_requests_total counter']
+        lines += [f'ava_api_requests_total{{route="{route}",status="{cls}"}} {value}'
+                  for (route, cls), value in sorted(requests.items())]
+        lines += ['# HELP ava_jobs Jobs currently held in memory by state.', '# TYPE ava_jobs gauge']
+        lines += [f'ava_jobs{{state="{state}"}} {stats["by_status"][state]}' for state in JOB_STATES]
+        gauges = (('ava_job_queue_depth', 'Jobs waiting for the worker.', stats['queued']),
+                  ('ava_job_queue_capacity', 'Maximum queued jobs.', stats['capacity']),
+                  ('ava_uploads_in_flight', 'Uploads being received or analysed.', uploads_in_flight),
+                  ('ava_detector_loaded', '1 when the detector is loaded.', int(service.detector_loaded)),
+                  ('ava_ready', '1 after a successful warm-up inference.', int(service.ready)))
+        for name, text, value in gauges:
+            lines += [f'# HELP {name} {text}', f'# TYPE {name} gauge', f'{name} {value}']
+        lines += ['# HELP ava_analysis_seconds Processing time of completed analyses (excludes model load).',
+                  '# TYPE ava_analysis_seconds summary',
+                  f'ava_analysis_seconds_sum {seconds!r}', f'ava_analysis_seconds_count {count}']
+        return '\n'.join(lines) + '\n'
 
 
 class JobStore:
     """Bounded in-memory jobs processed in order by one daemon worker thread."""
 
-    def __init__(self, service, max_queued=MAX_QUEUED_JOBS, max_kept=MAX_KEPT_JOBS):
+    def __init__(self, service, max_queued=MAX_QUEUED_JOBS, max_kept=MAX_KEPT_JOBS, on_result=None):
         self._service, self._max_queued, self._max_kept = service, max_queued, max_kept
+        self._on_result = on_result or (lambda result: None)
         self._jobs, self._pending, self._closed = OrderedDict(), [], False
         self._condition = threading.Condition()
         self._worker = threading.Thread(target=self._run, name='ava-analysis-jobs', daemon=True)
@@ -73,6 +134,15 @@ class JobStore:
             job = self._jobs.get(job_id)
             return dict(job) if job else None
 
+    def stats(self):
+        """Counts by status, queue depth/capacity and whether the worker can still run jobs."""
+        with self._condition:
+            counts = {status: 0 for status in JOB_STATES}
+            for job in self._jobs.values():
+                counts[job['status']] += 1
+            return {'by_status': counts, 'queued': len(self._pending), 'capacity': self._max_queued,
+                    'accepting': not self._closed and self._worker.is_alive()}
+
     def _run(self):
         while True:
             with self._condition:
@@ -86,6 +156,7 @@ class JobStore:
                 try:
                     result = self._service.analyze_wav(payload, max_seconds=MAX_ASYNC_SECONDS)
                     update = {'status': 'done', 'result': result}
+                    self._on_result(result)
                 except AnalysisError as error:
                     if error.status == 503 and not self._closed:  # a sync request holds the analyser
                         threading.Event().wait(0.2)
@@ -109,7 +180,9 @@ async def read_bounded(upload):
 
 
 def create_app(service):
-    jobs = JobStore(service)
+    metrics = Metrics()
+    jobs = JobStore(service, on_result=lambda result: metrics.observe_analysis(result.get('processing_seconds')))
+    in_flight = [0]
 
     @asynccontextmanager
     async def lifespan(_app):
@@ -122,9 +195,27 @@ def create_app(service):
     uploads = asyncio.Semaphore(MAX_CONCURRENT_UPLOADS)
     app.state.jobs = jobs
 
+    app.state.metrics = metrics
+
     @app.get('/healthz')
     def health():
         return {'status': 'ok', 'detector_loaded': service.detector_loaded, 'model_id': service.model_id}
+
+    @app.get('/readyz')
+    async def ready():
+        if not jobs.stats()['accepting']:
+            return JSONResponse({'status': 'not_ready', 'reason': 'job worker stopped'}, status_code=503)
+        try:
+            seconds = await run_in_threadpool(service.warm_up)
+        except AnalysisError as error:
+            reason = 'busy' if isinstance(error, AnalyzerBusy) else str(error)
+            return JSONResponse({'status': 'not_ready', 'reason': reason}, status_code=503)
+        return {'status': 'ready', 'model_id': service.model_id, 'warmup_seconds': seconds}
+
+    @app.get('/metrics')
+    def prometheus():
+        return PlainTextResponse(metrics.render(jobs, service, in_flight[0]),
+                                 media_type='text/plain; version=0.0.4; charset=utf-8')
 
     @app.middleware('http')
     async def reject_oversize(request, call_next):
@@ -138,8 +229,23 @@ def create_app(service):
             if uploads.locked():
                 return JSONResponse({'detail': 'Too many concurrent uploads; retry later'}, status_code=503)
             async with uploads:
-                return await call_next(request)
+                in_flight[0] += 1
+                try:
+                    return await call_next(request)
+                finally:
+                    in_flight[0] -= 1
         return await call_next(request)
+
+    # Registered last, so it is the outermost middleware and also counts early refusals.
+    @app.middleware('http')
+    async def count_responses(request, call_next):
+        try:
+            response = await call_next(request)
+        except Exception:  # unhandled: Starlette's outer error handler answers 500
+            metrics.count_request(route_label(request.url.path), 500)
+            raise
+        metrics.count_request(route_label(request.url.path), response.status_code)
+        return response
 
     @app.post('/v1/analyze')
     async def analyze(file: UploadFile = File(...)):
@@ -153,7 +259,9 @@ def create_app(service):
                 job_id = jobs.submit(payload)
                 return JSONResponse({'job_id': job_id, 'status': 'queued', 'poll': f'/v1/jobs/{job_id}'},
                                     status_code=202)
-            return await run_in_threadpool(service.analyze_wav, payload)
+            result = await run_in_threadpool(service.analyze_wav, payload)
+            metrics.observe_analysis(result.get('processing_seconds'))
+            return result
         except AnalysisError as error:
             raise HTTPException(error.status, str(error)) from None
 
