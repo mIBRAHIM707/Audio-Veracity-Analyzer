@@ -109,8 +109,14 @@ and about 50,000 original clips, excluding codec copies.
   conceals lost and late packets as one mask and records both plus the union
   (`packet_concealment`). Open for Tughral: the per-mechanism 5 % bounds let the
   union exceed 5 % of a clip's packets; FR-D6 does not say whether 0-5 % bounds the
-  sum. Library only: GSM, AMR-NB and manifest wiring remain. 3.2 VAD is blocked on an
-  unprovisioned VAD dependency/model.
+  sum. GSM and AMR-NB remain. 3.2 VAD is blocked on an unprovisioned VAD
+  dependency/model. 11 Nov: `data/prepare/augment.py` wires noise (FR-D7) and the G.711
+  loss/jitter roundtrip over a published prepared root into new augmented-copy roots
+  with the chain recorded per clip, explicit concealment, content-based derivation IDs,
+  `counts_toward_clip_total: false` and a read-only whole-report rebuild check; 15
+  Claude-authored fixture tests, independent review fixed. Infrastructure only; no
+  real corpus was augmented. Open data decision: noise-clipping refusals can bias SNR
+  toward 20 dB on −3 dBFS parents (refusal SNRs are recorded).
 - **Backlog 4.1 complete (10 Nov): scoring configuration.** `services/scorer/config.py`
   validates the FR-I4/§2.4 rules (both threshold pairs `0 < exit < enter <= 1`,
   `0 < hop <= window`, window equal to the model card) plus labelled sanity rules,

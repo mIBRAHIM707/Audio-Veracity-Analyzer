@@ -81,11 +81,16 @@ items needing that data are listed at the end and stay out of the queue.
   loss with per-clip plans (9 Nov); 10 Nov: loss and jitter plans combined in
   `telephone_roundtrip` as one concealed mask, 13 Claude-authored tests. Open spec
   question: whether serving should fade rather than hard-cut after the repeats.
+  11 Nov: manifest wiring done as a separate stage, `data/prepare/augment.py` (noise
+  -> G.711 with loss/jitter plans -> 16 kHz; explicit concealment; content-based
+  derivation ID; copies not counted; read-only whole-report rebuild `--verify`); 15
+  Claude-authored tests, review fixed. Remaining: GSM, AMR-NB (codec library).
 - [ ] 3.4 Other PRD codec/noise paths with bounded reproducible fixtures.
   Progress (9 Nov): `data/prepare/noise.py` seeded additive noise at 0-20 dB SNR
   (FR-D7) with lineage and per-clip plans (`derive_noise`/`mix_planned`); 18
   Claude-authored tests. Remaining: noise corpora, RIRs, speech-active SNR (needs VAD, 3.2), Opus/G.729
-  VoIP path, manifest wiring.
+  VoIP path. 11 Nov: noise wired through `augment.py` (noise file named by PCM hash,
+  source ID and licence; clipping refusals keep the drawn SNR for bias audits).
 - [ ] 3.QA Sample-level parity, malformed formats and immutable-original checks.
 
 ## 4 — Streaming decisions (FR-I4–I8)

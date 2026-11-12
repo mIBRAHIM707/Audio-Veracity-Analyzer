@@ -135,8 +135,8 @@ for A-law, so a serving buffer that zero-fills decoded PCM differs by +8 on A-la
 Training chains meant to match serving need `concealment='repeat_then_silence'`; the
 manifest wiring must choose it explicitly, and the serving jitter buffer should reuse
 `REPEAT_LIMIT` and `_conceal` rather than copy them.
-It is a library only: not yet wired into `prepare_audio.py`, and GSM and AMR-NB
-are not implemented.
+`augment.py` (below) wires it over prepared clips; GSM and AMR-NB are not
+implemented.
 
 ## Additive noise at SNR (partial backlog 3.4, PRD FR-D7)
 
@@ -149,7 +149,44 @@ each clip its own plan (SNR uniform 0-20 dB, offset seed; independent of the
 packet-loss tag) and `mix_planned(speech, noise, plan)` records the derivation,
 master seed and clip ID and refuses altered plans. SNR is whole-clip mean square
 (no VAD yet).
-No noise corpus or room impulse responses are included; it is a library only.
+No noise corpus or room impulse responses are included; `augment.py` applies it
+when a chain names a noise file.
+
+## Recorded augmentation chain (backlog 3.3/3.4 wiring; FR-D6, FR-D7, FR-D13)
+
+`augment.py` applies one declared chain to every clip of a published prepared root
+(never modified) and writes **augmented copies** to a new root outside the
+repository. Run it as a module (a script-directory `codecs` import would shadow the
+standard library):
+
+```text
+uv run --no-project --python 3.11 --with-requirements requirements-audio.txt python -m data.prepare.augment --prepared-root <prepared root> --spec <chain.json> --output-root <new root> [--noise <noise.wav>]
+uv run --no-project --python 3.11 --with-requirements requirements-audio.txt python -m data.prepare.augment --prepared-root <prepared root> --spec <chain.json> --verify <augmented root> [--noise <noise.wav>]
+```
+
+The specification has exactly `chain_version` (`ava-telephone-chain-v1`),
+`master_seed`, `codec` (`g711_ulaw`/`g711_alaw`), `concealment` (no default; use
+`repeat_then_silence` to match the serving buffer), `packet_loss` and `jitter`
+(booleans; plans from `derive_loss`/`derive_jitter`) and `noise` (null, or
+`{"sha256": <PCM SHA-256 of a 16 kHz mono PCM16 WAV>, "label", "source_id",
+"licence_ref"}`). Order: noise at 16 kHz (`derive_noise`, before the channel), G.711
+roundtrip with one lost-or-late mask, then `canonicalize` back to 16 kHz. No
+normalization follows. The derivation clip ID is content-based,
+`<source_sha256>:<start_sample>:<end_sample>`, so same-named files in different
+corpora do not share draws. A clip whose noise mix would clip (error row keeps
+`refusal: noise_clipping` and the drawn `snr_db`; the summary counts them), or that
+is digital silence under noise, is listed in `errors` and others proceed (exit code
+1). Refusals can skew the 0–20 dB spread toward high SNR on loud clips; check the
+refusal counts per SNR band before training. Parent clips are peak-normalized to
+−3 dBFS, so no headroom is added before mixing (open data decision). Each copy row carries the parent clip path and hash,
+parent provenance, `augmented_copy: true`, `counts_toward_clip_total: false`, the
+full per-step chain record and review metrics. The report binds the parent report
+hash and the specification hash. `--verify` rebuilds the whole report read-only and
+compares every field (labels, speaker IDs, provenance, flags, errors, summary), the
+expected specification, the audio bytes at rebuilt paths and unlisted files; it
+reuses the writer's build step, so it detects drift and tampering, not a defect
+shared with the writer. Chains are not stacked on an augmented root. GSM, AMR-NB, Opus/G.729,
+RIRs and speech-active SNR remain open (codec library, corpora and VAD needed).
 
 `tests/unit/test_conditioning_parity.py` checks that this preparation path and the
 analysis service (`services/inference/`) condition the same WAV to identical
@@ -158,7 +195,7 @@ analysis service (`services/inference/`) condition the same WAV to identical
 ## Verification
 
 ```text
-uv run --no-project --python 3.11 --with-requirements requirements-audio.txt python -m unittest tests.unit.test_g711_codec tests.unit.test_packet_loss tests.unit.test_noise_mixing tests.unit.test_conditioning_parity -v
+uv run --no-project --python 3.11 --with-requirements requirements-audio.txt python -m unittest tests.unit.test_g711_codec tests.unit.test_packet_loss tests.unit.test_noise_mixing tests.unit.test_conditioning_parity tests.unit.test_augment_chain -v
 uv run --no-project --python 3.11 python -m unittest discover -s tests/unit -p test_audio_preparation.py -v
 uv run --no-project --python 3.11 --with-requirements requirements-audio.txt python -m unittest discover -s tests/unit -p test_audio_conditioning.py -v
 ```
