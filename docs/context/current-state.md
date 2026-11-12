@@ -146,6 +146,16 @@ and about 50,000 original clips, excluding codec copies.
   PostgreSQL/Redis need a driver/Redis decision (PostgreSQL 18 binaries present, the
   architecture names 16); warm-up/threads need the exported model; capacity needs
   measurement.
+- **Backlog 9.1 in progress (12 Nov): AVA model harness.** `models/ava/` truncated
+  wav2vec 2.0 backbone (strict state truncation; tiny-model test shows equality with
+  the full model's first layers), SLS head (learned softmax layer weighting, 256-d
+  projection, attentive statistics pooling, 256-d embedding, 2 classes), FR-M8
+  mean-pool head, `float32[B,64000] -> logits[B,2], embedding[B,256]` with in-model
+  per-window layer norm, AdamW 2e-5/1e-3 with frozen-encoder epochs, class-weighted
+  CE and a layer-sweep harness. 28 Claude-authored tiny random-model tests;
+  independent review fixed (centred variance, whole-set eval loss, no decay on layer
+  logits/biases/norms, warm median timing). No checkpoint run, no accuracy or capacity
+  evidence; the real checkpoint is outside the runner's allowed directory.
 - **Phase 4 QA (10 Nov): conditional pass as infrastructure** (`docs/qa/phase-4-qa.md`).
   The scorer objects are single-owner and not thread-safe (documented); backlog 5 must
   serialize per call, reject reordered/duplicate results and copy event data on
