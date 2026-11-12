@@ -167,6 +167,11 @@ items needing that data are listed at the end and stay out of the queue.
   follow-up: real-checkpoint truncation smoke (checkpoint is outside the runner's
   allowed directory); PRD to confirm the >4 s clip window rule.
 - [ ] 9.2 Baseline adapters using the same manifests/augmentation contracts.
+  Progress (12 Nov): `models/augmentation/rawboost.py` NumPy RawBoost (algorithms 1-3,
+  modes 1-8, reference defaults, per-clip seeded draws with a record; scipy filters
+  re-implemented, parity with scipy not established); 16 Claude-authored tests, review
+  fixed. Remaining: RawNet2, AASIST and XLS-R + AASIST model adapters (XLS-R weights
+  are not provisioned locally).
 - [ ] 9.3 EER/minDCF/FAR, calibration/ECE, bootstrap and subset/evidence-length reports.
   Progress (10 Nov): `models/evaluation/metrics.py` core metrics, 15 Claude-authored
   known-answer tests, review fixed; FR-M9 evidence-length curve with a fixed cohort and

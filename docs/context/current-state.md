@@ -161,6 +161,12 @@ and about 50,000 original clips, excluding codec copies.
   duplicates and altered clips; 12 Claude-authored fixture tests, review fixed. No
   checkpoint run, no accuracy or capacity evidence; the real checkpoint is outside the
   runner's allowed directory.
+- **Backlog 9.2 in progress (12 Nov): RawBoost.** `models/augmentation/rawboost.py`
+  re-implements RawBoost (Tak et al. 2022) in NumPy with the reference defaults and
+  modes 1-8, per-clip seeded draws and a record (seed, clip, parameters, NumPy version);
+  inputs must be in [-1, 1]. 16 Claude-authored tests (filter properties, FFT check,
+  SNR bounds, every mode's composition, normalization known answers, refusals);
+  review fixed. Not bit-parity with scipy (not installed). Unit suite 503 OK (9 skips).
 - **Phase 4 QA (10 Nov): conditional pass as infrastructure** (`docs/qa/phase-4-qa.md`).
   The scorer objects are single-owner and not thread-safe (documented); backlog 5 must
   serialize per call, reject reordered/duplicate results and copy event data on
