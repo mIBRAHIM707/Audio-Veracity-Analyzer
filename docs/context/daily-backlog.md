@@ -154,6 +154,11 @@ items needing that data are listed at the end and stay out of the queue.
   Claude-authored tests, review fixed. Remaining: wiring into the live inference loop
   (needs 6.x/8.1); PRD to confirm "behind"; EMA per window vs per second under stride.
 - [ ] 8.QA Measure timings/RSS/load; separate observed results from PRD targets.
+  Progress (12 Nov): `models/ava/benchmark_cpu.py` (interleaved seeded rounds, p95 only
+  with >= 20 timings, RTF only at batch 1, raw timings, limitations); 7
+  Claude-authored tests, review fixed. FP32 random-weight proxy on the dev laptop
+  recorded in the 12 Nov report (not a §6.1 result). Remaining: INT8 ONNX (blocked on
+  onnx/onnxruntime), box A1, concurrency/load and RSS per worker.
 
 ## 9 — Model research tooling (FR-M1–M6/M8–M12)
 - [x] 9.1 SLS and layer-sweep/training harness with tiny smoke runs.

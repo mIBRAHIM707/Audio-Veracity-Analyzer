@@ -171,6 +171,15 @@ and about 50,000 original clips, excluding codec copies.
   shared window and harness contract, `RAWNET2_TRAIN_CONFIG` (1e-4, decay 1e-4,
   weights 0.1/0.9); 13 Claude-authored random-weight tests; review fixed. Written
   without the upstream source: verify fidelity before reporting baseline numbers.
+- **Backlog 8.QA progress (12 Nov): FP32 CPU proxy timings.** `models/ava/benchmark_cpu.py`
+  times the real-size truncated MMS-300M + SLS with random weights. On the dev laptop
+  (Intel family 6 model 140, 4 physical/8 logical CPUs, torch 2.8.0+cpu, 4 threads,
+  batch 1, 3 interleaved rounds x 7 calls) medians per 4 s window were 4L 0.46 s, 6L
+  0.56, 7L 0.62, 8L 0.65, 10L 0.74, 12L 0.81 (p95 0.58-0.96 s; RTF medians 0.12-0.20).
+  Two earlier single-round runs on the same host gave medians up to 1.26 s with one
+  12.7 s outlier and an unstable cut order. FP32 PyTorch eager, random weights, a
+  noisy laptop: no PRD §6.1 target is met or missed and INT8 latency is not bounded.
+  INT8/ONNX is blocked: onnx and onnxruntime are not installed or cached.
 - **Backlog 9.3 progress (12 Nov): report generator.** `models/evaluation/report.py`
   scores loaded windows (`p_synthetic = sigmoid((l_syn - l_gen)/T)`), builds the FR-M5
   subset table (language, codec, dialect, generator family, source partition, source),
