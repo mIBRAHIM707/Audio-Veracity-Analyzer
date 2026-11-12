@@ -156,14 +156,16 @@ items needing that data are listed at the end and stay out of the queue.
 - [ ] 8.QA Measure timings/RSS/load; separate observed results from PRD targets.
 
 ## 9 — Model research tooling (FR-M1–M6/M8–M12)
-- [ ] 9.1 SLS and layer-sweep/training harness with tiny smoke runs.
-  Progress (12 Nov): `models/ava/` truncated backbone (strict state truncation, equal
+- [x] 9.1 SLS and layer-sweep/training harness with tiny smoke runs.
+  Evidence (12 Nov): `models/ava/` truncated backbone (strict state truncation, equal
   to the full model's first layers), SLS head with attentive statistics pooling,
   FR-M8 mean-pool head, `float32[B,64000] -> logits, embedding` contract with in-model
   layer norm, AdamW 2e-5/1e-3 with frozen-encoder epochs, weighted CE and a layer
-  sweep; 28 Claude-authored tiny-model tests, review fixed. Remaining: window loader
-  from prepared manifests; real-checkpoint truncation smoke (the checkpoint lives
-  outside the runner's allowed directory; needs a human run).
+  sweep; `windows.py` FR-M11 window loader from conditioned prepared/verified
+  augmented roots (train split, trainable rows, split-leak refusal). 40
+  Claude-authored tiny-model/fixture tests, two independent reviews fixed. Human
+  follow-up: real-checkpoint truncation smoke (checkpoint is outside the runner's
+  allowed directory); PRD to confirm the >4 s clip window rule.
 - [ ] 9.2 Baseline adapters using the same manifests/augmentation contracts.
 - [ ] 9.3 EER/minDCF/FAR, calibration/ECE, bootstrap and subset/evidence-length reports.
   Progress (10 Nov): `models/evaluation/metrics.py` core metrics, 15 Claude-authored

@@ -30,8 +30,21 @@ no AVA training data, no chosen layer cut and no accuracy or capacity evidence.
   parameter count, learned layer weights and the median of 5 warm one-window
   forwards).
 
-Open, not decided here: RawBoost and OC-Softmax (architecture §4.2), data loading
-from manifests with the `data/prepare/augment.py` chain, the sweep's selection rule
+- `windows.py`: `load_windows(root, split, purpose)` reads a conditioned
+  `prepare_audio.py --condition` root, or an `augment.py` root together with its
+  `parent_root` (verified with `verify_augmented` first), and returns one 64,000-sample
+  int16 window per clip (FR-M11: zero-padded at the end; clips over 4 s keep their first
+  64,000 samples, an interpretation to confirm). `purpose='train'` reads only split
+  `train`, only explicitly trainable rows (the `validate_splits.is_trainable` rule), and
+  refuses if a speaker or source-audio hash of those rows also appears in another split
+  of the same report. Every selected clip is hash-checked and decoded; any failure,
+  duplicate, quarantined source or refused copy refuses the load (sources errors only
+  with `allow_source_errors=True`). The summary reports per-label padding/truncation
+  (a length shortcut check), exclusions, review-flagged windows and report hashes.
+  `batches(windows, size, seed)` yields `float32` PCM/32768 and `int64` targets.
+  Leakage across separately published roots still needs `validate_splits.py`.
+
+Open, not decided here: RawBoost and OC-Softmax (architecture §4.2), the sweep's selection rule
 (accuracy versus CPU cost, PRD task 2.4), checkpointing and calibration (FR-M6).
 Specification questions for the model owner: (1) the FR-M8 mean-pool head uses the
 last retained layer, so the ablation changes both layer weighting and pooling; a
@@ -43,7 +56,7 @@ paper (Zhang et al. 2024) derives layer weights from the input.
 ## Verification
 
 ```text
-uv run --offline --no-project --python 3.11 --extra-index-url https://download.pytorch.org/whl/cpu --with-requirements requirements-model.txt python -m unittest tests.model.test_ava_sls -v
+uv run --offline --no-project --python 3.11 --extra-index-url https://download.pytorch.org/whl/cpu --with-requirements requirements-model.txt python -m unittest tests.model.test_ava_sls tests.model.test_ava_windows -v
 ```
 
 Claude-authored tests (12 Nov 2026) use tiny random wav2vec 2.0 configurations and
