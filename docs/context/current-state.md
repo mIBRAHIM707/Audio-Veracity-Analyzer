@@ -167,6 +167,10 @@ and about 50,000 original clips, excluding codec copies.
   inputs must be in [-1, 1]. 16 Claude-authored tests (filter properties, FFT check,
   SNR bounds, every mode's composition, normalization known answers, refusals);
   review fixed. Not bit-parity with scipy (not installed). Unit suite 503 OK (9 skips).
+  `models/baselines/rawnet2.py` RawNet2 baseline in the ASVspoof 2021 layout on the
+  shared window and harness contract, `RAWNET2_TRAIN_CONFIG` (1e-4, decay 1e-4,
+  weights 0.1/0.9); 13 Claude-authored random-weight tests; review fixed. Written
+  without the upstream source: verify fidelity before reporting baseline numbers.
 - **Phase 4 QA (10 Nov): conditional pass as infrastructure** (`docs/qa/phase-4-qa.md`).
   The scorer objects are single-owner and not thread-safe (documented); backlog 5 must
   serialize per call, reject reordered/duplicate results and copy event data on

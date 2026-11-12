@@ -170,8 +170,10 @@ items needing that data are listed at the end and stay out of the queue.
   Progress (12 Nov): `models/augmentation/rawboost.py` NumPy RawBoost (algorithms 1-3,
   modes 1-8, reference defaults, per-clip seeded draws with a record; scipy filters
   re-implemented, parity with scipy not established); 16 Claude-authored tests, review
-  fixed. Remaining: RawNet2, AASIST and XLS-R + AASIST model adapters (XLS-R weights
-  are not provisioned locally).
+  fixed. 12 Nov: `models/baselines/rawnet2.py` RawNet2 (ASVspoof 2021 layout) on the
+  shared window/harness contract with the reference training config; 13
+  Claude-authored tests, review fixed; upstream fidelity to verify before reporting.
+  Remaining: AASIST and XLS-R + AASIST (XLS-R weights are not provisioned locally).
 - [ ] 9.3 EER/minDCF/FAR, calibration/ECE, bootstrap and subset/evidence-length reports.
   Progress (10 Nov): `models/evaluation/metrics.py` core metrics, 15 Claude-authored
   known-answer tests, review fixed; FR-M9 evidence-length curve with a fixed cohort and
