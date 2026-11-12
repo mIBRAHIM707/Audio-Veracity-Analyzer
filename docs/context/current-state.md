@@ -171,6 +171,13 @@ and about 50,000 original clips, excluding codec copies.
   shared window and harness contract, `RAWNET2_TRAIN_CONFIG` (1e-4, decay 1e-4,
   weights 0.1/0.9); 13 Claude-authored random-weight tests; review fixed. Written
   without the upstream source: verify fidelity before reporting baseline numbers.
+- **Backlog 9.3 progress (12 Nov): report generator.** `models/evaluation/report.py`
+  scores loaded windows (`p_synthetic = sigmoid((l_syn - l_gen)/T)`), builds the FR-M5
+  subset table (language, codec, dialect, generator family, source partition, source),
+  ECE/reliability with a required temperature status, optional FR-M10 dialect FAR,
+  and writes new JSON outside the repository; windows now carry codec and provenance.
+  11 Claude-authored tests, review fixed. FR-M5 (e) code-switched and (g) phone-call
+  subsets lack manifest fields; minDCF costs still unconfirmed.
 - **Phase 4 QA (10 Nov): conditional pass as infrastructure** (`docs/qa/phase-4-qa.md`).
   The scorer objects are single-owner and not thread-safe (documented); backlog 5 must
   serialize per call, reject reordered/duplicate results and copy event data on

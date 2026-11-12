@@ -55,6 +55,7 @@ class WindowLoaderTests(unittest.TestCase):
             pcm = np.rint(np.random.default_rng(seed).normal(0, 6000, int(seconds * RATE)))
             write_wav(source / f'{name}.wav', pcm.clip(-32768, 32767).astype('<i2'))
             rows.append({'path': f'{name}.wav', 'speaker_id': f'spk_{name}', 'label': label, 'split': split,
+                         'language': 'urd' if name in 'ab' else 'pnb', 'dialect': 'Majhi',
                          'sha256': hashlib.sha256((source / f'{name}.wav').read_bytes()).hexdigest(), **extra})
         manifest = self.base / 'manifest.json'
         manifest.write_text(json.dumps({'files': rows}))
@@ -84,6 +85,8 @@ class WindowLoaderTests(unittest.TestCase):
                          hashlib.sha256((self.prepared / 'report.json').read_bytes()).hexdigest())
         short, long = by_path[self.clips['a']['path']], by_path[self.clips['b']['path']]
         self.assertEqual((short['target'], long['target']), (1, 0))
+        self.assertEqual(short['codec'], 'none')
+        self.assertEqual(short['provenance'], {'language': 'urd', 'dialect': 'Majhi'})
         for window in (short, long):
             self.assertEqual(len(window['samples']), WINDOW_SAMPLES)
         clip_a = pcm_of(self.prepared / short['path'])
@@ -196,6 +199,8 @@ class WindowLoaderTests(unittest.TestCase):
         self.assertEqual(loaded['summary']['augmented_copies'], 2)
         self.assertEqual(loaded['summary']['excluded'], {'other_split': 1, 'not_trainable': 1})
         self.assertEqual(loaded['summary']['chain_spec_sha256'], augment.spec_sha256(spec))
+        self.assertEqual({w['codec'] for w in loaded['windows']}, {'g711_alaw'})
+        self.assertEqual({w['provenance']['language'] for w in loaded['windows']}, {'urd'})
         self.assertEqual(loaded['summary']['parent_report_sha256'],
                          hashlib.sha256((self.prepared / 'report.json').read_bytes()).hexdigest())
         with self.assertRaisesRegex(ValueError, 'parent_root'):

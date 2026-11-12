@@ -178,7 +178,9 @@ items needing that data are listed at the end and stay out of the queue.
   Progress (10 Nov): `models/evaluation/metrics.py` core metrics, 15 Claude-authored
   known-answer tests, review fixed; FR-M9 evidence-length curve with a fixed cohort and
   scorer EMA parity; FR-M5 subset table, FR-M6 reliability bins and FR-M10 dialect FAR
-  (30 tests total). Remaining: report generation from real manifests/scores; PRD
+  (30 tests total). 12 Nov: `models/evaluation/report.py` scores loaded windows and
+  builds the FR-M5/M6/M10 report with recorded costs/temperature status; 11
+  Claude-authored tests, review fixed. Remaining: running it on real scores; PRD
   decisions on speaker-clustered intervals and EER method; ASVspoof 5 cost constants. Needs a human: confirm
   ASVspoof 5 cost constants (no web access); speaker-clustered intervals and EER method.
 - [ ] 9.QA Known-answer metrics, insufficient-data cases and training smoke evidence.

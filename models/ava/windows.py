@@ -38,6 +38,9 @@ PURPOSES = ('train', 'evaluate')
 TRAIN_SPLIT = 'train'
 LINEAGE_KEYS = ('speaker_id', 'source_recording_id', 'source_sha256', 'original_audio_sha256', 'canonical_pcm_sha256')
 MAX_PROBLEMS = 20
+# String provenance carried on each window for evaluation subsets (FR-M5, FR-M10).
+REPORT_PROVENANCE = ('language', 'dialect', 'source_id', 'generator_family', 'generator_version',
+                     'source_partition')
 
 
 def _reject_constant(value):
@@ -188,11 +191,13 @@ def load_windows(prepared_root, split, purpose, *, parent_root=None, noise_path=
         source_errors = len(report.get('errors') or []) + _summary_errors(parent)
         lineage = {'parent_report_sha256': report.get('parent_report_sha256'),
                    'chain_spec_sha256': report.get('chain_spec_sha256')}
+        codec = report['chain_spec']['codec']  # verified above
     else:
         if parent_root is not None or noise_path is not None:
             raise ValueError('parent_root and noise_path apply only to augmented-copy roots')
         _require_conditioned(report)
         source_errors = _summary_errors(report)
+        codec = 'none'  # conditioned 16 kHz clips without a telephone channel
     if source_errors and not allow_source_errors:
         raise ValueError(f'Root lists {source_errors} quarantined source(s) or refused copies; '
                          'pass allow_source_errors=True to load the remainder knowingly')
@@ -236,6 +241,8 @@ def load_windows(prepared_root, split, purpose, *, parent_root=None, noise_path=
         kept.extend(array.array('h', bytes(2 * padded)))
         windows.append({'path': row['path'], 'sha256': row['sha256'], 'label': row['label'],
                         'target': CLASS_INDEX[row['label']], 'speaker_id': row.get('speaker_id'),
+                        'codec': codec,
+                        'provenance': {key: row[key] for key in REPORT_PROVENANCE if isinstance(row.get(key), str)},
                         'augmented_copy': row.get('augmented_copy') is True,
                         'review_flagged': bool(row.get('review_flags')),
                         'clip_samples': len(samples), 'padded_samples': padded,

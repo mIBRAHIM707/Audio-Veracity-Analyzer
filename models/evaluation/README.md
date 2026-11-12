@@ -52,9 +52,21 @@ dialect at the fixed deployed threshold on genuine clips: every listed dialect g
 row (no data is 'insufficient data'), unlisted dialects and non-genuine records are
 refused, and rows name the interval method and flag zero-width intervals.
 
-Not done: building the records from real manifests and scores, plotting/report files, the report generator, and any metric on real AVA scores.
-These are known-answer arithmetic tests, not model results.
+`report.py` (12 Nov) generates the report: `score_windows(model, windows,
+temperature=)` scores `models/ava/windows.py` windows (binary logit `z = synthetic -
+genuine`, `p_synthetic = sigmoid(z / T)`, model training state restored);
+`build_report(scored, costs=, costs_status=, temperature_status=, model_id=,
+windows_summary=, [dialects=, threshold=])` builds the subset table (language, codec,
+dialect, generator family, source partition, source), ECE/reliability at the rows'
+single temperature, and optional FR-M10 dialect FAR with unlisted dialect names and
+speakerless rows counted, not crashed; `write_report` writes new JSON outside the
+repository only. FR-M5 (e) code-switched and (g) real phone-call subsets have no
+manifest field yet and are listed as not reported; (d) lacks a held-out marker.
+
+Not done: plotting, and any metric on real AVA scores. These are known-answer and
+mechanics tests, not model results.
 
 ```text
 uv run --no-project --python 3.11 --with-requirements requirements-audio.txt python -m unittest tests.unit.test_eval_metrics -v
+uv run --offline --no-project --python 3.11 --extra-index-url https://download.pytorch.org/whl/cpu --with-requirements requirements-model.txt python -m unittest tests.model.test_eval_report -v
 ```
