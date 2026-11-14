@@ -127,7 +127,11 @@ and about 50,000 original clips, excluding codec copies.
   0.024 / mean 0.003 logits, no class flips. Graph numerics only; trained-head parity on
   dev windows and dev EER remain. 8.QA: `benchmark_onnx.py`; on this laptop (4 threads,
   batch 1) the 8-layer FP32 graph takes a median 0.69 s and dynamic INT8 0.43 s per 4 s
-  window (not box A1, untrained head; no §6.1 claim). 7.2: live inference latency
+  window (not box A1, untrained head; no §6.1 claim). 8.1: `services/inference/
+  onnx_detector.py` `OnnxBatchDetector` feeds an ONNX session to `LivePipeline`
+  (`per_window` required; True for dynamic INT8); tested through the real pipeline
+  with tiny exports. Open PRD/architecture question: per-window INT8 versus ADR-3
+  micro-batching for FR-I9 capacity. 7.2: live inference latency
   histogram added to `/metrics` (1839139).
 - **Backlog 3.3 advanced (14 Nov): GSM 06.10 and AMR-NB codecs.**
   `data/prepare/ffmpeg_codecs.py` through pinned ffmpeg 9.0.2 (winget user install,

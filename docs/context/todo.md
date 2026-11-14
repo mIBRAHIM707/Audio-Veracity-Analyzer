@@ -17,6 +17,9 @@ single PCM16 WAV analysis; useful for the 2.QA public-pilot check, no data chang
 2.QA done on public CSALT clips with the real checkpoint (local only). Data-relevant:
 `augment.py` can now make GSM 06.10 and AMR-NB copies (with loss/jitter) through a
 pinned local ffmpeg 9.0.2 (`--ffmpeg`, `--ffmpeg-sha256`); verify needs the same binary.
+14 Nov (catch-up 4): no data change. ONNX export/INT8 tooling (`models/export/`) works
+on the real checkpoint; for the dev evaluation later: the INT8 dev EER must state its
+batching, and a static-INT8 calibration set must be disjoint from EER/test windows.
 
 Updated 4 October 2026. This is the active sequence; evidence lives in
 `current-state.md` and `handoffs/`. Check marks mean the stated bounded task passed

@@ -80,7 +80,12 @@ separately). Run on a quiet host: anything else running skews the numbers. 14 No
 this laptop (Intel family 6 model 140, 4 threads, batch 1, 2 rounds x 20), the real
 8-layer exports with an untrained head: FP32 median 0.691 s (p95 0.799 s, RTF 0.17);
 dynamic INT8 median 0.432 s (p95 0.497 s, RTF 0.11); a first run that overlapped test
-runs on the same host was discarded for contention. Development-laptop observations,
+runs on the same host was discarded for contention. A second set with the
+noise-calibrated static INT8 graph added (batch 1, 2 x 20; batch 4, 1 x 20), as median
+seconds per window: FP32 0.675 (batch 1) / 0.637 (batch 4); dynamic INT8 0.451 /
+0.394; static INT8 0.472 / 0.469. On this CPU batching saves only about 1-13 % per
+window, so running dynamic INT8 per window costs little throughput, and per-window cost,
+not batching, dominates capacity. Development-laptop observations,
 not box A1 and not the final model: no PRD §6.1 target is met or missed by them.
 
 Limits: the model's Python input checks (shape, finite samples) are traced as

@@ -94,5 +94,8 @@ up the micro-batching ADR-3 relies on for FR-I9's 8 calls. On the development la
 the 8-layer INT8 graph takes about 0.43 s per window at batch 1 (`models/export/
 README.md`); 8 calls at a 2 s hop need about 3.5 s of compute per 2 s on one 4-thread
 worker, over budget on that machine (not box A1, untrained head, so not a verdict).
-Static INT8 (batch-independent) or batched FP32 may be the route to FR-I9; this needs
-measurement on box A1 and a decision.
+Later the same day (8-layer graphs, untrained head, 4 threads, same laptop): batch 4
+saved only about 1-13 % per window against batch 1 (dynamic INT8 0.451 -> 0.394 s,
+static INT8 0.472 -> 0.469 s, FP32 0.675 -> 0.637 s), so per-window dynamic INT8 loses
+little throughput and the binding cost is per-window compute, not batching. Box A1,
+layer count and hop decide FR-I9; this needs measurement there and a decision.
