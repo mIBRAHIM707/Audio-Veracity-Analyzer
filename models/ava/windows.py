@@ -149,7 +149,7 @@ def _split_leaks(rows, split):
 
 
 def load_windows(prepared_root, split, purpose, *, parent_root=None, noise_path=None,
-                 allow_source_errors=False, max_windows=10_000):
+                 allow_source_errors=False, max_windows=10_000, ffmpeg=None):
     """Return ``{'windows': [...], 'summary': {...}}``; each window keeps its row metadata.
 
     ``window['samples']`` is ``array('h')`` of exactly WINDOW_SAMPLES values. An
@@ -180,7 +180,8 @@ def load_windows(prepared_root, split, purpose, *, parent_root=None, noise_path=
         parent, _ = _load_report(Path(parent_root).resolve())
         _require_conditioned(parent)
         try:
-            problems = augment.verify_augmented(parent_root, root, noise_path)
+            # GSM/AMR-NB roots rebuild through the pinned ffmpeg (data/prepare/ffmpeg_codecs.Ffmpeg).
+            problems = augment.verify_augmented(parent_root, root, noise_path, ffmpeg=ffmpeg)
         except RecursionError as error:
             raise ValueError('Report nesting is too deep') from error
         if problems:
@@ -190,11 +191,13 @@ def load_windows(prepared_root, split, purpose, *, parent_root=None, noise_path=
         # Parent quarantines are invisible in the copies, so they count too.
         source_errors = len(report.get('errors') or []) + _summary_errors(parent)
         lineage = {'parent_report_sha256': report.get('parent_report_sha256'),
-                   'chain_spec_sha256': report.get('chain_spec_sha256')}
+                   'chain_spec_sha256': report.get('chain_spec_sha256'),
+                   # The spec hash does not name the codec tool; GSM/AMR output depends on it.
+                   'codec_tool_sha256': augment.recorded_tool_hash(report)}
         codec = report['chain_spec']['codec']  # verified above
     else:
-        if parent_root is not None or noise_path is not None:
-            raise ValueError('parent_root and noise_path apply only to augmented-copy roots')
+        if parent_root is not None or noise_path is not None or ffmpeg is not None:
+            raise ValueError('parent_root, noise_path and ffmpeg apply only to augmented-copy roots')
         _require_conditioned(report)
         source_errors = _summary_errors(report)
         codec = 'none'  # conditioned 16 kHz clips without a telephone channel

@@ -22,7 +22,11 @@ Copies start `review_status: unreviewed`; the parent's review and listening stat
 kept as `parent_review_status`/`parent_listening_status` and are not inherited.
 A noise mix that would clip is refused per clip with its drawn SNR recorded, so the
 refusal rate per SNR band can be audited (it can bias the FR-D7 0-20 dB spread).
-GSM, AMR-NB, Opus/G.729 and room impulse responses are not implemented.
+The channel may instead be GSM 06.10 or AMR-NB 4.75/7.4/12.2 (`ffmpeg_codecs`, a pinned
+local ffmpeg passed as `ffmpeg`/`--ffmpeg`); those chains must declare concealment null
+and no packet loss or jitter, which exist for G.711 only. A codec-tool failure aborts
+the run before anything is written. Opus/G.729 and room impulse responses are not
+implemented.
 """
 import argparse
 import array
@@ -39,6 +43,7 @@ import wave
 if __package__:
     from .codecs import CONCEALMENTS, LAWS, derive_jitter, derive_loss, telephone_roundtrip
     from .conditioning import RATE, canonicalize
+    from .ffmpeg_codecs import CODECS as FFMPEG_CODECS, CodecToolError, Ffmpeg, telephone_codec_roundtrip
     from .noise import derive_noise, mix_planned
     from .prepare_audio import PROVENANCE_FIELDS, measures
     from .wav_format import pcm_format_problem
@@ -46,6 +51,24 @@ else:  # a script-directory 'codecs' import would shadow the standard library mo
     raise SystemExit('Run as a module: python -m data.prepare.augment ...')
 
 CHAIN_VERSION = 'ava-telephone-chain-v1'
+G711_CODECS = tuple(f'g711_{law}' for law in LAWS)
+
+
+def needs_ffmpeg(spec):
+    return isinstance(spec, dict) and isinstance(spec.get('codec'), str) and spec['codec'] in FFMPEG_CODECS
+
+
+def recorded_tool_hash(report):
+    """The single codec-tool (ffmpeg) SHA-256 recorded in an augmented report's copies,
+    None when no copy records one (G.711), or 'mixed' when copies disagree. The chain
+    spec hash does not name the tool, and GSM/AMR output depends on it."""
+    hashes = set()
+    for row in report.get('clips') or []:
+        steps = row.get('chain', {}).get('steps', []) if isinstance(row, dict) else []
+        for step in steps if isinstance(steps, list) else []:
+            if isinstance(step, dict) and step.get('ffmpeg_sha256') is not None:
+                hashes.add(step['ffmpeg_sha256'])
+    return None if not hashes else hashes.pop() if len(hashes) == 1 else 'mixed'
 SPEC_KEYS = {'chain_version', 'master_seed', 'codec', 'concealment', 'packet_loss',
              'jitter', 'noise'}
 NOISE_KEYS = {'sha256', 'label', 'source_id', 'licence_ref'}
@@ -96,13 +119,23 @@ def validate_spec(spec):
     seed = spec.get('master_seed')
     if 'master_seed' in spec and (type(seed) is not int or seed < 0):
         problems.append('master_seed must be a non-negative integer')
-    if 'codec' in spec and spec['codec'] not in tuple(f'g711_{law}' for law in LAWS):
-        problems.append('codec must be g711_ulaw or g711_alaw')
-    if 'concealment' in spec and spec['concealment'] not in CONCEALMENTS:
-        problems.append(f'concealment must be one of {CONCEALMENTS}')
-    for key in ('packet_loss', 'jitter'):
-        if key in spec and type(spec[key]) is not bool:
-            problems.append(f'{key} must be true or false')
+    codec = spec.get('codec') if isinstance(spec.get('codec'), str) else None
+    if 'codec' in spec and codec not in G711_CODECS + tuple(FFMPEG_CODECS):
+        problems.append(f'codec must be one of {list(G711_CODECS + tuple(FFMPEG_CODECS))}')
+    if codec in FFMPEG_CODECS:
+        # Packet/frame loss, jitter and concealment exist for G.711 only (codecs.py);
+        # a GSM/AMR chain must say so explicitly rather than silently ignore them.
+        if spec.get('concealment') is not None:
+            problems.append(f'concealment must be null for {codec} (no frame loss implemented)')
+        for key in ('packet_loss', 'jitter'):
+            if spec.get(key) is not False:
+                problems.append(f'{key} must be false for {codec} (not implemented)')
+    else:
+        if 'concealment' in spec and spec['concealment'] not in CONCEALMENTS:
+            problems.append(f'concealment must be one of {CONCEALMENTS}')
+        for key in ('packet_loss', 'jitter'):
+            if key in spec and type(spec[key]) is not bool:
+                problems.append(f'{key} must be true or false')
     noise = spec.get('noise')
     if noise is not None:
         if not isinstance(noise, dict) or noise.keys() != NOISE_KEYS:
@@ -122,11 +155,19 @@ def spec_sha256(spec):
     return hashlib.sha256(json.dumps(spec, sort_keys=True, separators=(',', ':')).encode()).hexdigest()
 
 
-def augment_clip(clip_pcm, clip_id, spec, noise_pcm=None):
+def _check_ffmpeg(spec, ffmpeg):
+    if needs_ffmpeg(spec) and ffmpeg is None:
+        raise ValueError(f'codec {spec["codec"]} needs an ffmpeg (data/prepare/ffmpeg_codecs.Ffmpeg)')
+
+
+def augment_clip(clip_pcm, clip_id, spec, noise_pcm=None, ffmpeg=None):
     """Apply the declared chain to one 16 kHz mono PCM16 clip. Returns (16 kHz PCM16
     bytes, record). `noise_pcm` must be 16 kHz mono PCM16 whose SHA-256 the spec names
-    (exactly when the spec asks for noise). Raises ValueError on invalid input."""
+    (exactly when the spec asks for noise). GSM/AMR-NB codecs need `ffmpeg` (an
+    `ffmpeg_codecs.Ffmpeg`). Raises ValueError on invalid input and CodecToolError when
+    the codec tool fails (a systemic fault: callers abort rather than list it per clip)."""
     validate_spec(spec)
+    _check_ffmpeg(spec, ffmpeg)
     if not isinstance(clip_pcm, bytes) or not clip_pcm or len(clip_pcm) % 2:
         raise ValueError('clip must be nonempty mono PCM16 bytes')
     if (spec['noise'] is None) != (noise_pcm is None):
@@ -140,11 +181,14 @@ def augment_clip(clip_pcm, clip_id, spec, noise_pcm=None):
             raise NoiseClipped(record['snr_db'], record['clipped_samples'])
         steps.append({'step': 'additive_noise', **{f'noise_{k}': v for k, v in spec['noise'].items()
                                                    if k != 'sha256'}, **record})
-    law = spec['codec'].removeprefix('g711_')
-    narrow, record = telephone_roundtrip(
-        current, law, rate=RATE, concealment=spec['concealment'],
-        loss_plan=derive_loss(spec['master_seed'], clip_id) if spec['packet_loss'] else None,
-        jitter_plan=derive_jitter(spec['master_seed'], clip_id) if spec['jitter'] else None)
+    if needs_ffmpeg(spec):
+        narrow, record = telephone_codec_roundtrip(current, spec['codec'], ffmpeg, rate=RATE)
+    else:
+        law = spec['codec'].removeprefix('g711_')
+        narrow, record = telephone_roundtrip(
+            current, law, rate=RATE, concealment=spec['concealment'],
+            loss_plan=derive_loss(spec['master_seed'], clip_id) if spec['packet_loss'] else None,
+            jitter_plan=derive_jitter(spec['master_seed'], clip_id) if spec['jitter'] else None)
     steps.append({'step': 'telephone_roundtrip', **record})
     wide, record = canonicalize(narrow, 8000, 1)
     steps.append({'step': 'return_to_model_grid', **record})
@@ -246,9 +290,10 @@ def _load_noise(spec, noise_path):
     return raw
 
 
-def _build(prepared_root, report, spec, noise):
+def _build(prepared_root, report, spec, noise, ffmpeg=None):
     """Pure-in-effect derivation of every copy: returns (clip rows, error rows, summary,
-    {relative path: WAV bytes}). Used by the writer and, unchanged, by the verifier."""
+    {relative path: WAV bytes}). Used by the writer and, unchanged, by the verifier. A
+    CodecToolError propagates (nothing has been written yet)."""
     clips, errors, files = [], [], {}
     for row in report['clips']:
         try:
@@ -256,7 +301,7 @@ def _build(prepared_root, report, spec, noise):
             if hashlib.sha256(payload).hexdigest() != row['sha256']:
                 raise ValueError('Parent clip hash mismatch')
             out, record = augment_clip(read_pcm16_wav(payload, 'Parent clip'), derivation_id(row),
-                                       spec, noise)
+                                       spec, noise, ffmpeg)
         except NoiseClipped as failure:
             errors.append({'parent_clip_path': row['path'], 'error': str(failure),
                            'refusal': 'noise_clipping', 'snr_db': failure.snr_db})
@@ -282,10 +327,12 @@ def _build(prepared_root, report, spec, noise):
     return clips, errors, summary, files
 
 
-def augment_prepared(prepared_root, output_root, spec, noise_path=None):
+def augment_prepared(prepared_root, output_root, spec, noise_path=None, ffmpeg=None):
     """Write augmented copies of every parent clip to a new output root; return the
-    summary. Unreadable or refused clips are listed as errors while others proceed."""
+    summary. Unreadable or refused clips are listed as errors while others proceed; a
+    codec-tool failure aborts before anything is written."""
     validate_spec(spec)
+    _check_ffmpeg(spec, ffmpeg)
     prepared_root, report, report_sha = _load_parent(prepared_root)
     output_root = Path(output_root).resolve()
     if output_root.exists() or output_root.is_relative_to(prepared_root) or prepared_root.is_relative_to(output_root):
@@ -293,7 +340,7 @@ def augment_prepared(prepared_root, output_root, spec, noise_path=None):
     if output_root.is_relative_to(Path(__file__).resolve().parents[2]):
         raise ValueError('Augmented output must be outside the repository')
     noise = _load_noise(spec, noise_path)
-    clips, errors, summary, files = _build(prepared_root, report, spec, noise)
+    clips, errors, summary, files = _build(prepared_root, report, spec, noise, ffmpeg)
     output_root.parent.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory(prefix='ava-aug-', dir=output_root.parent) as temp:
         staging = Path(temp) / 'result'
@@ -325,7 +372,7 @@ def _samples(raw):
     return samples
 
 
-def verify_augmented(prepared_root, augmented_root, noise_path=None, expected_spec=None):
+def verify_augmented(prepared_root, augmented_root, noise_path=None, expected_spec=None, ffmpeg=None):
     """Read-only rebuild check: re-derive every augmented copy from its parent clip and the
     recorded specification and compare bytes and records. Returns a list of problems
     (empty means every listed copy rebuilds identically and nothing is unlisted). This
@@ -346,9 +393,19 @@ def verify_augmented(prepared_root, augmented_root, noise_path=None, expected_sp
     problems = []
     if expected_spec is not None and spec_sha256(validate_spec(expected_spec)) != spec_sha256(spec):
         problems.append('recorded chain_spec differs from the expected specification')
+    if needs_ffmpeg(spec):
+        if ffmpeg is None:
+            return problems + [f'codec {spec["codec"]} needs the ffmpeg codec tool (--ffmpeg) to rebuild']
+        recorded, using = recorded_tool_hash(result), getattr(ffmpeg, 'sha256', None)
+        if recorded is not None and recorded != using:
+            return problems + [f'copies were made with ffmpeg sha256 {recorded}; verifying with {using}: '
+                               'use the recorded binary']
     prepared_root, report, report_sha = _load_parent(prepared_root)
     noise = _load_noise(spec, noise_path)
-    clips, errors, summary, files = _build(prepared_root, report, spec, noise)
+    try:
+        clips, errors, summary, files = _build(prepared_root, report, spec, noise, ffmpeg)
+    except CodecToolError as error:
+        return problems + [f'codec tool failed during rebuild: {error}']
     expected = json.loads(json.dumps(_report(report_sha, report, spec, summary, clips, errors)))
     for key in sorted(expected.keys() | result.keys()):
         if key == 'clips':
@@ -386,20 +443,26 @@ def main(argv=None):
     parser.add_argument('--prepared-root', required=True, type=Path)
     parser.add_argument('--spec', required=True, type=Path, help='chain specification JSON')
     parser.add_argument('--noise', type=Path, help='16 kHz mono PCM16 noise WAV named by the spec')
+    parser.add_argument('--ffmpeg', type=Path, help='pinned ffmpeg 9.0.2 for GSM/AMR-NB chains '
+                        '(else AVA_FFMPEG)')
+    parser.add_argument('--ffmpeg-sha256', help='refuse an ffmpeg executable with another hash')
     group = parser.add_mutually_exclusive_group(required=True)
     group.add_argument('--output-root', type=Path)
     group.add_argument('--verify', type=Path, help='augmented root to rebuild read-only')
     args = parser.parse_args(argv)
     try:
-        spec = _load_json(_read_regular(args.spec, 64_000, 'Specification'), 'Specification')
+        spec = validate_spec(_load_json(_read_regular(args.spec, 64_000, 'Specification'), 'Specification'))
+        if not needs_ffmpeg(spec) and (args.ffmpeg or args.ffmpeg_sha256):
+            raise ValueError(f'--ffmpeg/--ffmpeg-sha256 apply only to GSM/AMR-NB chains, not {spec["codec"]}')
+        ffmpeg = Ffmpeg(args.ffmpeg, expected_sha256=args.ffmpeg_sha256) if needs_ffmpeg(spec) else None
         if args.verify is not None:
-            problems = verify_augmented(args.prepared_root, args.verify, args.noise, spec)
+            problems = verify_augmented(args.prepared_root, args.verify, args.noise, spec, ffmpeg)
             for problem in problems:
                 print(problem, file=sys.stderr)
             print('FAIL' if problems else 'PASS')
             return 1 if problems else 0
-        summary = augment_prepared(args.prepared_root, args.output_root, spec, args.noise)
-    except (OSError, ValueError) as error:
+        summary = augment_prepared(args.prepared_root, args.output_root, spec, args.noise, ffmpeg)
+    except (OSError, ValueError, CodecToolError) as error:
         print(f'Augmentation failed: {error}', file=sys.stderr)
         return 1
     print(json.dumps(summary, indent=2))

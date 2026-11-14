@@ -189,6 +189,22 @@ class WindowLoaderTests(unittest.TestCase):
         self.assertEqual(result['steps'], 1)
         self.assertTrue(np.isfinite(result['mean_loss']))
 
+    def test_gsm_copy_root_loads_only_with_its_codec_tool(self):
+        # Claude-authored, 14 Nov 2026 (backlog 3.3 review M1): GSM/AMR roots need the tool.
+        from tests.unit.test_augment_ffmpeg_chain import FakeTool, ffmpeg_spec
+        augmented = self.base / 'augmented-gsm'
+        augment.augment_prepared(self.prepared, augmented, ffmpeg_spec('gsm', master_seed=7), ffmpeg=FakeTool())
+        with self.assertRaisesRegex(ValueError, 'ffmpeg codec tool'):
+            windows.load_windows(augmented, 'train', 'train', parent_root=self.prepared)
+        loaded = windows.load_windows(augmented, 'train', 'train', parent_root=self.prepared, ffmpeg=FakeTool())
+        self.assertEqual({w['codec'] for w in loaded['windows']}, {'gsm'})
+        self.assertEqual(loaded['summary']['codec_tool_sha256'], FakeTool.SHA256)
+        with self.assertRaisesRegex(ValueError, 'copies were made with ffmpeg'):
+            windows.load_windows(augmented, 'train', 'train', parent_root=self.prepared,
+                                 ffmpeg=FakeTool(sha256='e' * 64))
+        with self.assertRaisesRegex(ValueError, 'only to augmented'):
+            windows.load_windows(self.prepared, 'train', 'train', ffmpeg=FakeTool())
+
     def test_augmented_copy_roots_load_with_inherited_provenance(self):
         spec = {'chain_version': augment.CHAIN_VERSION, 'master_seed': 7, 'codec': 'g711_alaw',
                 'concealment': 'repeat_then_silence', 'packet_loss': True, 'jitter': False, 'noise': None}

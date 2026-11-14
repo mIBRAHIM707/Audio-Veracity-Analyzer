@@ -140,7 +140,7 @@ Training chains meant to match serving need `concealment='repeat_then_silence'`;
 manifest wiring must choose it explicitly, and the serving jitter buffer should reuse
 `REPEAT_LIMIT` and `_conceal` rather than copy them.
 `augment.py` (below) wires it over prepared clips; GSM and AMR-NB are in
-`ffmpeg_codecs.py` (next section) but not yet wired into `augment.py`.
+`ffmpeg_codecs.py` (next section) and are also selectable in `augment.py`.
 
 ## GSM 06.10 and AMR-NB through ffmpeg (partial backlog 3.3, 14 Nov 2026)
 
@@ -222,8 +222,15 @@ hash and the specification hash. `--verify` rebuilds the whole report read-only 
 compares every field (labels, speaker IDs, provenance, flags, errors, summary), the
 expected specification, the audio bytes at rebuilt paths and unlisted files; it
 reuses the writer's build step, so it detects drift and tampering, not a defect
-shared with the writer. Chains are not stacked on an augmented root. GSM, AMR-NB, Opus/G.729,
-RIRs and speech-active SNR remain open (codec library, corpora and VAD needed).
+shared with the writer. Chains are not stacked on an augmented root.
+
+GSM/AMR-NB chains (14 Nov 2026): `"codec"` may be `gsm`, `amr_nb_4.75`, `amr_nb_7.4` or
+`amr_nb_12.2` with `"concealment": null, "packet_loss": false, "jitter": false` (loss
+and jitter exist for G.711 only); pass the pinned ffmpeg with `--ffmpeg <path>` (or
+`AVA_FFMPEG`) and, for manifest runs, `--ffmpeg-sha256` (see `ffmpeg_codecs.
+PINNED_WINDOWS_SHA256`). The record carries the executable hash, so `--verify` needs
+the same binary. A codec-tool failure aborts the run before anything is written.
+Opus/G.729, GSM/AMR frame loss, RIRs and speech-active SNR remain open.
 
 `tests/unit/test_conditioning_parity.py` checks that this preparation path and the
 analysis service (`services/inference/`) condition the same WAV to identical

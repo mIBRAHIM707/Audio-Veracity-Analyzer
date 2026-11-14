@@ -152,7 +152,8 @@ class AugmentChainTests(unittest.TestCase):
         del incomplete['concealment']
         with self.assertRaisesRegex(ValueError, 'missing keys'):
             augment.validate_spec(incomplete)
-        bad = spec(codec='gsm', packet_loss=1, extra=True, master_seed=-1, chain_version='v0',
+        # 'g729' (not implemented); 'gsm' became valid with ffmpeg_codecs on 14 Nov 2026.
+        bad = spec(codec='g729', packet_loss=1, extra=True, master_seed=-1, chain_version='v0',
                    noise={'sha256': 'ABC', 'label': 'Bad Label', 'source_id': '', 'licence_ref': 3},
                    concealment='fade')
         with self.assertRaises(ValueError) as caught:

@@ -109,9 +109,11 @@ class Ffmpeg:
         return digest.hexdigest()
 
     def _call(self, args, data):
+        # FFREPORT would make ffmpeg write a log file into the working directory.
+        env = {key: value for key, value in os.environ.items() if key.upper() != 'FFREPORT'}
         try:
             done = self._run([self.executable, '-nostdin', *args], input=data, capture_output=True,
-                             timeout=self._timeout, check=False)
+                             timeout=self._timeout, check=False, env=env)
         except subprocess.TimeoutExpired:
             raise CodecToolError(f'ffmpeg timed out after {self._timeout} s') from None
         except OSError as error:
