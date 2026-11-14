@@ -81,3 +81,9 @@ class PendingWindows:
             return None
         self.counts['taken'] += 1
         return self._queue.popleft()
+
+    def put_back(self, item):
+        """Return an (index, window) just taken to the front, when handing it on failed.
+        Call only directly after the `take()` that returned it."""
+        self._queue.appendleft(item)
+        self.counts['taken'] -= 1

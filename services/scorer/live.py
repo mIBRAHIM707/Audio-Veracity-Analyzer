@@ -93,6 +93,13 @@ class LiveCalls:
         with self._lock:
             return call_id in self._calls
 
+    def token(self, call_id):
+        """Opaque identity of the active call with this ID (None if not active). A call
+        that ends and starts again under the same ID gets a different token, so callers
+        holding per-call state can tell the two apart."""
+        with self._lock:
+            return self._calls.get(call_id)
+
     def scored_directions(self, call_id):
         """Directions `end` needs speech seconds for, or None for an unknown call."""
         entry = self._entry(call_id)

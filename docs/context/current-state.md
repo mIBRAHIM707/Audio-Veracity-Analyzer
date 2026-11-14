@@ -106,6 +106,13 @@ and about 50,000 original clips, excluding codec copies.
   the page shows exactly the API's result. 5 Claude-authored cases pass; review fixed.
   Observations only (uncalibrated baseline, concatenated clips): genuine 24 s mean
   0.000, synthetic 23 s mean 0.611; not an accuracy result.
+- **Backlog 7.2/8.2 progress (14 Nov catch-up 3): live pipeline metrics (FR-O6).**
+  `LivePipeline.metrics_snapshot()` (ID-free; every accepted window accounted for once:
+  dropped, cancelled, skipped, scored, lost, result error, not applied, waiting or in
+  the batcher), `PipelineStats` hand-over to the API, `/metrics` `ava_live_*` families
+  with snapshot age and validity. Review fixes: a failed batcher submit keeps the
+  window; per-direction state bound to `LiveCalls.token` so reused call IDs never get an
+  earlier call's windows. Fake detector only; not wired to a real tap or model.
 - **Backlog 3.3 advanced (14 Nov): GSM 06.10 and AMR-NB codecs.**
   `data/prepare/ffmpeg_codecs.py` through pinned ffmpeg 9.0.2 (winget user install,
   GPL-3.0, Windows hash pinned): known-answer frame/mode checks, measured AMR frame

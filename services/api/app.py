@@ -108,6 +108,63 @@ class Histogram:
         return lines
 
 
+# FR-O6 live-pipeline families (services/scorer/pipeline.py LivePipeline.metrics_snapshot).
+# Intake outcomes are exclusive per offered window; resolution outcomes are exclusive per
+# accepted window (accepted = resolved + waiting + in batcher).
+PIPELINE_INTAKE = (('accepted', 'accepted'), ('stride_skipped', 'stride_skipped'),
+                   ('call_inactive', 'offered_inactive'))
+PIPELINE_RESOLVED = (('scored', 'scored'), ('dropped_oldest', 'dropped_pending'),
+                     ('cancelled', 'cancelled_pending'), ('skipped_ended', 'skipped_ended'),
+                     ('detector_failure', 'windows_lost_to_detector'), ('result_error', 'result_errors'),
+                     ('not_applied', 'result_not_applied'))
+PIPELINE_COUNTERS = (('ava_live_batches_total', 'batches', 'Live batches sent to the detector.'),
+                     ('ava_live_detector_failures_total', 'detector_failures',
+                      'Live batches whose detector call failed (their windows are lost).'),
+                     ('ava_live_unmonitored_entries_total', 'unmonitored_entered',
+                      'Times a call direction entered unmonitored at the stride cap (FR-I10).'),
+                     ('ava_live_metrics_publish_failures_total', 'metrics_publish_failures',
+                      'Failed hand-overs of the pipeline snapshot to the metrics reader.'),
+                     ('ava_live_status_publish_failures_total', 'status_publish_failures',
+                      'Failed unmonitored status publications (the window was kept).'),
+                     ('ava_live_file_batches_not_run_total', 'file_batches_not_run',
+                      'File batches handed to the live loop and not run (file jobs are not driven there).'))
+PIPELINE_GAUGES = (('ava_live_directions', 'directions', 'Call directions with a window queue.'),
+                   ('ava_live_windows_waiting', 'waiting', 'Windows waiting in per-direction queues.'),
+                   ('ava_live_windows_in_batcher', 'in_batcher', 'Live windows in the micro-batcher.'),
+                   ('ava_live_directions_degraded', 'degraded', 'Directions scoring at a grown stride.'),
+                   ('ava_live_directions_unmonitored', 'unmonitored', 'Directions at the stride cap.'),
+                   ('ava_live_max_effective_stride_seconds', 'max_effective_stride_s',
+                    'Largest effective stride across directions (0 with none).'))
+
+
+def _number(value):
+    if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value) or value < 0:
+        raise ValueError('pipeline metric values must be finite non-negative numbers')
+    return value
+
+
+def _pipeline_lines(snapshot, age_seconds):
+    """Prometheus lines for the latest live-pipeline snapshot; no call IDs ever."""
+    counts = snapshot['counts']
+    lines = ['# HELP ava_live_windows_offered_total Windows offered to the live pipeline, by exclusive '
+             'intake outcome.', '# TYPE ava_live_windows_offered_total counter']
+    lines += [f'ava_live_windows_offered_total{{outcome="{label}"}} {_number(counts[key])}'
+              for label, key in PIPELINE_INTAKE]
+    lines += ['# HELP ava_live_windows_resolved_total Accepted live windows by exclusive final outcome.',
+              '# TYPE ava_live_windows_resolved_total counter']
+    lines += [f'ava_live_windows_resolved_total{{outcome="{label}"}} {_number(counts[key])}'
+              for label, key in PIPELINE_RESOLVED]
+    for name, key, text in PIPELINE_COUNTERS:
+        lines += [f'# HELP {name} {text}', f'# TYPE {name} counter', f'{name} {_number(counts[key])}']
+    for name, key, text in PIPELINE_GAUGES:
+        lines += [f'# HELP {name} {text}', f'# TYPE {name} gauge', f'{name} {_number(snapshot[key])}']
+    lines += ['# HELP ava_live_pipeline_snapshot_age_seconds Seconds since the live loop last '
+              'published its snapshot (grows when the loop stalls).',
+              '# TYPE ava_live_pipeline_snapshot_age_seconds gauge',
+              f'ava_live_pipeline_snapshot_age_seconds {_number(age_seconds)!r}']
+    return lines
+
+
 class Metrics:
     """Thread-safe counters rendered in Prometheus text exposition format 0.0.4."""
 
@@ -134,7 +191,7 @@ class Metrics:
                 for stage in ANALYSIS_STAGES:
                     self.stages.observe(stages.get(stage), stage)
 
-    def render(self, jobs, service, uploads_in_flight, live=None):
+    def render(self, jobs, service, uploads_in_flight, live=None, pipeline=None):
         stats = jobs.stats()
         lines = ['# HELP ava_api_requests_total HTTP responses by route and status class.',
                  '# TYPE ava_api_requests_total counter']
@@ -169,6 +226,16 @@ class Metrics:
             lines += ['# HELP ava_alerts_raised_total Alerts raised on calls seen by the registry.',
                       '# TYPE ava_alerts_raised_total counter',
                       f'ava_alerts_raised_total {live["counters"]["alerts_raised"]}']
+        if pipeline is not None:
+            try:
+                snapshot, age = pipeline.read()
+                extra = [] if snapshot is None else _pipeline_lines(snapshot, age)
+            except Exception:  # a bad snapshot or reader must not break /metrics
+                extra = []
+            lines += extra + ['# HELP ava_live_pipeline_snapshot_valid 1 when the last live-pipeline '
+                              'snapshot rendered (0 before the first publish or when malformed).',
+                              '# TYPE ava_live_pipeline_snapshot_valid gauge',
+                              f'ava_live_pipeline_snapshot_valid {1 if extra else 0}']
         lines += ['# HELP ava_analysis_seconds Processing time of completed analyses (excludes model load).',
                   '# TYPE ava_analysis_seconds histogram', *analysis,
                   '# HELP ava_analysis_stage_seconds Per-stage time of completed analyses (FR-O6).',
@@ -272,10 +339,12 @@ async def read_bounded(upload):
     return bytes(data)
 
 
-def create_app(service, *, hub=None, registry=None, dashboard_dir=None):
+def create_app(service, *, hub=None, registry=None, dashboard_dir=None, pipeline_stats=None):
     """`hub` is the in-process `services.events.EventHub` carrying FR-A4 events; with it
     the app serves `/v1/calls` from a `CallRegistry` (a new one unless given) and
     `WS /v1/events`. Without it those routes answer 503: no live source is connected.
+    `pipeline_stats` is the `services.scorer.pipeline.PipelineStats` the live loop
+    publishes to; `/metrics` then adds the `ava_live_*` window/queue/stride families.
     `dashboard_dir` is the built dashboard (`dashboard/dist`, architecture §2.6): served
     at `/` on the same origin, after every API route so it never shadows one."""
     if registry is not None and hub is None:
@@ -348,7 +417,7 @@ def create_app(service, *, hub=None, registry=None, dashboard_dir=None):
         if feeds:
             pump_once()
             live = {**registry.live_stats(), 'subscribers': hub.subscriber_count}
-        return PlainTextResponse(metrics.render(jobs, service, in_flight[0], live),
+        return PlainTextResponse(metrics.render(jobs, service, in_flight[0], live, pipeline_stats),
                                  media_type='text/plain; version=0.0.4; charset=utf-8')
 
     @app.middleware('http')

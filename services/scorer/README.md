@@ -218,6 +218,19 @@ batch handed out is counted, not run); no threads, no real detector or tap wired
 Spec questions: whether the call card keeps `unmonitored` while scoring continues at
 the capped stride, and a time limit for the detector call.
 
+Metrics (FR-O6, 14 Nov): `metrics_snapshot()` is an ID-free aggregate (counts,
+directions, waiting, `in_batcher`, degraded/unmonitored directions, largest stride)
+in which every accepted window is accounted for once: accepted = dropped + cancelled +
+skipped_ended + scored + lost to the detector + result errors + not applied + waiting +
+in batcher; offered = accepted + stride_skipped + inactive. The owning loop calls
+`publish_metrics(stats)` into a lock-guarded `PipelineStats`, which the API reads
+(`create_app(..., pipeline_stats=stats)`); a failed hand-over is counted, never raised.
+Same day (review fixes): a failed batcher submit puts the window back (it waits, never
+vanishes); a failing `unmonitored` publication is counted, not raised after the window
+was queued; per-direction state is bound to `LiveCalls.token(call_id)`, so a call ID
+reused after `end_all` (even before the next `schedule`) never inherits the earlier
+call's waiting or batched windows.
+
 ## Speech windows (backlog 3.2 partial; PRD FR-I3, FR-I4; architecture §2.2 steps 3-4)
 
 `speech_windows.SpeechWindower(vad, threshold=0.5)` per call direction: 16 kHz int16 PCM

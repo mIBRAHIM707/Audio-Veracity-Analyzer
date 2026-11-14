@@ -20,7 +20,8 @@ and no threads (the caller owns the loop and the clock):
   rotating position so no call is always served first. `step` runs one due batch.
 - Cancellation (FR-I11): `end_call` ends the call and drops its waiting windows;
   batched items of an ended call (or of an earlier call with the same ID, recognised by
-  the direction-queue object they came from) are skipped; results after the end are
+  the direction-queue object they came from and the `LiveCalls.token` it was bound to)
+  are skipped; results after the end are
   discarded by `LiveCalls`; calls ended elsewhere are cleaned up at `schedule`.
 - Containment: `now` must not go backwards (ValueError before any change). A detector
   fault or invalid output fails that batch only; an error applying one result is
@@ -37,6 +38,8 @@ stride grows once one window is in flight and another is already waiting. Not
 thread-safe: one owner.
 """
 import itertools
+import threading
+import time
 
 import numpy as np
 
@@ -55,13 +58,16 @@ class LivePipeline:
         self.live, self.batcher, self.detector, self.config = live, batcher, detector, config
         self.max_pending = max_pending
         self._directions = {}  # (call_id, direction) -> PendingWindows
+        self._tokens = {}  # (call_id, direction) -> LiveCalls.token of the call it belongs to
         self._in_flight = set()  # keys with a window in the batcher or in inference
         self._unmonitored = set()
         self._cursor = itertools.count()
         self._last_now = None
         self.counts = {'offered_inactive': 0, 'dropped_pending': 0, 'cancelled_pending': 0,
                        'skipped_ended': 0, 'scored': 0, 'batches': 0, 'detector_failures': 0,
-                       'windows_lost_to_detector': 0, 'result_errors': 0, 'file_batches_not_run': 0}
+                       'windows_lost_to_detector': 0, 'result_errors': 0, 'file_batches_not_run': 0,
+                       'accepted': 0, 'stride_skipped': 0, 'result_not_applied': 0,
+                       'unmonitored_entered': 0, 'metrics_publish_failures': 0, 'status_publish_failures': 0}
 
     def check_clock(self, now):
         """Raise ValueError if `now` is invalid or earlier than the last one; no change."""
@@ -89,25 +95,34 @@ class LivePipeline:
         now = _seconds(now, 'now')
         if self._last_now is not None and now < self._last_now:
             raise ValueError('now went backwards; use a monotonic clock')
-        if not self.live.is_active(call_id):
+        token = self.live.token(call_id)
+        if token is None:
             self.counts['offered_inactive'] += 1
             return None
         key = (call_id, direction)
         pending = self._directions.get(key)
-        fresh = pending is None
+        stale = pending is not None and self._tokens.get(key) is not token  # ID reused by a new call
+        fresh = pending is None or stale
         if fresh:
             pending = PendingWindows(StrideController(self.config), max_pending=self.max_pending)
         outcome = pending.offer(now, index, window)  # raises before any change on bad index
+        if stale:
+            self._cancel(key)  # the earlier call's windows never reach the new call
         if fresh:
-            self._directions[key] = pending
+            self._directions[key], self._tokens[key] = pending, token
         self._last_now = now
+        self.counts['accepted' if outcome['accepted'] else 'stride_skipped'] += 1
         if outcome['dropped_index'] is not None:
             self.counts['dropped_pending'] += 1
         controller = pending.controller
         if controller.unmonitored and key not in self._unmonitored:
             self._unmonitored.add(key)
-            self.live.status(call_id, 'unmonitored', degraded=True,
-                             effective_stride_s=controller.effective_stride_s, reason='stride_cap')
+            self.counts['unmonitored_entered'] += 1
+            try:  # the window is already queued: a publish fault must not raise into the caller
+                self.live.status(call_id, 'unmonitored', degraded=True,
+                                 effective_stride_s=controller.effective_stride_s, reason='stride_cap')
+            except Exception:
+                self.counts['status_publish_failures'] += 1
         elif not controller.unmonitored:
             self._unmonitored.discard(key)
         return outcome
@@ -116,8 +131,8 @@ class LivePipeline:
         """Give each idle direction its oldest waiting window, while the batcher has live
         room. Returns the number moved."""
         now = self._clock(now)
-        for key in [k for k in self._directions if not self.live.is_active(k[0])]:
-            self._cancel(key)  # the call ended without end_call (e.g. LiveCalls.end_all)
+        for key in [k for k in self._directions if self.live.token(k[0]) is not self._tokens[k]]:
+            self._cancel(key)  # ended without end_call (e.g. LiveCalls.end_all), or ID reused
         keys = list(self._directions)
         if keys:
             start = next(self._cursor) % len(keys)
@@ -130,7 +145,11 @@ class LivePipeline:
             if self.batcher.pending()['live'] >= self.batcher.max_pending_live:
                 break
             index, window = pending.take()
-            self.batcher.submit((key, pending, index, window), kind='live', now=now)
+            try:
+                self.batcher.submit((key, pending, index, window), kind='live', now=now)
+            except Exception:  # e.g. the batcher's clock is ahead: the window waits, not lost
+                pending.put_back((index, window))
+                raise
             self._in_flight.add(key)
             moved += 1
         return moved
@@ -147,7 +166,7 @@ class LivePipeline:
         items = []
         for item in due[1]:
             key, pending = item[0], item[1]
-            if self._directions.get(key) is pending and self.live.is_active(key[0]):
+            if self._directions.get(key) is pending and self.live.token(key[0]) is self._tokens[key]:
                 items.append(item)
                 self._in_flight.discard(key)  # its result is applied below
             else:  # call ended (or replaced by a new call with the same ID)
@@ -170,11 +189,15 @@ class LivePipeline:
             try:
                 outcome = self.live.result(call_id, direction, index, score, degraded=status['degraded'],
                                            effective_stride_s=status['effective_stride_s'])
+                was_applied = bool(outcome.applied)
             except Exception:  # one bad result must not stop the rest of the batch
                 self.counts['result_errors'] += 1
                 continue
-            applied += bool(outcome.applied)
-        self.counts['scored'] += applied
+            if was_applied:
+                applied += 1
+                self.counts['scored'] += 1
+            else:
+                self.counts['result_not_applied'] += 1
         return applied
 
     # --- lifecycle -----------------------------------------------------------------------
@@ -187,6 +210,7 @@ class LivePipeline:
 
     def _cancel(self, key):
         pending = self._directions.pop(key)
+        self._tokens.pop(key, None)
         self.counts['cancelled_pending'] += len(pending)
         while pending.take() is not None:  # free the windows now; a batched item may keep the queue
             pass
@@ -199,3 +223,54 @@ class LivePipeline:
                 'directions': {f'{c}/{d}': {'waiting': len(p), 'in_flight': (c, d) in self._in_flight,
                                             **p.controller.status(), **p.counts}
                                for (c, d), p in self._directions.items()}}
+
+    def metrics_snapshot(self):
+        """ID-free aggregate for FR-O6 metrics: no call IDs, no window data. Every
+        accepted window is accounted for exactly once:
+        accepted == dropped_pending + cancelled_pending + skipped_ended + scored
+                    + windows_lost_to_detector + result_errors + result_not_applied
+                    + waiting + in_batcher
+        (`in_batcher` counts the batcher's live items, valid while only this pipeline
+        feeds it, as documented above). Owner thread only: other threads read the copy
+        handed to `PipelineStats`."""
+        statuses = [p.controller.status() for p in self._directions.values()]
+        return {'counts': dict(self.counts), 'directions': len(self._directions),
+                'waiting': sum(len(p) for p in self._directions.values()),
+                'in_batcher': self.batcher.pending()['live'],
+                'degraded': sum(s['degraded'] for s in statuses),
+                'unmonitored': sum(s['unmonitored'] for s in statuses),
+                'max_effective_stride_s': max((s['effective_stride_s'] for s in statuses), default=0.0)}
+
+    def publish_metrics(self, stats):
+        """Hand the current aggregate to a `PipelineStats` read by other threads. Call it
+        from the owning loop (e.g. after each step); it never raises into the loop."""
+        try:
+            stats.publish(self.metrics_snapshot())
+        except Exception:  # metrics must not stop scoring
+            self.counts['metrics_publish_failures'] += 1
+
+
+class PipelineStats:
+    """Thread-safe holder of the latest `LivePipeline.metrics_snapshot()`: the single
+    owner publishes, the API's `/metrics` reads. `read()` returns (copy, age in seconds by
+    `clock`) or (None, None) before the first publish, so a stalled loop shows as age."""
+
+    def __init__(self, clock=None):
+        self._clock = clock or time.monotonic
+        self._lock = threading.Lock()
+        self._latest, self._at = None, None
+
+    def publish(self, snapshot):
+        if not isinstance(snapshot, dict) or not isinstance(snapshot.get('counts'), dict):
+            raise ValueError('snapshot must come from LivePipeline.metrics_snapshot()')
+        copy = {**snapshot, 'counts': dict(snapshot['counts'])}
+        at = self._clock()
+        with self._lock:
+            self._latest, self._at = copy, at
+
+    def read(self):
+        with self._lock:
+            latest, at = self._latest, self._at
+        if latest is None:
+            return None, None
+        return {**latest, 'counts': dict(latest['counts'])}, max(0.0, self._clock() - at)

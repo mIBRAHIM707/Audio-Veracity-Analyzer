@@ -220,8 +220,12 @@ items needing that data are listed at the end and stay out of the queue.
   histogram, per-stage `ava_analysis_stage_seconds` (decode/condition/inference; results
   carry `stage_seconds`), live-call gauges/counters from the call registry (active,
   stale, open alerts, alerts raised, exclusive event outcomes, lost events,
-  subscribers); 5 Claude-authored tests, review fixed. Remaining FR-O6: telephony,
-  live per-window/queue/dropped-window metrics, JSON logs, Grafana.
+  subscribers); 5 Claude-authored tests, review fixed. 14 Nov (catch-up 3): live
+  pipeline window/queue/dropped-window metrics (`LivePipeline.metrics_snapshot` with a
+  tested conservation invariant, thread-safe `PipelineStats`, `ava_live_*` families,
+  snapshot age/validity); 12 Claude-authored tests, two review rounds fixed (incl. a
+  lost window on a batcher clock error and reused call IDs after `end_all`). Remaining
+  FR-O6: telephony metrics, live inference latency histograms, JSON logs, Grafana.
 - [ ] 7.3 P1 history/search/local authentication/audit and feedback after P0.
 - [ ] 7.QA Astra-designed Playwright suite, offline assets, failures/reconnects.
 

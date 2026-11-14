@@ -23,9 +23,20 @@ hub: `ava_calls_active`, `ava_calls_stale`, `ava_alerts_open`,
 `rate()*60`; a re-raise of an alert ID refused by the per-call cap is counted again),
 `ava_call_registry_events_total{outcome}` (mutually exclusive outcomes that sum to
 the envelopes received), `ava_call_registry_lost_events_total` and
-`ava_calls_idle_expired_total`. No call or alert IDs appear. FR-O6 is partial: not
-yet telephony, live per-window inference, live scorer queue depth or dropped-window
-metrics (need the live loop, 6.x/8.x), structured JSON logs or Grafana.
+`ava_calls_idle_expired_total`. No call or alert IDs appear. With
+`pipeline_stats` (a `services.scorer.pipeline.PipelineStats` the live loop publishes
+to): `ava_live_windows_offered_total{outcome=accepted|stride_skipped|call_inactive}`,
+`ava_live_windows_resolved_total{outcome=scored|dropped_oldest|cancelled|skipped_ended|
+detector_failure|result_error|not_applied}` (accepted = resolved + waiting + in
+batcher), `ava_live_batches_total`, `ava_live_detector_failures_total`,
+`ava_live_unmonitored_entries_total`, `ava_live_metrics_publish_failures_total`, gauges
+`ava_live_directions`, `ava_live_windows_waiting`, `ava_live_windows_in_batcher`,
+`ava_live_directions_degraded`, `ava_live_directions_unmonitored`,
+`ava_live_max_effective_stride_seconds`, `ava_live_pipeline_snapshot_age_seconds` (grows
+when the loop stalls) and `ava_live_pipeline_snapshot_valid` (0 before the first
+publish or for a malformed snapshot, which never breaks `/metrics`). FR-O6 is still
+partial: telephony metrics, live per-window inference latency histograms, structured
+JSON logs and Grafana remain.
 
 The calls and events routes need `create_app(service, hub=EventHub())`: the in-process
 hub the scorer publishes to (Redis pub/sub is backlog 5.1). A background task drains
