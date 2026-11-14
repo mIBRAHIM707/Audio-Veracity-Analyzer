@@ -31,12 +31,14 @@ from collections import OrderedDict
 from contextlib import asynccontextmanager
 import json
 import math
+from pathlib import Path
 import threading
 import uuid
 
 from fastapi import FastAPI, File, HTTPException, UploadFile, WebSocket, WebSocketDisconnect
 from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import JSONResponse, PlainTextResponse
+from fastapi.staticfiles import StaticFiles
 
 from services.calls.registry import CallRegistry, RegistryFeed
 from services.events.fanout import HubFull
@@ -270,12 +272,16 @@ async def read_bounded(upload):
     return bytes(data)
 
 
-def create_app(service, *, hub=None, registry=None):
+def create_app(service, *, hub=None, registry=None, dashboard_dir=None):
     """`hub` is the in-process `services.events.EventHub` carrying FR-A4 events; with it
     the app serves `/v1/calls` from a `CallRegistry` (a new one unless given) and
-    `WS /v1/events`. Without it those routes answer 503: no live source is connected."""
+    `WS /v1/events`. Without it those routes answer 503: no live source is connected.
+    `dashboard_dir` is the built dashboard (`dashboard/dist`, architecture §2.6): served
+    at `/` on the same origin, after every API route so it never shadows one."""
     if registry is not None and hub is None:
         raise ValueError('a call registry needs the event hub that feeds it')
+    if dashboard_dir is not None and not (Path(dashboard_dir) / 'index.html').is_file():
+        raise ValueError('dashboard_dir must be a built dashboard containing index.html')
     metrics = Metrics()
     jobs = JobStore(service, on_result=metrics.observe_analysis)
     in_flight = [0]
@@ -456,4 +462,6 @@ def create_app(service, *, hub=None, registry=None):
             receiver.cancel()
             subscription.close()
 
+    if dashboard_dir is not None:  # mounted last: API routes above always win
+        app.mount('/', StaticFiles(directory=str(dashboard_dir), html=True), name='dashboard')
     return app

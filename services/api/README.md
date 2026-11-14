@@ -54,6 +54,9 @@ model ID and scope text. Verdicts are advisory research output.
 uv run --no-project --python 3.11 --with-requirements requirements-api.txt python -m unittest tests.unit.test_analysis_api -v
 ```
 
+`create_app(service, dashboard_dir="dashboard/dist")` also serves the built upload page
+(backlog 2.3, `dashboard/README.md`) at `/` on the same origin, mounted after every API
+route; a directory without `index.html` is refused at startup.
+
 Not yet: MP3/AMR/GSM decode and the 8 kHz path (backlog 3.x), language hint,
-durable jobs and cancellation (5.2), authentication and audit (7.3), the upload
-page (2.3).
+durable jobs and cancellation (5.2), authentication and audit (7.3).

@@ -91,7 +91,14 @@ and about 50,000 original clips, excluding codec copies.
   10 min as an in-memory job), `GET /v1/jobs/{id}`, `/healthz`, local
   `/openapi.json`; 411/413/422/503/500 mapping; bounded uploads and job queue;
   shutdown stops the worker. 7 Claude-authored tests. Jobs are not durable (5.2);
-  `/docs` pages off (CDN) is a recorded FR-A11 deviation. Next: 2.3 upload page.
+  `/docs` pages off (CDN) is a recorded FR-A11 deviation.
+- **Backlog 2.3 complete (14 Nov): batch upload page (FR-U4).** `dashboard/` React
+  18.3.1 + TypeScript + Vite 5.4.11 with exact pins and lockfile, built to static files
+  the API serves on its origin (`create_app(..., dashboard_dir="dashboard/dist")`):
+  drag-and-drop, bounded job polling, verdict with the uncalibrated-baseline label,
+  FR-U3 SVG timeline, §1.4 limitations, same-origin CSP. 13 Claude-authored Playwright
+  cases (real API, fake detector; `npm run test:dashboard`) and 6 mount tests;
+  independent review fixed. Infrastructure only; real audio through the page is 2.QA.
 - **Backlog 3.1 in progress (9 Nov): offline/serving conditioning parity.**
   `tests/unit/test_conditioning_parity.py` (Claude-authored) runs one WAV through
   `prepare_audio.py --condition` and the analysis service: identical canonical PCM
@@ -99,7 +106,6 @@ and about 50,000 original clips, excluding codec copies.
   offsets address the service's samples; both paths refuse PCM24, 3-channel and
   6 kHz input. Recorded divergence: the service applies no peak normalization and
   skips a final tail under 1.5 s. Open for 3.1: speaker-turn boundary contract.
-  2.3 is blocked on frontend dependencies (see daily report).
 - **Backlog 3.3 in progress (9 Nov): G.711 file codec.** `data/prepare/codecs.py`
   mu-law/A-law encode/decode (exhaustively equal to CPython 3.11 `audioop`) and an
   8 kHz telephone roundtrip with lineage; seeded 0-5 % 20 ms packet loss with
