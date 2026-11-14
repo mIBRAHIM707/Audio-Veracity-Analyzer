@@ -12,8 +12,8 @@ optionally pinned by SHA-256, and ``check_session`` verifies the I/O contract.
 ``parity`` compares the session with the PyTorch model on the same float32 windows.
 ``choose_quantization`` is the pure FR-M7 decision rule over measured EERs; it does not
 measure anything itself. ``quantize_int8_dynamic`` makes the FR-M7 dynamic INT8 model
-from a pinned FP32 export and ``compare_sessions`` reports its output drift; static
-INT8 (needs calibration windows) is not implemented.
+from a pinned FP32 export, ``quantize_int8_static`` the calibrated static variant, and
+``compare_sessions`` reports output drift.
 """
 import hashlib
 import math
@@ -274,6 +274,85 @@ def parity(model, session, windows, *, batch_size=8, tolerance=PARITY_MAX_ABS_LO
             'class_disagreements': int(np.sum(np.argmax(tl, axis=1) != np.argmax(ol, axis=1))),
             'tolerance': float(tolerance), 'finite': finite, 'problems': [],
             'passed': finite and logit_diff < tolerance}
+
+
+CALIBRATION_MIN_WINDOWS = 10   # local floor; the real calibration set is a dev-split choice
+CALIBRATION_MAX_WINDOWS = 2_000
+
+
+class _CalibrationReader:
+    """onnxruntime CalibrationDataReader over float32 windows, one window per batch."""
+
+    def __init__(self, array):
+        self._array, self._next = array, 0
+
+    def get_next(self):
+        if self._next >= self._array.shape[0]:
+            return None
+        window = self._array[self._next:self._next + 1]
+        self._next += 1
+        return {INPUT_NAME: window}
+
+    def rewind(self):
+        self._next = 0
+
+
+def quantize_int8_static(source, path, calibration_windows, *, source_sha256):
+    """Static INT8 (FR-M7 second step) of MatMul/Gemm from a pinned FP32 export.
+
+    QOperator format (QLinearMatMul), MinMax calibration over ``calibration_windows``
+    (float32 ``[N, 64000]``, one window per calibration batch), signed INT8 weights per
+    tensor, uint8 activations with fixed scales, so a window's output does not depend
+    on its batch partners. Same checks and no-overwrite/no-partial rules as
+    ``quantize_int8_dynamic``. The record carries the calibration set's size and the
+    SHA-256 of its float32 bytes.
+    """
+    import onnx
+    import onnxruntime as ort
+    from onnxruntime.quantization import CalibrationMethod, QuantFormat, QuantType, quantize_static
+    source = Path(source)
+    if not source.is_file():
+        raise ValueError('FP32 source model not found')
+    if not isinstance(source_sha256, str) or _sha256(source) != source_sha256:
+        raise ValueError('FP32 source SHA-256 does not match the pinned value')
+    array = np.asarray(calibration_windows)
+    if array.dtype != np.float32 or array.ndim != 2 or array.shape[1] != WINDOW_SAMPLES:
+        raise ValueError(f'calibration windows must be float32 [N, {WINDOW_SAMPLES}]')
+    if not CALIBRATION_MIN_WINDOWS <= array.shape[0] <= CALIBRATION_MAX_WINDOWS:
+        raise ValueError(f'calibration needs {CALIBRATION_MIN_WINDOWS} to {CALIBRATION_MAX_WINDOWS} windows')
+    if not np.isfinite(array).all():
+        raise ValueError('calibration windows must be finite')
+    array = np.ascontiguousarray(array)
+    calibration_sha256 = hashlib.sha256(array.tobytes()).hexdigest()
+    path, partial = _target(path)
+    try:
+        quantize_static(str(source), str(partial), _CalibrationReader(array),
+                        quant_format=QuantFormat.QOperator, op_types_to_quantize=list(QUANTIZE_OP_TYPES),
+                        per_channel=False, reduce_range=False, activation_type=QuantType.QUInt8,
+                        weight_type=QuantType.QInt8, calibrate_method=CalibrationMethod.MinMax)
+        graph = onnx.load(str(partial), load_external_data=False)
+        types = [node.op_type for node in graph.graph.node]
+        quantized = sum(1 for op in types if op in QUANTIZED_OP_TYPES)
+        if quantized == 0:
+            raise ValueError('Quantization changed no MatMul/Gemm node')
+        if ACTIVATION_QUANTIZER in types:
+            raise ValueError('Static model contains dynamic activation quantizers')
+        session = open_session(partial)
+        problems = check_session(session)
+        del session  # release the file before it is linked or removed (Windows)
+        if problems:
+            raise ValueError(f'Quantized model breaks the I/O contract: {problems}')
+        written = _opset(graph)
+        _publish(partial, path)
+    finally:
+        if partial.exists():
+            partial.unlink()
+    return {'path': str(path), 'sha256': _sha256(path), 'bytes': path.stat().st_size,
+            'opset': written, 'source_sha256': source_sha256, 'weight_type': 'QInt8',
+            'activation_type': 'QUInt8', 'format': 'QOperator', 'calibration_method': 'MinMax',
+            'per_channel': False, 'op_types_to_quantize': list(QUANTIZE_OP_TYPES),
+            'calibration_windows': int(array.shape[0]), 'calibration_sha256': calibration_sha256,
+            'quantized_nodes': quantized, 'onnxruntime_version': ort.__version__}
 
 
 def _run_session(session, array, batch_size):

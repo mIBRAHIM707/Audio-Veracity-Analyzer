@@ -301,9 +301,11 @@ items needing that data are listed at the end and stay out of the queue.
   (`quantize_int8_dynamic`, hash-pinned source, refuses no-op/contract-breaking
   output) and `compare_sessions` drift report; 7 more Claude-authored model tests,
   review fixed. Finding: dynamic INT8 output
-  depends on batch partners (FR-I9 cross-call batching question for the PRD).
-  Remaining: static INT8 (calibration windows), real-checkpoint export and parity on
-  dev windows, dev-EER measurement.
+  depends on batch partners (cross-call micro-batching question for the PRD). Then
+  static INT8 (`quantize_int8_static`, QOperator, MinMax calibration with recorded set
+  hash; batch-independent by test); 7 Claude-authored model tests, review pass.
+  Remaining: real-checkpoint export and parity on dev windows, INT8 latency and dev-EER
+  measurement (with the batching policy and a disjoint calibration set).
 - [ ] 10.2 Model-card generator, container/Compose and deployment manifests.
 - [ ] 10.QA Reproducible startup, CPU parity where measurable, rollback/readiness.
 

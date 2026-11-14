@@ -25,6 +25,18 @@
   quantized MatMul/Gemm node or a broken I/O contract; same no-overwrite/no-partial
   rules. Records source hash, op types, quantized node and activation-quantizer
   counts and the onnxruntime version.
+- `quantize_int8_static(source, path, calibration_windows, source_sha256=)`: FR-M7's
+  second step. QOperator format (`QLinearMatMul`), MatMul/Gemm only, MinMax calibration
+  over 10-2,000 float32 windows fed one per batch, INT8 weights per tensor, uint8
+  activations with fixed scales. Records the calibration count and the SHA-256 of its
+  float32 bytes; refuses dynamic activation quantizers in the result. Tested: a
+  window's output does not depend on its batch partners (< 1e-5 on the tiny model),
+  unlike dynamic INT8. Which dev windows form the calibration set is an evaluation
+  choice to record with the EER (not decided here); it must be disjoint from the
+  windows that measure the FR-M7 static-INT8 EER and from test, and should cover the
+  serving conditions (codecs, narrowband, noise), because activations outside the
+  calibrated range are clipped. The calibration reader is duck-typed (so this module
+  imports without onnxruntime); its protocol is guarded by a test.
 - `compare_sessions(reference, candidate, windows)`: INT8-vs-FP32 output drift (max and
   mean logit difference, embedding difference, class disagreements). Informational:
   FR-M7 judges INT8 by dev EER, so there is no pass flag.
@@ -49,15 +61,15 @@
 Limits: the model's Python input checks (shape, finite samples) are traced as
 constants, so the ONNX graph does not refuse NaN or wrong shapes by itself; serving
 must validate windows before `session.run`. Other known limits: `open_session` and
-`quantize_int8_dynamic` hash a file and onnxruntime then reopens it by path (a swap in
+both quantizers hash a file and onnxruntime then reopens it by path (a swap in
 between is not detected);
 EERs are fractions from 0 to 1, so a percentage below 1 (0.8 meaning 0.8 %) would be
 misread; a graph of 2 GB or more makes torch write external-data files named after the
 `.partial` file, which this export does not handle (MMS-300M FP32 is about 1.2 GB);
 parity holds at most 2,000 windows and batches of at most 64 per call.
 
-Static INT8 (needs calibration windows), the real-checkpoint export and the dev-EER
-measurement are not done yet. Evidence so far is a tiny random model on synthetic noise (infrastructure only):
+The real-checkpoint export, INT8 latency on the real graph and the dev-EER measurement
+are not done yet. Evidence so far is a tiny random model on synthetic noise (infrastructure only):
 FR-M7 parity stays unmet until it is measured on the real truncated MMS-300M graph with
 real dev windows.
 

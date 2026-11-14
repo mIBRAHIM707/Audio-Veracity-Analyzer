@@ -343,5 +343,107 @@ class QuantizeTests(unittest.TestCase):
         self.assertEqual(sorted(p.name for p in self.dir.iterdir()), before)
 
 
+class StaticQuantizeTests(unittest.TestCase):
+    """Static INT8 with MinMax calibration (Claude-authored, 14 Nov 2026)."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls._tmp = tempfile.TemporaryDirectory()
+        cls.dir = Path(cls._tmp.name)
+        cls.fp32 = ox.export_onnx(_model(0), cls.dir / 'fp32.onnx')
+        cls.calibration = _windows(12, seed=7)
+        cls.static = ox.quantize_int8_static(cls.fp32['path'], cls.dir / 'static.onnx', cls.calibration,
+                                             source_sha256=cls.fp32['sha256'])
+        cls.session = ox.open_session(cls.static['path'], expected_sha256=cls.static['sha256'])
+
+    @classmethod
+    def tearDownClass(cls):
+        del cls.session
+        cls._tmp.cleanup()
+
+    def test_record_graph_and_contract(self):
+        import hashlib
+        import onnx
+        types = [node.op_type for node in onnx.load(self.static['path']).graph.node]
+        self.assertIn('QLinearMatMul', types)
+        self.assertEqual(self.static['quantized_nodes'], sum(1 for op in types if op in ox.QUANTIZED_OP_TYPES))
+        for absent in ('DynamicQuantizeLinear', 'ConvInteger', 'QLinearConv'):
+            self.assertNotIn(absent, types)
+        self.assertIn('Conv', types)  # conv front end stays FP32
+        self.assertEqual(self.static['calibration_windows'], 12)
+        self.assertEqual(self.static['calibration_sha256'], hashlib.sha256(self.calibration.tobytes()).hexdigest())
+        self.assertEqual(ox.check_session(self.session), [])
+        self.assertEqual(sorted(p.name for p in self.dir.iterdir()), ['fp32.onnx', 'static.onnx'])
+
+    def test_output_does_not_depend_on_batch_partners(self):
+        # The contrast with the dynamic INT8 characterization test: fixed scales.
+        windows = _windows(8)
+        quiet = windows.copy()
+        quiet[1:] = 0
+        alone = self.session.run(None, {'waveform': windows[:1]})[0]
+        for batch in (windows, quiet):
+            batched = self.session.run(None, {'waveform': batch})[0][:1]
+            self.assertLess(float(np.abs(alone - batched).max()), 1e-5)
+
+    def test_quantized_and_finite(self):
+        fp32 = ox.open_session(self.fp32['path'])
+        drift = ox.compare_sessions(fp32, self.session, _windows(20))
+        self.assertTrue(drift['finite'])
+        self.assertGreater(drift['max_abs_logit_diff'], 0.0)
+
+    def test_calibration_set_changes_the_model(self):
+        other = ox.quantize_int8_static(self.fp32['path'], self.dir / 'other.onnx', _windows(12, seed=8),
+                                        source_sha256=self.fp32['sha256'])
+        try:
+            self.assertNotEqual(other['calibration_sha256'], self.static['calibration_sha256'])
+            self.assertNotEqual(other['sha256'], self.static['sha256'])
+        finally:
+            Path(other['path']).unlink()
+
+    def test_refusals_leave_nothing(self):
+        good = self.calibration
+        nan = good.copy()
+        nan[0, 0] = np.nan
+        cases = {'9 windows': (good[:9], self.fp32['sha256']), 'float64': (good.astype(np.float64), self.fp32['sha256']),
+                 'short': (good[:, :32000], self.fp32['sha256']), 'nan': (nan, self.fp32['sha256']),
+                 'wrong hash': (good, '0' * 64)}
+        before = sorted(p.name for p in self.dir.iterdir())
+        for label, (windows, digest) in cases.items():
+            with self.subTest(label):
+                with self.assertRaises(ValueError):
+                    ox.quantize_int8_static(self.fp32['path'], self.dir / 'bad.onnx', windows, source_sha256=digest)
+        with mock.patch.object(ox, 'CALIBRATION_MAX_WINDOWS', 11):
+            with self.assertRaises(ValueError):
+                ox.quantize_int8_static(self.fp32['path'], self.dir / 'bad.onnx', good,
+                                        source_sha256=self.fp32['sha256'])
+        with self.assertRaises(ValueError):  # existing target
+            ox.quantize_int8_static(self.fp32['path'], self.static['path'], good, source_sha256=self.fp32['sha256'])
+        self.assertEqual(sorted(p.name for p in self.dir.iterdir()), before)
+
+    def test_quantizer_failure_leaves_nothing(self):
+        from onnxruntime import quantization
+
+        def writes_then_fails(source, target, reader, **kwargs):
+            Path(target).write_bytes(b'half')
+            raise RuntimeError('calibration failed')
+
+        before = sorted(p.name for p in self.dir.iterdir())
+        with mock.patch.object(quantization, 'quantize_static', writes_then_fails):
+            with self.assertRaises(RuntimeError):
+                ox.quantize_int8_static(self.fp32['path'], self.dir / 'fail.onnx', self.calibration,
+                                        source_sha256=self.fp32['sha256'])
+        self.assertEqual(sorted(p.name for p in self.dir.iterdir()), before)
+
+    def test_reader_yields_each_window_once(self):
+        reader = ox._CalibrationReader(self.calibration[:3])
+        seen = []
+        while (item := reader.get_next()) is not None:
+            seen.append(item['waveform'])
+        self.assertEqual([w.shape for w in seen], [(1, WINDOW_SAMPLES)] * 3)
+        np.testing.assert_array_equal(np.concatenate(seen), self.calibration[:3])
+        reader.rewind()
+        self.assertIsNotNone(reader.get_next())
+
+
 if __name__ == '__main__':
     unittest.main()
