@@ -153,8 +153,25 @@ def encode(values):
     return np.clip(np.rint(values), -32768, 32767).astype('<i2')
 
 
+def format_tags(payload, limit=1 << 20):
+    """Pure: format tags of every `fmt ` chunk before `data` in the first `limit` bytes.
+    Written from the documented rule (one fmt chunk, tag 1), not imported from preparation."""
+    head = bytes(payload[:limit])
+    if head[:4] != b'RIFF' or head[8:12] != b'WAVE':
+        return []
+    tags, offset = [], 12
+    while offset + 8 <= len(head) and head[offset:offset + 4] != b'data':
+        size = int.from_bytes(head[offset + 4:offset + 8], 'little')
+        if head[offset:offset + 4] == b'fmt ':
+            tags.append(int.from_bytes(head[offset + 8:offset + 10], 'little') if size >= 2 and offset + 10 <= len(head) else None)
+        offset += 8 + size + size % 2
+    return tags
+
+
 def canonical_pcm(payload, mode):
     """Pure decode + conditioning of one source WAV. Raises SourceRejected like preparation would."""
+    if format_tags(payload) != [1]:
+        raise SourceRejected('not a single plain PCM fmt chunk (format tag 1)')
     try:
         with wave.open(io.BytesIO(payload), 'rb') as audio:
             rate, channels, width, frames = (audio.getframerate(), audio.getnchannels(),

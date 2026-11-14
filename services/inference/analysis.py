@@ -26,6 +26,7 @@ import wave
 import numpy as np
 
 from data.prepare.conditioning import canonicalize
+from data.prepare.wav_format import pcm_format_problem
 
 RATE = 16000
 WINDOW_SAMPLES, HOP_SAMPLES, MIN_TAIL_SAMPLES = 4 * RATE, 2 * RATE, RATE * 3 // 2
@@ -82,12 +83,18 @@ def decode_wav(payload, max_seconds=MAX_SYNC_SECONDS):
         raise UnsupportedAudio('Expected WAV bytes')
     if len(payload) > MAX_BYTES:
         raise InputTooLarge('File exceeds 100 MB')
+    problem = pcm_format_problem(payload)
+    if problem:
+        raise UnsupportedAudio(f'Expected a plain PCM16 WAV: {problem}')
     try:
         with wave.open(io.BytesIO(bytes(payload)), 'rb') as audio:
             rate, channels, width, frames = (audio.getframerate(), audio.getnchannels(),
                                              audio.getsampwidth(), audio.getnframes())
             if width != 2 or channels not in (1, 2) or not 8000 <= rate <= 192000:
                 raise UnsupportedAudio('Expected 8-192 kHz mono or stereo PCM16 WAV')
+            # Route on audio that is present, not on a header size the payload cannot hold.
+            if frames * channels * 2 > len(payload):
+                raise UnsupportedAudio('Empty or truncated WAV')
             if frames / rate > MAX_ASYNC_SECONDS:
                 raise InputTooLarge('Files are limited to 10 minutes')
             if frames / rate > max_seconds:

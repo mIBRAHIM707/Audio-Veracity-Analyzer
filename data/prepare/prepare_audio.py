@@ -11,6 +11,18 @@ import stat
 import tempfile
 import wave
 
+# Support package imports, direct CLI execution and loading this file by path: the
+# dependency-free sibling is then loaded from this file's own directory.
+if __package__:
+    from .wav_format import pcm_format_problem
+else:
+    import importlib.util
+    _SPEC = importlib.util.spec_from_file_location(
+        'ava_prepare_wav_format', Path(__file__).resolve().with_name('wav_format.py'))
+    _wav_format = importlib.util.module_from_spec(_SPEC)
+    _SPEC.loader.exec_module(_wav_format)
+    pcm_format_problem = _wav_format.pcm_format_problem
+
 RATE = 16000
 MIN_SAMPLES = 3 * RATE
 MAX_SAMPLES = 6 * RATE
@@ -54,7 +66,10 @@ def preflight(manifest_path, source_root, output_root):
         document = stream.read(MAX_MANIFEST_BYTES + 1)
     if len(document) > MAX_MANIFEST_BYTES:
         raise ValueError('Manifest exceeds 8 MB pilot limit')
-    manifest = json.loads(document)
+    try:
+        manifest = json.loads(document)
+    except RecursionError:
+        raise ValueError('Manifest JSON is nested too deeply') from None
     if not isinstance(manifest, dict) or not isinstance(manifest.get('files'), list) or not manifest['files']:
         raise ValueError('Manifest requires a nonempty files list')
     manifest['_manifest_sha256'] = hashlib.sha256(document).hexdigest()
@@ -189,6 +204,9 @@ def process_manifest(manifest_path, source_root, output_root, *, condition=False
                     raise ValueError('Source exceeds 10 MB pilot limit')
                 if hashlib.sha256(payload).hexdigest() != row['sha256']:
                     raise ValueError('Source hash mismatch')
+                problem = pcm_format_problem(payload)
+                if problem:
+                    raise ValueError(f'Expected a plain PCM WAV: {problem}')
                 import io
                 with wave.open(io.BytesIO(payload), 'rb') as audio:
                     rate, channels, width = audio.getframerate(), audio.getnchannels(), audio.getsampwidth()
@@ -211,7 +229,8 @@ def process_manifest(manifest_path, source_root, output_root, *, condition=False
                     metrics['review_flags'].append('native_possible_digital_clipping')
                 ranges = segment_ranges(samples, quiet)
             except (OSError, ValueError, wave.Error, EOFError) as error:
-                source['error'] = str(error)
+                # EOFError from an empty or cut header has no message; never record ''.
+                source['error'] = str(error) or f'{type(error).__name__}: unreadable or truncated WAV'
                 continue
             source.update(status='processed', sample_count=count, metrics=metrics,
                           uncovered_ranges=uncovered(count, ranges))

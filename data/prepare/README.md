@@ -28,6 +28,10 @@ report while other sources proceed. Pilot limits: 10,000 entries and 10 MB per
 source; manifest input is capped at 8 MB. Inputs must be regular files. Sources
 must be 16 kHz mono 16-bit PCM WAV in legacy mode. Explicit `--condition` accepts
 8–192 kHz mono/stereo PCM16 WAV and requires the pinned CPU audio dependencies.
+Every entry point (preparation, augmentation, the analysis service and the prepared-
+output verifier) accepts only one `fmt ` chunk before `data` with plain PCM format tag
+1 (`wav_format.py`); WAVE_FORMAT_EXTENSIBLE, float and µ-law are refused on every
+Python version.
 
 The output contains `clips/` and `report.json`. Every clip records source path,
 source hash, speaker ID, output hash and half-open sample offsets
@@ -179,7 +183,10 @@ is digital silence under noise, is listed in `errors` and others proceed (exit c
 1). Refusals can skew the 0–20 dB spread toward high SNR on loud clips; check the
 refusal counts per SNR band before training. Parent clips are peak-normalized to
 −3 dBFS, so no headroom is added before mixing (open data decision). Each copy row carries the parent clip path and hash,
-parent provenance, `augmented_copy: true`, `counts_toward_clip_total: false`, the
+parent provenance (review/listening statuses only as `parent_review_status` and
+`parent_listening_status`; the copy itself starts `review_status: unreviewed`; its
+length is `chain.output_sample_count`, which can differ by one sample from the
+parent range for odd-length parents), `augmented_copy: true`, `counts_toward_clip_total: false`, the
 full per-step chain record and review metrics. The report binds the parent report
 hash and the specification hash. `--verify` rebuilds the whole report read-only and
 compares every field (labels, speaker IDs, provenance, flags, errors, summary), the

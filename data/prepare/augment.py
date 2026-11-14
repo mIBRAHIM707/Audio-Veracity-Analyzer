@@ -15,6 +15,11 @@ No peak normalization follows the chain (the analysis service applies none eithe
 The concealment rule has no default: the specification must name it, so a chain meant
 to match the serving buffer says 'repeat_then_silence' explicitly. The derivation clip
 ID is `<source_sha256>:<start_sample>:<end_sample>` of the parent row (content-based). Copies are stored but not counted toward the FR-D6 clip total.
+A copy's `start_sample`/`end_sample` name the parent's range on the source grid; the
+16 -> 8 -> 16 kHz return can make an odd-length copy one sample shorter or longer, so its
+own length is `chain.output_sample_count` (and `duration_seconds`), not end - start.
+Copies start `review_status: unreviewed`; the parent's review and listening statuses are
+kept as `parent_review_status`/`parent_listening_status` and are not inherited.
 A noise mix that would clip is refused per clip with its drawn SNR recorded, so the
 refusal rate per SNR band can be audited (it can bias the FR-D7 0-20 dB spread).
 GSM, AMR-NB, Opus/G.729 and room impulse responses are not implemented.
@@ -36,6 +41,7 @@ if __package__:
     from .conditioning import RATE, canonicalize
     from .noise import derive_noise, mix_planned
     from .prepare_audio import PROVENANCE_FIELDS, measures
+    from .wav_format import pcm_format_problem
 else:  # a script-directory 'codecs' import would shadow the standard library module
     raise SystemExit('Run as a module: python -m data.prepare.augment ...')
 
@@ -47,8 +53,12 @@ CLIP_PATH = re.compile(r'clips/[A-Za-z0-9_-][A-Za-z0-9_.-]*\.wav')
 MAX_REPORT_BYTES = 64_000_000
 MAX_CLIP_BYTES = 1_000_000
 MAX_NOISE_BYTES = 50_000_000
+# Listening/review QA of a parent does not carry over to a processed copy (FR-D13):
+# copies start 'unreviewed' and keep the parent's values under parent_* names.
+REVIEW_FIELDS = ('review_status', 'listening_status')
 PARENT_FIELDS = ('speaker_id', 'source_path', 'source_sha256', 'start_sample',
-                 'end_sample', 'source_clip_id', 'review_status') + PROVENANCE_FIELDS
+                 'end_sample', 'source_clip_id') + tuple(f for f in PROVENANCE_FIELDS
+                                                         if f not in REVIEW_FIELDS)
 
 
 class NoiseClipped(ValueError):
@@ -166,6 +176,9 @@ def _read_regular(path, limit, what):
 
 def read_pcm16_wav(payload, what):
     """16 kHz mono PCM16 WAV bytes -> raw PCM bytes."""
+    problem = pcm_format_problem(payload)
+    if problem:
+        raise ValueError(f'{what} must be a plain PCM WAV: {problem}')
     try:
         with wave.open(io.BytesIO(payload), 'rb') as audio:
             if (audio.getframerate(), audio.getnchannels(), audio.getsampwidth()) != (RATE, 1, 2):
@@ -173,7 +186,7 @@ def read_pcm16_wav(payload, what):
             count = audio.getnframes()
             raw = audio.readframes(count)
     except (wave.Error, EOFError) as error:
-        raise ValueError(f'{what} is not a readable WAV: {error}') from None
+        raise ValueError(f'{what} is not a readable WAV: {str(error) or type(error).__name__}') from None
     if not count or len(raw) != count * 2:
         raise ValueError(f'{what} is empty or truncated')
     return raw
@@ -187,6 +200,13 @@ def _wav_bytes(raw):
     return buffer.getvalue()
 
 
+def _load_json(document, what):
+    try:
+        return json.loads(document)
+    except RecursionError:
+        raise ValueError(f'{what} JSON is nested too deeply') from None
+
+
 def _load_parent(prepared_root):
     prepared_root = Path(prepared_root).resolve()
     if not prepared_root.is_dir():
@@ -194,7 +214,7 @@ def _load_parent(prepared_root):
     if (prepared_root / 'INCOMPLETE').exists():
         raise ValueError('Prepared output publication is incomplete')
     document = _read_regular(prepared_root / 'report.json', MAX_REPORT_BYTES, 'Prepared report')
-    report = json.loads(document)
+    report = _load_json(document, 'Prepared report')
     if not isinstance(report, dict) or not isinstance(report.get('clips'), list):
         raise ValueError('Prepared report requires a clips list')
     if report.get('kind') == 'augmented_copies':
@@ -253,6 +273,8 @@ def _build(prepared_root, report, spec, noise):
             'augmented_copy': True, 'counts_toward_clip_total': False,
             'duration_seconds': len(out) / 2 / RATE,
             **{key: row[key] for key in PARENT_FIELDS if key in row},
+            'review_status': 'unreviewed',
+            **{f'parent_{key}': row[key] for key in REVIEW_FIELDS if key in row},
             'chain': record, **measures(_samples(out))[0]})
     summary = {'parent_clips': len(report['clips']), 'clips': len(clips), 'errors': len(errors),
                'noise_clipping_refusals': sum(e.get('refusal') == 'noise_clipping' for e in errors),
@@ -313,7 +335,8 @@ def verify_augmented(prepared_root, augmented_root, noise_path=None, expected_sp
     augmented_root = Path(augmented_root).resolve()
     if (augmented_root / 'INCOMPLETE').exists():
         return ['augmented root publication is incomplete']
-    result = json.loads(_read_regular(augmented_root / 'report.json', MAX_REPORT_BYTES, 'Augmented report'))
+    result = _load_json(_read_regular(augmented_root / 'report.json', MAX_REPORT_BYTES, 'Augmented report'),
+                        'Augmented report')
     if not isinstance(result, dict) or result.get('kind') != 'augmented_copies':
         return ['not an augmented-copy report']
     try:
@@ -368,7 +391,7 @@ def main(argv=None):
     group.add_argument('--verify', type=Path, help='augmented root to rebuild read-only')
     args = parser.parse_args(argv)
     try:
-        spec = json.loads(_read_regular(args.spec, 64_000, 'Specification'))
+        spec = _load_json(_read_regular(args.spec, 64_000, 'Specification'), 'Specification')
         if args.verify is not None:
             problems = verify_augmented(args.prepared_root, args.verify, args.noise, spec)
             for problem in problems:
