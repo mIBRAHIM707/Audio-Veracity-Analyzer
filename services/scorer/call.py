@@ -99,12 +99,8 @@ class CallScorer:
         state = self.sessions[direction].state
         return state, (None if state == 'monitoring' else direction)
 
-    def end(self, reason, *, speech_seconds):
-        """End every scored direction. `speech_seconds` is a dict giving each scored
-        direction's speech seconds. Returns each call.ended event and a call.summary.
-        Verdict (interpretation): `suspicious`/`alert` if some direction is in that state
-        (only a direction with enough evidence can be); `monitoring` only if every
-        scored direction reached `min_windows`; otherwise `undetermined`."""
+    def validate_end(self, reason, *, speech_seconds):
+        """Raise exactly as `end` would for these arguments, changing nothing."""
         if self.ended is not None:
             raise SessionClosed(f'call {self.call_id} already ended')
         if reason not in END_REASONS:
@@ -113,6 +109,14 @@ class CallScorer:
             raise ValueError(f'speech_seconds must give exactly the scored directions {sorted(self.sessions)}')
         for direction, session in self.sessions.items():  # validate everything before ending any
             session.validate_end(reason, speech_seconds=speech_seconds[direction])
+
+    def end(self, reason, *, speech_seconds):
+        """End every scored direction. `speech_seconds` is a dict giving each scored
+        direction's speech seconds. Returns each call.ended event and a call.summary.
+        Verdict (interpretation): `suspicious`/`alert` if some direction is in that state
+        (only a direction with enough evidence can be); `monitoring` only if every
+        scored direction reached `min_windows`; otherwise `undetermined`."""
+        self.validate_end(reason, speech_seconds=speech_seconds)
         ended = [session.end(reason, speech_seconds=speech_seconds[direction])
                  for direction, session in self.sessions.items()]
         if self.state != 'monitoring':

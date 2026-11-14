@@ -157,6 +157,46 @@ before the human answer, direction not scored) still consumes its index; a score
 error leaves the index unchanged so the result may be retried. Returned events are
 deep copies, so consumers cannot change the stored `call.ended`/`call.summary`.
 
+## Publishing FR-A4 events (backlog 5.2 partial; PRD FR-A4)
+
+`publish.py` maps scorer events to the published types (`services/events`):
+`score.updated` carries the window's score/EMA/provisional flag, its direction and
+`direction_state`, the call-level `state` and `driving_direction` after the window,
+`quality`, and the caller-supplied `degraded`/`effective_stride_s`; `alert.raised` /
+`alert.cleared` carry `alert_id`, `direction`, `ema`; `state.changed` and `call.state`
+stay internal. Choices made here: the first quality-gated window is published as an
+unscored `score.updated` (`score: null`, `scored: false`, `quality: low`);
+`status()` publishes `no_speech`/`unmonitored` the same way; the call-level
+`call.ended` sums the scored directions' speech seconds and adds the verdict,
+per-direction speech/windows and `ended_open_alert_ids`. `CallEventPublisher` never
+raises into scoring: hub, contract and mapping failures are counted in `failures`.
+It is not thread-safe; publish a call's results in the order the scorer returned them.
+Unknown event types are skipped and counted; the tracked call state is folded before
+mapping, so a mapping failure cannot leave it stale. `status()` accepts only
+`no_speech` and `unmonitored`.
+
+## Live call table (backlog 5.2/5.3 partial; PRD FR-I4, FR-I9, FR-I11)
+
+`live.LiveCalls(config_store, hub, gate)` is the live-path owner of calls:
+`start` admits through the `CallGate` (a refused call is not tapped and gets
+`system.health reason=capacity`; the call continues) and builds the scorer from the
+config snapshot current at the start; `result` applies and publishes one inference
+result under the call's own lock, so events reach the hub in scorer order with
+several workers; `end` removes the call first (results racing with it are discarded
+and counted), ends the scorer, publishes `call.ended` and frees the gate slot; an
+invalid end raises and leaves the call running; `end_all('monitor_lost', ...)` ends
+every open call (if its speech seconds cannot be obtained it still ends, with zero
+and `speech_seconds_known: false`, counted); `start` holds the call's lock until
+`call.started` is published and starts are serialized; publisher failures are summed
+into `counters['publish_failures']` at the end; `is_active` lets the inference
+loop skip queued windows of an ended call. `end_all` counts a call whose end failed
+(`end_all_failures`) and still releases its slot. Known limit: the start lock is held
+through the config read and the capacity health publish, so a slow config store
+would delay every admission (fine for the in-memory store). Spec question: unknown
+speech seconds are published as 0.0 with a flag, because the contract needs a
+number. Not done: Redis/PostgreSQL state and
+restart resume (FR-I11, needs 5.1) and wiring to a real tap/inference loop (6.x/8.1).
+
 Not specified by the PRD and therefore not enforced in configuration: ordering between the
 suspicious and alert thresholds (for example `alert_enter >= suspicious_enter`), an
 upper bound on `min_windows`, or whether `agent` may be scored without `caller`.

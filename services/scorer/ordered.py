@@ -89,6 +89,16 @@ class OrderedCallScorer:
         with self._lock:
             return copy.deepcopy(self._scorer.end(reason, speech_seconds=speech_seconds))
 
+    def validate_end(self, reason, *, speech_seconds):
+        """Raise as `end` would, changing nothing (lets a caller check before cleanup)."""
+        with self._lock:
+            self._scorer.validate_end(reason, speech_seconds=speech_seconds)
+
+    def scored_directions(self):
+        """Directions with a scoring session (those `end` needs speech seconds for)."""
+        with self._lock:
+            return tuple(self._scorer.sessions)
+
     def snapshot(self):
         """A consistent copy of the call state for readers (API, dashboard)."""
         with self._lock:

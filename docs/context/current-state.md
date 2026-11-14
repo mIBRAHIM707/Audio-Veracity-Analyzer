@@ -196,6 +196,14 @@ and about 50,000 original clips, excluding codec copies.
   send timeout) when given an in-process `EventHub`. 25 Claude-authored tests, two
   independent review rounds fixed. Not done: scorer-to-FR-A4 mapping, Redis,
   PostgreSQL history, authentication; unit suite with API deps 542 OK (2 skips).
+  Later the same day: `services/scorer/publish.py` maps scorer events to FR-A4
+  (call-level state on every `score.updated`, unscored update for the quality gate,
+  call-level `call.ended` summing speech seconds) and `services/scorer/live.py`
+  owns live calls (CallGate admission with `system.health` capacity refusal, config
+  snapshot per call, apply+publish under a per-call lock, FR-I11 late-result discard,
+  `monitor_lost` end of all calls). 29 Claude-authored tests, three review rounds
+  fixed; still not wired to a tap or inference loop, no Redis/PostgreSQL. Unit suite
+  with API deps 571 OK (2 skips).
 - **Backlog 8.QA progress (12 Nov): FP32 CPU proxy timings.** `models/ava/benchmark_cpu.py`
   times the real-size truncated MMS-300M + SLS with random weights. On the dev laptop
   (Intel family 6 model 140, 4 physical/8 logical CPUs, torch 2.8.0+cpu, 4 threads,
