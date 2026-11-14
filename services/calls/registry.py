@@ -60,7 +60,7 @@ TREND_POINTS = 20
 SEVERITY = {'monitoring': 0, 'no_speech': 0, 'unmonitored': 1, 'suspicious': 2, 'alert': 3}
 COUNTERS = ('applied', 'duplicate_or_stale', 'after_end', 'refused_active_limit',
             'implicit_start', 'unknown_alert_cleared', 'ignored_system_health', 'forgotten_ended',
-            'lost_events', 'apply_errors', 'idle_expired', 'revived')
+            'lost_events', 'apply_errors', 'idle_expired', 'revived', 'alerts_raised')
 
 
 def _positive(name, value, kind=(int, float)):
@@ -240,9 +240,11 @@ class CallRegistry:
 
     def _on_alert_raised(self, call, envelope, data):
         alert_id = data['alert_id']
-        if alert_id not in call.alerts and self._alert_slot(call, alert_id):
-            call.alerts[alert_id] = {'alert_id': alert_id, 'state': 'open', 'raised_ts': envelope.ts,
-                                     'cleared_ts': None, 'direction': _direction(data.get('direction'))}
+        if alert_id not in call.alerts:
+            self._counters['alerts_raised'] += 1  # counted even beyond the per-call cap
+            if self._alert_slot(call, alert_id):
+                call.alerts[alert_id] = {'alert_id': alert_id, 'state': 'open', 'raised_ts': envelope.ts,
+                                         'cleared_ts': None, 'direction': _direction(data.get('direction'))}
         call.state = 'alert'
 
     def _on_alert_cleared(self, call, envelope, data):
@@ -337,6 +339,14 @@ class CallRegistry:
     def stats(self):
         with self._lock:
             return {'active': len(self._active), 'ended': len(self._ended), **self._counters}
+
+    def live_stats(self):
+        """Gauges and counters for `/metrics` (no call IDs)."""
+        with self._lock:
+            return {'active': len(self._active), 'stale': sum(map(self._idle, self._active.values())),
+                    'alerts_open': sum(a['state'] == 'open' for c in self._active.values()
+                                       for a in c.alerts.values()),
+                    'counters': dict(self._counters)}
 
     def note_lost(self, count):
         """Record envelopes the feed lost before they reached the registry."""

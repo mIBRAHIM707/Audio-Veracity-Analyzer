@@ -155,7 +155,12 @@ items needing that data are listed at the end and stay out of the queue.
   without a client library (bounded route labels, job states, queue, uploads in flight,
   ready/loaded, analysis seconds); 13 Claude-authored tests, review fixed. Remaining:
   unmonitored/low-quality visibility (needs the live path), FR-O6 histograms and
-  telephony metrics, dashboard (blocked with 2.3).
+  telephony metrics, dashboard (blocked with 2.3). 14 Nov: `ava_analysis_seconds` now a
+  histogram, per-stage `ava_analysis_stage_seconds` (decode/condition/inference; results
+  carry `stage_seconds`), live-call gauges/counters from the call registry (active,
+  stale, open alerts, alerts raised, exclusive event outcomes, lost events,
+  subscribers); 5 Claude-authored tests, review fixed. Remaining FR-O6: telephony,
+  live per-window/queue/dropped-window metrics, JSON logs, Grafana.
 - [ ] 7.3 P1 history/search/local authentication/audit and feedback after P0.
 - [ ] 7.QA Astra-designed Playwright suite, offline assets, failures/reconnects.
 

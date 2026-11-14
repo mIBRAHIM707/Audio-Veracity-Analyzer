@@ -204,6 +204,11 @@ and about 50,000 original clips, excluding codec copies.
   `monitor_lost` end of all calls). 29 Claude-authored tests, three review rounds
   fixed; still not wired to a tap or inference loop, no Redis/PostgreSQL. Unit suite
   with API deps 571 OK (2 skips).
+- **Backlog 7.2 progress (14 Nov): FR-O6 metrics subset.** `/metrics` histograms for
+  analysis time and per-stage time (decode, condition, inference; model load
+  excluded, verified with a stepping clock) and live-call gauges/counters from the
+  call registry without IDs. 5 Claude-authored tests; the 12 Nov parser now checks
+  histogram buckets. Unit suite 576 OK (2 skips).
 - **Backlog 8.QA progress (12 Nov): FP32 CPU proxy timings.** `models/ava/benchmark_cpu.py`
   times the real-size truncated MMS-300M + SLS with random weights. On the dev laptop
   (Intel family 6 model 140, 4 physical/8 logical CPUs, torch 2.8.0+cpu, 4 threads,

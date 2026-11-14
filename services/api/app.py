@@ -30,6 +30,7 @@ import asyncio
 from collections import OrderedDict
 from contextlib import asynccontextmanager
 import json
+import math
 import threading
 import uuid
 
@@ -42,6 +43,16 @@ from services.events.fanout import HubFull
 from services.inference.analysis import (AnalysisError, AnalyzerBusy, MAX_ASYNC_SECONDS, MAX_BYTES,
                                          NeedsAsyncJob, decode_wav)
 
+LATENCY_BUCKETS_S = (0.01, 0.05, 0.1, 0.25, 0.5, 1.0, 2.5, 5.0, 10.0, 30.0, 60.0, 120.0, 300.0)
+ANALYSIS_STAGES = ('decode', 'condition', 'inference')
+# Mutually exclusive fates of an envelope the registry received (they sum to the
+# envelopes applied or refused); sub-counts and housekeeping are exported separately.
+REGISTRY_OUTCOMES = ('applied', 'duplicate_or_stale', 'after_end', 'refused_active_limit', 'apply_errors',
+                     'ignored_system_health')
+REGISTRY_SEPARATE = (('ava_call_registry_lost_events_total', 'lost_events',
+                      'Published events the registry feed dropped before applying them.'),
+                     ('ava_calls_idle_expired_total', 'idle_expired',
+                      'Active calls ended by the registry to free a slot after the idle timeout.'))
 PUMP_INTERVAL_S = 0.2
 WS_BUFFER, WS_BATCH, WS_POLL_S, WS_SEND_TIMEOUT_S = 256, 64, 0.1, 10.0
 MAX_QUEUED_JOBS, MAX_KEPT_JOBS = 4, 64
@@ -63,13 +74,46 @@ def route_label(path):
     return path if path in ROUTES else 'other'
 
 
+class Histogram:
+    """Cumulative Prometheus histogram with fixed buckets; one series per label value
+    from a fixed list (bounded cardinality). Not locked: `Metrics` holds its lock."""
+
+    def __init__(self, labels=(None,)):
+        self.series = {label: {'buckets': [0] * len(LATENCY_BUCKETS_S), 'sum': 0.0, 'count': 0}
+                       for label in labels}
+
+    def observe(self, value, label=None):
+        if label not in self.series or isinstance(value, bool) or not isinstance(value, (int, float)) \
+                or not math.isfinite(value) or value < 0:
+            return False
+        series = self.series[label]
+        for i, bound in enumerate(LATENCY_BUCKETS_S):
+            if value <= bound:
+                series['buckets'][i] += 1
+        series['sum'] += value
+        series['count'] += 1
+        return True
+
+    def render(self, name, label_name=None):
+        lines = []
+        for label, series in self.series.items():
+            base = '' if label is None else f'{label_name}="{label}",'
+            plain = '' if label is None else f'{{{label_name}="{label}"}}'
+            lines += [f'{name}_bucket{{{base}le="{bound!r}"}} {n}'
+                      for bound, n in zip(LATENCY_BUCKETS_S, series['buckets'])]
+            lines += [f'{name}_bucket{{{base}le="+Inf"}} {series["count"]}',
+                      f'{name}_sum{plain} {series["sum"]!r}', f'{name}_count{plain} {series["count"]}']
+        return lines
+
+
 class Metrics:
     """Thread-safe counters rendered in Prometheus text exposition format 0.0.4."""
 
     def __init__(self):
         self._lock = threading.Lock()
         self.requests = {(route, cls): 0 for route in ROUTES + ('other',) for cls in STATUS_CLASSES}
-        self.analysis_seconds_sum, self.analysis_count = 0.0, 0
+        self.analysis = Histogram()
+        self.stages = Histogram(ANALYSIS_STAGES)
 
     def count_request(self, route, status):
         cls = f'{status // 100}xx'
@@ -77,33 +121,56 @@ class Metrics:
             if (route, cls) in self.requests:
                 self.requests[(route, cls)] += 1
 
-    def observe_analysis(self, seconds):
-        if isinstance(seconds, (int, float)) and seconds >= 0:
-            with self._lock:
-                self.analysis_seconds_sum += seconds
-                self.analysis_count += 1
-
-    def render(self, jobs, service, uploads_in_flight):
-        stats = jobs.stats()
+    def observe_analysis(self, result):
+        """Record a completed analysis: total processing time and FR-O6 stage times."""
+        if not isinstance(result, dict):
+            return
+        stages = result.get('stage_seconds')
         with self._lock:
-            requests = dict(self.requests)
-            seconds, count = self.analysis_seconds_sum, self.analysis_count
+            self.analysis.observe(result.get('processing_seconds'))
+            if isinstance(stages, dict):
+                for stage in ANALYSIS_STAGES:
+                    self.stages.observe(stages.get(stage), stage)
+
+    def render(self, jobs, service, uploads_in_flight, live=None):
+        stats = jobs.stats()
         lines = ['# HELP ava_api_requests_total HTTP responses by route and status class.',
                  '# TYPE ava_api_requests_total counter']
+        with self._lock:
+            requests = dict(self.requests)
+            analysis = self.analysis.render('ava_analysis_seconds')
+            stages = self.stages.render('ava_analysis_stage_seconds', 'stage')
         lines += [f'ava_api_requests_total{{route="{route}",status="{cls}"}} {value}'
                   for (route, cls), value in sorted(requests.items())]
         lines += ['# HELP ava_jobs Jobs currently held in memory by state.', '# TYPE ava_jobs gauge']
         lines += [f'ava_jobs{{state="{state}"}} {stats["by_status"][state]}' for state in JOB_STATES]
-        gauges = (('ava_job_queue_depth', 'Jobs waiting for the worker.', stats['queued']),
+        gauges = [('ava_job_queue_depth', 'Jobs waiting for the worker.', stats['queued']),
                   ('ava_job_queue_capacity', 'Maximum queued jobs.', stats['capacity']),
                   ('ava_uploads_in_flight', 'Uploads being received or analysed.', uploads_in_flight),
                   ('ava_detector_loaded', '1 when the detector is loaded.', int(service.detector_loaded)),
-                  ('ava_ready', '1 after a successful warm-up inference.', int(service.ready)))
+                  ('ava_ready', '1 after a successful warm-up inference.', int(service.ready))]
+        if live is not None:
+            gauges += [('ava_calls_active', 'Calls the call registry holds as active.', live['active']),
+                       ('ava_calls_stale', 'Active calls with no event for the idle timeout.', live['stale']),
+                       ('ava_alerts_open', 'Open alerts on active calls.', live['alerts_open']),
+                       ('ava_event_subscribers', 'Event hub subscribers (registry feed and WebSockets).',
+                        live['subscribers'])]
         for name, text, value in gauges:
             lines += [f'# HELP {name} {text}', f'# TYPE {name} gauge', f'{name} {value}']
+        if live is not None:
+            lines += ['# HELP ava_call_registry_events_total Envelopes received by the call registry, by '
+                      'mutually exclusive outcome.', '# TYPE ava_call_registry_events_total counter']
+            lines += [f'ava_call_registry_events_total{{outcome="{name}"}} {live["counters"][name]}'
+                      for name in REGISTRY_OUTCOMES]
+            for name, key, text in REGISTRY_SEPARATE:
+                lines += [f'# HELP {name} {text}', f'# TYPE {name} counter', f'{name} {live["counters"][key]}']
+            lines += ['# HELP ava_alerts_raised_total Alerts raised on calls seen by the registry.',
+                      '# TYPE ava_alerts_raised_total counter',
+                      f'ava_alerts_raised_total {live["counters"]["alerts_raised"]}']
         lines += ['# HELP ava_analysis_seconds Processing time of completed analyses (excludes model load).',
-                  '# TYPE ava_analysis_seconds summary',
-                  f'ava_analysis_seconds_sum {seconds!r}', f'ava_analysis_seconds_count {count}']
+                  '# TYPE ava_analysis_seconds histogram', *analysis,
+                  '# HELP ava_analysis_stage_seconds Per-stage time of completed analyses (FR-O6).',
+                  '# TYPE ava_analysis_stage_seconds histogram', *stages]
         return '\n'.join(lines) + '\n'
 
 
@@ -210,7 +277,7 @@ def create_app(service, *, hub=None, registry=None):
     if registry is not None and hub is None:
         raise ValueError('a call registry needs the event hub that feeds it')
     metrics = Metrics()
-    jobs = JobStore(service, on_result=lambda result: metrics.observe_analysis(result.get('processing_seconds')))
+    jobs = JobStore(service, on_result=metrics.observe_analysis)
     in_flight = [0]
     registry = None if hub is None else (registry or CallRegistry())
     feeds = []  # the live feed; subscribed only while the app runs (lifespan)
@@ -271,7 +338,11 @@ def create_app(service, *, hub=None, registry=None):
 
     @app.get('/metrics')
     def prometheus():
-        return PlainTextResponse(metrics.render(jobs, service, in_flight[0]),
+        live = None
+        if feeds:
+            pump_once()
+            live = {**registry.live_stats(), 'subscribers': hub.subscriber_count}
+        return PlainTextResponse(metrics.render(jobs, service, in_flight[0], live),
                                  media_type='text/plain; version=0.0.4; charset=utf-8')
 
     @app.middleware('http')
@@ -317,7 +388,7 @@ def create_app(service, *, hub=None, registry=None):
                 return JSONResponse({'job_id': job_id, 'status': 'queued', 'poll': f'/v1/jobs/{job_id}'},
                                     status_code=202)
             result = await run_in_threadpool(service.analyze_wav, payload)
-            metrics.observe_analysis(result.get('processing_seconds'))
+            metrics.observe_analysis(result)
             return result
         except AnalysisError as error:
             raise HTTPException(error.status, str(error)) from None

@@ -200,24 +200,28 @@ class AnalysisService:
     def _analyze(self, payload, max_seconds):
         started = self._clock()
         raw, rate, channels = decode_wav(payload, max_seconds)
+        decoded = self._clock()
         try:
             conditioned, record = canonicalize(raw, rate, channels)
         except ValueError as error:
             raise UnsupportedAudio('Audio could not be conditioned') from error
         except Exception as error:  # e.g. resampler or memory fault: typed 500, never a traceback
             raise AnalysisError(f'Conditioning failed: {type(error).__name__}') from error
+        conditioned_at = self._clock()
         samples = np.frombuffer(conditioned, dtype='<i2').astype(np.float32) / 32768
         windows = plan_windows(len(samples))
         detector, load_seconds = self._get_detector() if windows else (None, 0.0)
-        scores = []
+        scores, inference_seconds = [], 0.0
         for window in windows:
             piece = np.zeros(WINDOW_SAMPLES, dtype=np.float32)
             chunk = samples[window.start_sample:window.end_sample]
             piece[:len(chunk)] = chunk
+            window_started = self._clock()
             try:
                 logits = list(detector(piece))
             except Exception as error:  # any detector fault becomes a typed failure
                 raise DetectorFailure(f'Detector failed on a window: {type(error).__name__}') from error
+            inference_seconds += self._clock() - window_started
             scores.append({'index': window.index, 't_start': window.start_sample / RATE,
                            't_end': window.end_sample / RATE, 'partial': window.partial,
                            'p_synthetic': p_synthetic(logits)})
@@ -231,4 +235,7 @@ class AnalysisService:
                 'duration_seconds': len(samples) / RATE, 'input': {'sample_rate': rate, 'channels': channels},
                 'flags': flags, 'timeline': scores, 'aggregation': 'mean_of_full_windows',
                 'model_load_seconds': load_seconds,
+                # FR-O6 per-stage latency of this file (inference = detector calls only).
+                'stage_seconds': {'decode': decoded - started, 'condition': conditioned_at - decoded,
+                                  'inference': inference_seconds},
                 'processing_seconds': self._clock() - started - load_seconds}

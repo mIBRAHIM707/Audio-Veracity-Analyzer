@@ -96,10 +96,12 @@ def parse_metrics(text):
             match = re.fullmatch(r'([a-z_]+)(\{[^}]*\})? (\S+)', line)
             assert match, line
             name = match.group(1)
-            family = name if name in declared else re.sub(r'_(sum|count)$', '', name)
+            family = name if name in declared else re.sub(r'_(sum|count|bucket)$', '', name)
             assert family in declared, f'undeclared sample {name}'
             if declared[family] == 'counter':
                 assert name.endswith('_total'), name
+            if name.endswith('_bucket'):  # 14 Nov: histograms (FR-O6) need an `le` label
+                assert declared[family] == 'histogram' and 'le="' in (match.group(2) or ''), line
             samples[name + (match.group(2) or '')] = float(match.group(3))
     return samples, declared
 
@@ -148,7 +150,8 @@ class ReadinessAndMetricsApiTests(unittest.TestCase):
         samples, declared = parse_metrics(response.text)
         self.assertEqual((samples['ava_ready'], samples['ava_detector_loaded']), (0.0, 0.0))
         self.assertEqual(samples['ava_job_queue_capacity'], 4.0)
-        self.assertEqual((declared['ava_api_requests_total'], declared['ava_analysis_seconds']), ('counter', 'summary'))
+        # 14 Nov: the summary became a histogram (architecture: stage latencies as histograms).
+        self.assertEqual((declared['ava_api_requests_total'], declared['ava_analysis_seconds']), ('counter', 'histogram'))
 
         self.assertEqual(post(client, api_fixture.wav(8.0)).status_code, 200)
         self.assertEqual(post(client, b'not a wav').status_code, 422)

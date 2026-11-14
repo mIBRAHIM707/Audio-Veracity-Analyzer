@@ -14,6 +14,19 @@ persistence yet; bind it to localhost.
 | `GET /v1/calls/{id}` | FR-A3 detail: alerts (`open`, `cleared`, `ended_open`) and the timeline (`full_resolution`, `downsampled`); 404 unknown |
 | `WS /v1/events[?call_id=]` | FR-A4 envelopes as JSON text, oldest first; a `{"type": "stream.gap", "dropped": n}` control message when a slow client's 256-envelope buffer overflowed (re-read REST); closes 1013 at the subscriber limit, 1011 without an event hub; client messages are ignored |
 
+`GET /metrics` (FR-A8, FR-O6 subset, 14 Nov): `ava_analysis_seconds` is a histogram
+(it was a summary) and `ava_analysis_stage_seconds{stage=decode|condition|inference}`
+gives per-file stage times (each result also carries `stage_seconds`; inference is
+detector calls only, model load excluded). Buckets: 0.01 s to 300 s. With an event
+hub: `ava_calls_active`, `ava_calls_stale`, `ava_alerts_open`,
+`ava_event_subscribers`, `ava_alerts_raised_total` (alerts per minute =
+`rate()*60`; a re-raise of an alert ID refused by the per-call cap is counted again),
+`ava_call_registry_events_total{outcome}` (mutually exclusive outcomes that sum to
+the envelopes received), `ava_call_registry_lost_events_total` and
+`ava_calls_idle_expired_total`. No call or alert IDs appear. FR-O6 is partial: not
+yet telephony, live per-window inference, live scorer queue depth or dropped-window
+metrics (need the live loop, 6.x/8.x), structured JSON logs or Grafana.
+
 The calls and events routes need `create_app(service, hub=EventHub())`: the in-process
 hub the scorer publishes to (Redis pub/sub is backlog 5.1). A background task drains
 the hub into the registry every 0.2 s and each calls request drains first, so
