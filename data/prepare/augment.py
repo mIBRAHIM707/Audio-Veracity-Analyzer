@@ -23,8 +23,9 @@ kept as `parent_review_status`/`parent_listening_status` and are not inherited.
 A noise mix that would clip is refused per clip with its drawn SNR recorded, so the
 refusal rate per SNR band can be audited (it can bias the FR-D7 0-20 dB spread).
 The channel may instead be GSM 06.10 or AMR-NB 4.75/7.4/12.2 (`ffmpeg_codecs`, a pinned
-local ffmpeg passed as `ffmpeg`/`--ffmpeg`); those chains must declare concealment null
-and no packet loss or jitter, which exist for G.711 only. A codec-tool failure aborts
+local ffmpeg passed as `ffmpeg`/`--ffmpeg`); those chains declare concealment null and
+no jitter; AMR-NB may take seeded frame loss (`packet_loss: true`, decoder-native
+NO_DATA concealment), GSM may not. A codec-tool failure aborts
 the run before anything is written. Opus/G.729 and room impulse responses are not
 implemented.
 """
@@ -123,13 +124,17 @@ def validate_spec(spec):
     if 'codec' in spec and codec not in G711_CODECS + tuple(FFMPEG_CODECS):
         problems.append(f'codec must be one of {list(G711_CODECS + tuple(FFMPEG_CODECS))}')
     if codec in FFMPEG_CODECS:
-        # Packet/frame loss, jitter and concealment exist for G.711 only (codecs.py);
-        # a GSM/AMR chain must say so explicitly rather than silently ignore them.
+        # GSM/AMR: concealment is the decoder's own (AMR NO_DATA frames), so the spec
+        # names none; AMR may take seeded frame loss; GSM loss and any jitter are not
+        # implemented and must be declared false rather than silently ignored.
         if spec.get('concealment') is not None:
-            problems.append(f'concealment must be null for {codec} (no frame loss implemented)')
-        for key in ('packet_loss', 'jitter'):
-            if spec.get(key) is not False:
-                problems.append(f'{key} must be false for {codec} (not implemented)')
+            problems.append(f'concealment must be null for {codec} (decoder-native or no loss)')
+        if spec.get('jitter') is not False:
+            problems.append(f'jitter must be false for {codec} (not implemented)')
+        amr = FFMPEG_CODECS[codec]['format'] == 'amr'
+        if type(spec.get('packet_loss')) is not bool or (spec['packet_loss'] and not amr):
+            problems.append(f'packet_loss must be false for {codec} (not implemented)' if not amr
+                            else 'packet_loss must be true or false')
     else:
         if 'concealment' in spec and spec['concealment'] not in CONCEALMENTS:
             problems.append(f'concealment must be one of {CONCEALMENTS}')
@@ -182,7 +187,9 @@ def augment_clip(clip_pcm, clip_id, spec, noise_pcm=None, ffmpeg=None):
         steps.append({'step': 'additive_noise', **{f'noise_{k}': v for k, v in spec['noise'].items()
                                                    if k != 'sha256'}, **record})
     if needs_ffmpeg(spec):
-        narrow, record = telephone_codec_roundtrip(current, spec['codec'], ffmpeg, rate=RATE)
+        narrow, record = telephone_codec_roundtrip(
+            current, spec['codec'], ffmpeg, rate=RATE,
+            loss_plan=derive_loss(spec['master_seed'], clip_id) if spec['packet_loss'] else None)
     else:
         law = spec['codec'].removeprefix('g711_')
         narrow, record = telephone_roundtrip(

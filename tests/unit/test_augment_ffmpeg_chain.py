@@ -38,13 +38,14 @@ class FakeTool:
     def __init__(self, fail_on=None, gain=0.5, sha256=SHA256):
         self.calls, self.fail_on, self.gain, self.sha256 = 0, fail_on, gain, sha256
 
-    def roundtrip(self, narrow, codec):
+    def roundtrip(self, narrow, codec, loss_plan=None):
         self.calls += 1
         if self.fail_on == self.calls:
             raise ffmpeg_codecs.CodecToolError('fake tool fault')
         out = (np.frombuffer(narrow, dtype='<i2') * self.gain).astype('<i2').tobytes()
         return out, {'codec': codec, 'codec_implementation': 'fake', 'gain': self.gain,
-                     'ffmpeg_sha256': self.sha256, 'decoded_pcm_sha256': hashlib.sha256(out).hexdigest()}
+                     'frame_loss': loss_plan, 'ffmpeg_sha256': self.sha256,
+                     'decoded_pcm_sha256': hashlib.sha256(out).hexdigest()}
 
 
 class Fixture(unittest.TestCase):
@@ -70,8 +71,12 @@ class SpecTests(unittest.TestCase):
         for codec in ffmpeg_codecs.CODECS:
             self.assertEqual(augment.validate_spec(ffmpeg_spec(codec)), ffmpeg_spec(codec))
             self.assertTrue(augment.needs_ffmpeg(ffmpeg_spec(codec)))
-        bad = [ffmpeg_spec(concealment='repeat'), ffmpeg_spec(packet_loss=True), ffmpeg_spec(jitter=True),
-               ffmpeg_spec(jitter=None), ffmpeg_spec('amr_wb_23.85'), ffmpeg_spec([]), ffmpeg_spec({'x': 1}),
+        for codec in ('amr_nb_4.75', 'amr_nb_7.4', 'amr_nb_12.2'):  # AMR frame loss is allowed
+            augment.validate_spec(ffmpeg_spec(codec, packet_loss=True))
+        bad = [ffmpeg_spec(concealment='repeat'), ffmpeg_spec('gsm', packet_loss=True), ffmpeg_spec(jitter=True),
+               ffmpeg_spec(jitter=None), ffmpeg_spec(packet_loss=1), ffmpeg_spec(packet_loss=None),
+               ffmpeg_spec('amr_nb_7.4', packet_loss=True, concealment='repeat'),
+               ffmpeg_spec('amr_wb_23.85'), ffmpeg_spec([]), ffmpeg_spec({'x': 1}),
                spec(codec='g711_ulaw', concealment=None)]
         for value in bad:
             with self.assertRaises(ValueError, msg=value['codec']):
@@ -164,6 +169,22 @@ class RealFfmpegChainTests(Fixture):
             self.assertLessEqual(abs(copy['chain']['output_sample_count'] - copy['chain']['input_sample_count']), 1)
         self.assertEqual(augment.verify_augmented(self.prepared, out, expected_spec=ffmpeg_spec('amr_nb_4.75'),
                                                   ffmpeg=tool), [])
+
+    def test_amr_chain_with_frame_loss_uses_per_clip_plans(self):
+        from data.prepare.codecs import derive_loss
+        tool = ffmpeg_codecs.Ffmpeg(real_ffmpeg_path())
+        chain = ffmpeg_spec('amr_nb_12.2', packet_loss=True, master_seed=12)
+        out = self.base / 'aug-amr-loss'
+        summary = augment.augment_prepared(self.prepared, out, chain, ffmpeg=tool)
+        self.assertEqual((summary['clips'], summary['errors']), (2, 0))
+        report = json.loads((out / 'report.json').read_text(encoding='utf-8'))
+        for copy in report['clips']:
+            loss = copy['chain']['steps'][0]['packet_loss']
+            plan = derive_loss(12, copy['chain']['derivation_clip_id'])
+            self.assertEqual((loss['loss_rate'], loss['seed'], loss['clip_id']),
+                             (plan['loss_rate'], plan['seed'], plan['clip_id']))
+            self.assertEqual(loss['applied_via'], 'amr_no_data_frames')
+        self.assertEqual(augment.verify_augmented(self.prepared, out, ffmpeg=tool), [])
 
     def test_cli_with_ffmpeg_and_hash_pin(self):
         spec_path = self.base / 'spec.json'
