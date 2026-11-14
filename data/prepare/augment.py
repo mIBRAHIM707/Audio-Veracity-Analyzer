@@ -26,8 +26,10 @@ The channel may instead be GSM 06.10 or AMR-NB 4.75/7.4/12.2 (`ffmpeg_codecs`, a
 local ffmpeg passed as `ffmpeg`/`--ffmpeg`); both may take seeded frame loss and
 jitter (late frames) concealed once (AMR-NB: decoder-native NO_DATA, concealment null;
 GSM: repeat_then_silence substitution, which the spec must name). A codec-tool failure aborts
-the run before anything is written. Opus/G.729 and room impulse responses are not
-implemented.
+the run before anything is written. A `codec_mix` spec lists 2-8 weighted channels and
+each copy takes one by a seeded per-clip draw (`derive_channel`, recorded as
+`chain.codec_choice`; the summary adds per-codec and per-channel counts), so one augmented
+root spans several codecs. Opus/G.729 and room impulse responses are not implemented.
 """
 import argparse
 import array
@@ -55,8 +57,28 @@ CHAIN_VERSION = 'ava-telephone-chain-v1'
 G711_CODECS = tuple(f'g711_{law}' for law in LAWS)
 
 
+MIX_DERIVATION = 'ava-codec-mix-v1'
+MAX_MIX_CHANNELS = 8
+MAX_MIX_WEIGHT = 1000
+
+
+def _channel_codecs(spec):
+    """Codec names a specification can use: its codec, or every codec_mix channel's."""
+    if not isinstance(spec, dict):
+        return []
+    channels = spec.get('codec_mix') if 'codec_mix' in spec else [spec]
+    if not isinstance(channels, list):
+        return []
+    return [c['codec'] for c in channels if isinstance(c, dict) and isinstance(c.get('codec'), str)]
+
+
 def needs_ffmpeg(spec):
-    return isinstance(spec, dict) and isinstance(spec.get('codec'), str) and spec['codec'] in FFMPEG_CODECS
+    return any(codec in FFMPEG_CODECS for codec in _channel_codecs(spec))
+
+
+def describe_codec(spec):
+    """Short codec label for messages and file names: the codec, or 'mix' for a codec_mix."""
+    return 'mix' if isinstance(spec, dict) and 'codec_mix' in spec else spec['codec']
 
 
 def recorded_tool_hash(report):
@@ -72,6 +94,10 @@ def recorded_tool_hash(report):
     return None if not hashes else hashes.pop() if len(hashes) == 1 else 'mixed'
 SPEC_KEYS = {'chain_version', 'master_seed', 'codec', 'concealment', 'packet_loss',
              'jitter', 'noise'}
+CHANNEL_KEYS = {'codec', 'concealment', 'packet_loss', 'jitter'}
+# A codec mix replaces the four channel keys by 2-8 weighted channels; each copy uses one.
+MIX_SPEC_KEYS = {'chain_version', 'master_seed', 'codec_mix', 'noise'}
+MIX_CHANNEL_KEYS = CHANNEL_KEYS | {'weight'}
 NOISE_KEYS = {'sha256', 'label', 'source_id', 'licence_ref'}
 CLIP_PATH = re.compile(r'clips/[A-Za-z0-9_-][A-Za-z0-9_.-]*\.wav')
 MAX_REPORT_BYTES = 64_000_000
@@ -106,9 +132,53 @@ def derivation_id(row):
 
 
 def validate_spec(spec):
-    """Return the specification unchanged or raise ValueError listing every problem."""
+    """Return the specification unchanged or raise ValueError listing every problem.
+    Two forms: a single channel (SPEC_KEYS) or a codec mix (MIX_SPEC_KEYS) whose
+    `codec_mix` lists 2-MAX_MIX_CHANNELS distinct channels, each the four channel keys of
+    a valid single spec plus an integer `weight` from 1 to MAX_MIX_WEIGHT."""
     if not isinstance(spec, dict):
         raise ValueError('chain specification must be an object')
+    problems = _mix_problems(spec) if 'codec_mix' in spec else _single_problems(spec)
+    if problems:
+        raise ValueError('invalid chain specification: ' + '; '.join(problems))
+    return spec
+
+
+def _mix_problems(spec):
+    problems = []
+    missing, unknown = MIX_SPEC_KEYS - spec.keys(), spec.keys() - MIX_SPEC_KEYS
+    if missing:
+        problems.append(f'missing keys {sorted(missing)}')
+    if unknown:
+        problems.append(f'unknown keys {sorted(unknown)} (a codec_mix spec puts channel keys in its channels)')
+    shared = {key: spec[key] for key in ('chain_version', 'master_seed', 'noise') if key in spec}
+    channels = spec['codec_mix']
+    if not isinstance(channels, list) or not 2 <= len(channels) <= MAX_MIX_CHANNELS:
+        return problems + [f'codec_mix must be a list of 2 to {MAX_MIX_CHANNELS} channels']
+    seen = []
+    for index, channel in enumerate(channels):
+        if not isinstance(channel, dict) or channel.keys() != MIX_CHANNEL_KEYS:
+            problems.append(f'codec_mix[{index}] must be an object with keys {sorted(MIX_CHANNEL_KEYS)}')
+            continue
+        weight = channel['weight']
+        if type(weight) is not int or not 1 <= weight <= MAX_MIX_WEIGHT:
+            problems.append(f'codec_mix[{index}].weight must be an integer from 1 to {MAX_MIX_WEIGHT}')
+        single = {**shared, **{key: channel[key] for key in CHANNEL_KEYS}}
+        # Shared-key problems are reported once below, not per channel.
+        problems.extend(f'codec_mix[{index}]: {problem}' for problem in _single_problems(single)
+                        if not problem.startswith(('missing keys', 'chain_version', 'master_seed', 'noise')))
+        key = {k: channel[k] for k in CHANNEL_KEYS}
+        if key in seen:
+            problems.append(f'codec_mix[{index}] repeats an earlier channel')
+        seen.append(key)
+    # Shared keys checked once through a neutral channel.
+    neutral = {**shared, 'codec': G711_CODECS[0], 'concealment': CONCEALMENTS[0], 'packet_loss': False,
+               'jitter': False}
+    problems.extend(problem for problem in _single_problems(neutral) if not problem.startswith('missing keys'))
+    return problems
+
+
+def _single_problems(spec):
     problems = []
     missing, unknown = SPEC_KEYS - spec.keys(), spec.keys() - SPEC_KEYS
     if missing:
@@ -151,18 +221,57 @@ def validate_spec(spec):
             for key in ('label', 'source_id', 'licence_ref'):
                 if not isinstance(noise[key], str) or not re.fullmatch(r'[A-Za-z0-9_.:-]{1,80}', noise[key]):
                     problems.append(f'noise.{key} must be a short identifier')
-    if problems:
-        raise ValueError('invalid chain specification: ' + '; '.join(problems))
-    return spec
+    return problems
 
 
 def spec_sha256(spec):
     return hashlib.sha256(json.dumps(spec, sort_keys=True, separators=(',', ':')).encode()).hexdigest()
 
 
+def derive_channel(spec, clip_id):
+    """The channel one copy uses. A single spec is returned unchanged with no choice
+    record. For a codec mix, a SHA-256 draw over (MIX_DERIVATION, master_seed, clip ID)
+    picks channel i with probability weight_i / total weight (independent of the loss,
+    jitter and noise draws, which use other tags), and returns (the equivalent single
+    spec, its choice record). Deterministic: a rerun gives every clip the same channel."""
+    validate_spec(spec)
+    if 'codec_mix' not in spec:
+        return spec, None
+    if not isinstance(clip_id, str) or not clip_id:
+        raise ValueError('clip_id must be a nonempty string')
+    channels = spec['codec_mix']
+    total = sum(channel['weight'] for channel in channels)
+    digest = hashlib.sha256(f'{MIX_DERIVATION}\0{spec["master_seed"]}\0{clip_id}'.encode()).digest()
+    draw = int.from_bytes(digest[:8], 'big') % total  # modulo bias < total / 2**64
+    index, upper = 0, channels[0]['weight']
+    while draw >= upper:
+        index += 1
+        upper += channels[index]['weight']
+    channel = channels[index]
+    single = {'chain_version': spec['chain_version'], 'master_seed': spec['master_seed'],
+              'noise': spec['noise'], **{key: channel[key] for key in CHANNEL_KEYS}}
+    return single, {'derivation': MIX_DERIVATION, 'master_seed': spec['master_seed'], 'clip_id': clip_id,
+                    'draw': draw, 'total_weight': total, 'channel_index': index,
+                    'codec': channel['codec'], 'weight': channel['weight'],
+                    'channel_spec_sha256': spec_sha256(single)}
+
+
+def row_codec(spec, row):
+    """Codec of one augmented copy row: the spec's codec, or a mix row's recorded choice."""
+    if not isinstance(spec, dict):
+        raise ValueError('chain specification must be an object')
+    if 'codec_mix' not in spec:
+        return spec['codec']
+    chain = row.get('chain') if isinstance(row, dict) else None
+    choice = chain.get('codec_choice') if isinstance(chain, dict) else None
+    if not isinstance(choice, dict) or choice.get('codec') not in _channel_codecs(spec):
+        raise ValueError('codec_mix copy row lacks a valid chain.codec_choice')
+    return choice['codec']
+
+
 def _check_ffmpeg(spec, ffmpeg):
     if needs_ffmpeg(spec) and ffmpeg is None:
-        raise ValueError(f'codec {spec["codec"]} needs an ffmpeg (data/prepare/ffmpeg_codecs.Ffmpeg)')
+        raise ValueError(f'codec {describe_codec(spec)} needs an ffmpeg (data/prepare/ffmpeg_codecs.Ffmpeg)')
 
 
 def augment_clip(clip_pcm, clip_id, spec, noise_pcm=None, ffmpeg=None):
@@ -170,13 +279,24 @@ def augment_clip(clip_pcm, clip_id, spec, noise_pcm=None, ffmpeg=None):
     bytes, record). `noise_pcm` must be 16 kHz mono PCM16 whose SHA-256 the spec names
     (exactly when the spec asks for noise). GSM/AMR-NB codecs need `ffmpeg` (an
     `ffmpeg_codecs.Ffmpeg`). Raises ValueError on invalid input and CodecToolError when
-    the codec tool fails (a systemic fault: callers abort rather than list it per clip)."""
+    the codec tool fails (a systemic fault: callers abort rather than list it per clip).
+    A codec_mix spec applies the clip's derive_channel choice; its record names the mix
+    spec hash and adds `codec_choice` (single-spec records are unchanged). A mix that
+    can choose GSM/AMR-NB needs `ffmpeg` even for clips that draw G.711."""
     validate_spec(spec)
     _check_ffmpeg(spec, ffmpeg)
     if not isinstance(clip_pcm, bytes) or not clip_pcm or len(clip_pcm) % 2:
         raise ValueError('clip must be nonempty mono PCM16 bytes')
     if (spec['noise'] is None) != (noise_pcm is None):
         raise ValueError('noise audio must be given exactly when the specification names noise')
+    channel, choice = derive_channel(spec, clip_id)
+    wide, record = _augment_single(clip_pcm, clip_id, channel, noise_pcm, ffmpeg)
+    if choice is None:
+        return wide, record
+    return wide, {**record, 'chain_spec_sha256': spec_sha256(spec), 'codec_choice': choice}
+
+
+def _augment_single(clip_pcm, clip_id, spec, noise_pcm, ffmpeg):
     steps, current = [], clip_pcm
     if spec['noise'] is not None:
         if not isinstance(noise_pcm, bytes) or hashlib.sha256(noise_pcm).hexdigest() != spec['noise']['sha256']:
@@ -318,7 +438,8 @@ def _build(prepared_root, report, spec, noise, ffmpeg=None):
             errors.append({'parent_clip_path': row['path'], 'error': str(failure)})
             continue
         wav = _wav_bytes(out)
-        relative = f'clips/{PurePosixPath(row["path"]).stem}_{spec["codec"]}.wav'
+        codec = record['codec_choice']['codec'] if 'codec_choice' in record else spec['codec']
+        relative = f'clips/{PurePosixPath(row["path"]).stem}_{codec}.wav'
         files[relative] = wav
         clips.append({
             'path': relative, 'sha256': hashlib.sha256(wav).hexdigest(),
@@ -332,6 +453,12 @@ def _build(prepared_root, report, spec, noise, ffmpeg=None):
     summary = {'parent_clips': len(report['clips']), 'clips': len(clips), 'errors': len(errors),
                'noise_clipping_refusals': sum(e.get('refusal') == 'noise_clipping' for e in errors),
                'review_flagged_clips': sum(bool(c['review_flags']) for c in clips)}
+    if 'codec_mix' in spec:  # mix-only key: single-spec reports stay byte-identical
+        counts, channels = {codec: 0 for codec in _channel_codecs(spec)}, [0] * len(spec['codec_mix'])
+        for clip in clips:
+            counts[clip['chain']['codec_choice']['codec']] += 1
+            channels[clip['chain']['codec_choice']['channel_index']] += 1
+        summary['codec_counts'], summary['channel_counts'] = counts, channels
     return clips, errors, summary, files
 
 
@@ -403,7 +530,7 @@ def verify_augmented(prepared_root, augmented_root, noise_path=None, expected_sp
         problems.append('recorded chain_spec differs from the expected specification')
     if needs_ffmpeg(spec):
         if ffmpeg is None:
-            return problems + [f'codec {spec["codec"]} needs the ffmpeg codec tool (--ffmpeg) to rebuild']
+            return problems + [f'codec {describe_codec(spec)} needs the ffmpeg codec tool (--ffmpeg) to rebuild']
         recorded, using = recorded_tool_hash(result), getattr(ffmpeg, 'sha256', None)
         if recorded is not None and recorded != using:
             return problems + [f'copies were made with ffmpeg sha256 {recorded}; verifying with {using}: '
@@ -461,7 +588,8 @@ def main(argv=None):
     try:
         spec = validate_spec(_load_json(_read_regular(args.spec, 64_000, 'Specification'), 'Specification'))
         if not needs_ffmpeg(spec) and (args.ffmpeg or args.ffmpeg_sha256):
-            raise ValueError(f'--ffmpeg/--ffmpeg-sha256 apply only to GSM/AMR-NB chains, not {spec["codec"]}')
+            raise ValueError('--ffmpeg/--ffmpeg-sha256 apply only to GSM/AMR-NB chains (or mixes that '
+                             f'can choose them), not {describe_codec(spec)}')
         ffmpeg = Ffmpeg(args.ffmpeg, expected_sha256=args.ffmpeg_sha256) if needs_ffmpeg(spec) else None
         if args.verify is not None:
             problems = verify_augmented(args.prepared_root, args.verify, args.noise, spec, ffmpeg)

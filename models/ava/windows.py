@@ -194,13 +194,17 @@ def load_windows(prepared_root, split, purpose, *, parent_root=None, noise_path=
                    'chain_spec_sha256': report.get('chain_spec_sha256'),
                    # The spec hash does not name the codec tool; GSM/AMR output depends on it.
                    'codec_tool_sha256': augment.recorded_tool_hash(report)}
-        codec = report['chain_spec']['codec']  # verified above
+        spec = report['chain_spec']  # verified above; a codec_mix names each row's codec
+
+        def codec_of(row):
+            return augment.row_codec(spec, row)
     else:
         if parent_root is not None or noise_path is not None or ffmpeg is not None:
             raise ValueError('parent_root, noise_path and ffmpeg apply only to augmented-copy roots')
         _require_conditioned(report)
         source_errors = _summary_errors(report)
-        codec = 'none'  # conditioned 16 kHz clips without a telephone channel
+        def codec_of(row):
+            return 'none'  # conditioned 16 kHz clips without a telephone channel
     if source_errors and not allow_source_errors:
         raise ValueError(f'Root lists {source_errors} quarantined source(s) or refused copies; '
                          'pass allow_source_errors=True to load the remainder knowingly')
@@ -234,6 +238,7 @@ def load_windows(prepared_root, split, purpose, *, parent_root=None, noise_path=
                 raise ValueError('duplicate clip audio')
             hashes.add(row['sha256'])
             samples = _decode(clip)
+            codec = codec_of(row)
         except (OSError, ValueError, wave.Error, EOFError) as error:
             problems.append(f'clip {index}: {error}')
             continue

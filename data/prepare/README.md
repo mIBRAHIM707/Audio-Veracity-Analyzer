@@ -246,7 +246,29 @@ silence frame, spec `"concealment": "repeat_then_silence"`); pass the pinned ffm
 `AVA_FFMPEG`) and, for manifest runs, `--ffmpeg-sha256` (see `ffmpeg_codecs.
 PINNED_WINDOWS_SHA256`). The record carries the executable hash, so `--verify` needs
 the same binary. A codec-tool failure aborts the run before anything is written.
-Opus/G.729, GSM/AMR frame loss, RIRs and speech-active SNR remain open.
+`"jitter": true` is also accepted for GSM/AMR-NB (late frames joined with loss in one
+concealed mask; GSM then names `repeat_then_silence`).
+
+Codec mix (14 Nov 2026): instead of the four channel keys (`codec`, `concealment`,
+`packet_loss`, `jitter`) a spec may give `"codec_mix"`: 2-8 distinct channels, each
+those four keys plus an integer `"weight"` (1-1000), with `chain_version`,
+`master_seed` and `noise` shared. Each copy takes one channel by a seeded draw over
+(`ava-codec-mix-v1`, master seed, derivation clip ID), independent of the loss, jitter
+and noise draws, with probability weight / total weight (`augment.derive_channel`). The
+copy row records `chain.codec_choice` (draw, channel index, codec, weight, the chosen
+single-channel spec hash), its file name ends in the chosen codec, and the summary adds
+`codec_counts` and `channel_counts`. A mix that can choose GSM/AMR-NB needs `--ffmpeg`
+for every run and verify, even if every clip drew G.711 (no output then depends on the
+tool). A root still holds one copy per parent: several codecs for the same parent need
+several roots (for example other seeds). Channels differing only in a setting that
+cannot matter (G.711 concealment with no loss or jitter) are accepted and counted as
+separate channels. Single-channel specs, records and reports are unchanged (pinned by
+a test against the pre-mix code).
+Example: `{"chain_version": "ava-telephone-chain-v1", "master_seed": 7, "noise": null,
+"codec_mix": [{"codec": "g711_ulaw", "concealment": "repeat_then_silence",
+"packet_loss": true, "jitter": true, "weight": 2}, {"codec": "amr_nb_7.4",
+"concealment": null, "packet_loss": true, "jitter": false, "weight": 1}]}`.
+Opus/G.729, RIRs and speech-active SNR remain open.
 
 `tests/unit/test_conditioning_parity.py` checks that this preparation path and the
 analysis service (`services/inference/`) condition the same WAV to identical
@@ -255,7 +277,7 @@ analysis service (`services/inference/`) condition the same WAV to identical
 ## Verification
 
 ```text
-uv run --no-project --python 3.11 --with-requirements requirements-audio.txt python -m unittest tests.unit.test_g711_codec tests.unit.test_packet_loss tests.unit.test_noise_mixing tests.unit.test_conditioning_parity tests.unit.test_augment_chain -v
+uv run --no-project --python 3.11 --with-requirements requirements-audio.txt python -m unittest tests.unit.test_g711_codec tests.unit.test_packet_loss tests.unit.test_noise_mixing tests.unit.test_conditioning_parity tests.unit.test_augment_chain tests.unit.test_augment_codec_mix -v
 uv run --no-project --python 3.11 python -m unittest discover -s tests/unit -p test_audio_preparation.py -v
 uv run --no-project --python 3.11 --with-requirements requirements-audio.txt python -m unittest discover -s tests/unit -p test_audio_conditioning.py -v
 ```

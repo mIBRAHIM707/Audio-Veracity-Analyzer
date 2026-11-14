@@ -113,8 +113,10 @@ and about 50,000 original clips, excluding codec copies.
   Claude-authored tests (7 need the local ffmpeg; CI skips them). Same day: wired into
   `augment.py` (and the training window loader), seeded frame loss (AMR NO_DATA,
   GSM repeat_then_silence) and jitter from the G.711 plans, concealed once, with
-  G.711-compatible record names. Remaining: per-clip codec mixing across copies,
-  Opus/G.729, RFC 4867 RTP payloads (6.x).
+  G.711-compatible record names. Catch-up 3: per-clip codec mix (`codec_mix` spec,
+  seeded weighted choice per derivation clip ID recorded as `chain.codec_choice`,
+  per-codec counts, codec per window in the loader). Backlog 3.3 complete as file
+  pipeline infrastructure; Opus/G.729 belong to 3.4, RFC 4867 RTP payloads to 6.x.
 - **Backlog 3.1 in progress (9 Nov): offline/serving conditioning parity.**
   `tests/unit/test_conditioning_parity.py` (Claude-authored) runs one WAV through
   `prepare_audio.py --condition` and the analysis service: identical canonical PCM

@@ -205,6 +205,22 @@ class WindowLoaderTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'only to augmented'):
             windows.load_windows(self.prepared, 'train', 'train', ffmpeg=FakeTool())
 
+    def test_codec_mix_root_names_each_window_codec(self):
+        # Claude-authored, 14 Nov 2026 (backlog 3.3 per-clip codec mix): codec per copy.
+        from tests.unit.test_augment_ffmpeg_chain import FakeTool
+        from tests.unit.test_augment_codec_mix import GSM, channel, mix
+        chain = mix(channel(), GSM, master_seed=7)
+        augmented = self.base / 'augmented-mix'
+        augment.augment_prepared(self.prepared, augmented, chain, ffmpeg=FakeTool())
+        report = json.loads((augmented / 'report.json').read_text(encoding='utf-8'))
+        expected = {row['path']: row['chain']['codec_choice']['codec'] for row in report['clips']}
+        loaded = windows.load_windows(augmented, 'train', 'train', parent_root=self.prepared, ffmpeg=FakeTool())
+        self.assertTrue(loaded['windows'])
+        for window in loaded['windows']:
+            self.assertEqual(window['codec'], expected[window['path']])
+            self.assertTrue(window['path'].endswith(f'_{window["codec"]}.wav'))
+        self.assertEqual(loaded['summary']['chain_spec_sha256'], augment.spec_sha256(chain))
+
     def test_augmented_copy_roots_load_with_inherited_provenance(self):
         spec = {'chain_version': augment.CHAIN_VERSION, 'master_seed': 7, 'codec': 'g711_alaw',
                 'concealment': 'repeat_then_silence', 'packet_loss': True, 'jitter': False, 'noise': None}
