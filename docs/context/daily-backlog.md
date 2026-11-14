@@ -122,9 +122,10 @@ items needing that data are listed at the end and stay out of the queue.
   Then AMR-NB seeded frame loss (NO_DATA frames, decoder-native concealment, G.711 mask
   rule and plans); 5 Claude-authored tests, review fixed; selectable in `augment.py`
   specs (`packet_loss: true` for AMR-NB). GSM frame loss by repeat_then_silence frame
-  substitution, also selectable; Claude-authored tests, review below. Remaining: jitter
-  for GSM/AMR, a per-clip codec mix across copies, AMR decode of RFC 4867 RTP
-  payloads (6.x).
+  substitution, also selectable; then jitter (late frames) for GSM/AMR joined with loss
+  in one concealed mask, G.711-compatible record names; Claude-authored tests, reviews
+  fixed. Remaining: a per-clip codec mix across copies (one codec per augmented root
+  today), Opus/G.729, AMR decode of RFC 4867 RTP payloads (6.x).
 - [ ] 3.4 Other PRD codec/noise paths with bounded reproducible fixtures.
   Progress (9 Nov): `data/prepare/noise.py` seeded additive noise at 0-20 dB SNR
   (FR-D7) with lineage and per-clip plans (`derive_noise`/`mix_planned`); 18

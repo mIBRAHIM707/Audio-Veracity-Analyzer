@@ -27,7 +27,7 @@ import subprocess
 import numpy as np
 
 if __package__:
-    from .codecs import REPEAT_LIMIT, _loss_mask, derive_loss
+    from .codecs import REPEAT_LIMIT, _indices_sha256, _late_mask, _loss_mask, derive_jitter, derive_loss
     from .conditioning import library_versions, resample_to_pcm16
 else:  # a script-directory 'codecs' import would shadow the standard library module
     raise SystemExit('Import as data.prepare.ffmpeg_codecs')
@@ -162,29 +162,56 @@ class Ffmpeg:
             self._gsm_silence = self.encode(bytes(2 * FRAME_SAMPLES), 'gsm')
         return self._gsm_silence
 
-    def roundtrip(self, narrow, codec, loss_plan=None):
+    def roundtrip(self, narrow, codec, loss_plan=None, jitter_plan=None):
         """8 kHz PCM16 -> encode -> optional seeded frame loss (`loss_plan` from
-        codecs.derive_loss: AMR-NB NO_DATA frames, GSM repeat_then_silence substitution)
-        -> decode -> remove the codec delay -> 8 kHz PCM16 of the input length. Returns
-        (decoded bytes, record). Raises CodecToolError if the decoder returned too few
-        samples to cover the input after the delay."""
+        codecs.derive_loss) and/or late frames (`jitter_plan` from codecs.derive_jitter:
+        exponential extra delay behind a fixed playout buffer, as for G.711) -> one
+        lost-or-late mask concealed once (AMR-NB NO_DATA frames, GSM repeat_then_silence
+        substitution) -> decode -> remove the codec delay -> 8 kHz PCM16 of the input
+        length. Returns (decoded bytes, record). Raises CodecToolError if the decoder
+        returned too few samples to cover the input after the delay."""
         spec = _spec(codec)
         if loss_plan is not None and (not isinstance(loss_plan, dict) or loss_plan != derive_loss(
                 loss_plan.get('master_seed'), loss_plan.get('clip_id'))):
             raise ValueError('loss_plan must come unchanged from codecs.derive_loss')
+        if jitter_plan is not None:
+            if not isinstance(jitter_plan, dict) or jitter_plan != derive_jitter(
+                    jitter_plan.get('master_seed'), jitter_plan.get('clip_id')):
+                raise ValueError('jitter_plan must come unchanged from codecs.derive_jitter')
+            if loss_plan is not None and (loss_plan['clip_id'], loss_plan['master_seed']) != (
+                    jitter_plan['clip_id'], jitter_plan['master_seed']):
+                raise ValueError('loss_plan and jitter_plan name different clips or master seeds')
         encoded = self.encode(narrow, codec)
-        received, frame_loss = encoded, None
+        amr = spec['format'] == 'amr'
+        frames = _amr_frames(encoded, codec) if amr else \
+            [encoded[i:i + GSM_FRAME_BYTES] for i in range(0, len(encoded), GSM_FRAME_BYTES)]
+        rule = ({'unit': 'amr_frame_20ms', 'concealment': FRAME_LOSS_CONCEALMENT, 'applied_via': 'amr_no_data_frames',
+                 'mask_covers': 'every encoded frame incl. ffmpeg padding and the flush frame'} if amr else
+                {'unit': 'gsm_frame_20ms', 'concealment': GSM_CONCEALMENT, 'repeat_limit': REPEAT_LIMIT,
+                 'applied_via': 'gsm_frame_substitution', 'mask_covers': 'every encoded frame',
+                 'silence_frame_sha256': hashlib.sha256(self.gsm_silence_frame()).hexdigest()})
+        missing = np.zeros(len(frames), dtype=bool)
+        frame_loss = jitter = concealment = None
         if loss_plan is not None:
-            if spec['format'] == 'amr':
-                received, frame_loss = drop_amr_frames(encoded, codec, loss_plan['loss_rate'], loss_plan['seed'])
-                frame_loss.update(applied_via='amr_no_data_frames',
-                                  mask_covers='every encoded frame incl. ffmpeg padding and the flush frame')
-            else:
-                received, frame_loss = drop_gsm_frames(encoded, loss_plan['loss_rate'], loss_plan['seed'],
-                                                       self.gsm_silence_frame())
-                frame_loss.update(mask_covers='every encoded frame')
-            frame_loss.update({key: loss_plan[key] for key in ('derivation', 'master_seed', 'clip_id')})
-        raw = self.decode(received, codec, allow_lost_frames=loss_plan is not None)
+            lost, frame_loss = _loss_mask(len(frames), loss_plan['loss_rate'], loss_plan['seed'])
+            frame_loss.update(rule, **{key: loss_plan[key] for key in ('derivation', 'master_seed', 'clip_id')})
+            missing |= lost
+        if jitter_plan is not None:
+            late, jitter = _late_mask(len(frames), jitter_plan['jitter_ms'], jitter_plan['buffer_ms'],
+                                      jitter_plan['seed'])
+            jitter.update(rule, **{key: jitter_plan[key] for key in ('derivation', 'master_seed', 'clip_id')})
+            missing |= late
+        received = encoded
+        if loss_plan is not None or jitter_plan is not None:
+            received = (AMR_MAGIC + b''.join(bytes([AMR_NO_DATA]) if gone else f for f, gone in zip(frames, missing))
+                        if amr else b''.join(substitute_frames(frames, list(missing), self.gsm_silence_frame())))
+            both = loss_plan is not None and jitter_plan is not None
+            concealment = {'mask': 'lost_or_late', **rule, 'frames': len(frames),
+                           'concealed_frames': int(missing.sum()),
+                           'concealed_fraction': float(missing.sum()) / len(frames),
+                           'lost_and_late_frames': int((lost & late).sum()) if both else None,
+                           'concealed_indices_sha256': _indices_sha256(missing)}
+        raw = self.decode(received, codec, allow_lost_frames=bool(missing.any()))
         delay, target = 2 * CODEC_DELAY_SAMPLES[codec], len(narrow)
         if len(raw) < delay + target:
             raise CodecToolError(f'decoder returned {len(raw) // 2} samples, need {(delay + target) // 2}')
@@ -202,7 +229,7 @@ class Ffmpeg:
             'delay_compensated_samples': CODEC_DELAY_SAMPLES[codec],
             'length_policy': 'drop_codec_delay_then_cut_to_input_length',
             'encoded_sha256': hashlib.sha256(encoded).hexdigest(), 'encoded_bytes': len(encoded),
-            'frame_loss': frame_loss,
+            'frame_loss': frame_loss, 'frame_jitter': jitter, 'frame_concealment': concealment,
             'received_sha256': hashlib.sha256(received).hexdigest(),
             'decoded_pcm_sha256': hashlib.sha256(decoded).hexdigest(),
         }
@@ -339,7 +366,16 @@ def _check_stream(encoded, codec, frames=None):
         raise CodecToolError('AMR stream contains frames of another mode, bad-quality frames or set padding bits')
 
 
-def telephone_codec_roundtrip(canonical, codec, ffmpeg, *, rate=16000, loss_plan=None):
+def _as_packet_concealment(frames):
+    """The frame_concealment record under the G.711 `packet_concealment` key names."""
+    if frames is None:
+        return None
+    rename = {'frames': 'packets', 'concealed_frames': 'concealed_packets',
+              'lost_and_late_frames': 'lost_and_late_packets'}
+    return {rename.get(key, key): value for key, value in frames.items()}
+
+
+def telephone_codec_roundtrip(canonical, codec, ffmpeg, *, rate=16000, loss_plan=None, jitter_plan=None):
     """Canonical PCM16 at `rate` -> soxr HQ 8 kHz -> `codec` encode/decode via `ffmpeg`
     (an `Ffmpeg`) -> 8 kHz PCM16. Returns (decoded bytes, lineage record)."""
     _spec(codec)
@@ -351,15 +387,19 @@ def telephone_codec_roundtrip(canonical, codec, ffmpeg, *, rate=16000, loss_plan
         raise ValueError(f'Input longer than {MAX_SECONDS} s')
     samples = np.frombuffer(canonical, dtype='<i2').astype(np.float64)
     narrow, saturated = resample_to_pcm16(samples, rate, TELEPHONE_RATE)
-    # `loss_plan` is validated by Ffmpeg.roundtrip; passed only when given.
-    decoded, record = (ffmpeg.roundtrip(narrow, codec) if loss_plan is None
-                       else ffmpeg.roundtrip(narrow, codec, loss_plan=loss_plan))
+    # Plans are validated by Ffmpeg.roundtrip; passed only when given.
+    plans = {key: value for key, value in (('loss_plan', loss_plan), ('jitter_plan', jitter_plan))
+             if value is not None}
+    decoded, record = ffmpeg.roundtrip(narrow, codec, **plans)
     return decoded, {
         **record, 'input_rate': rate, 'input_sample_count': len(samples),
         'input_sha256': hashlib.sha256(canonical).hexdigest(),
         'resampler': 'bypass' if rate == TELEPHONE_RATE else 'soxr_hq',
         'quantization': 'round_nearest_even_clip_pcm16', 'saturated_samples': saturated,
         # Same key as the G.711 record, so FR-D6 impairment counts see AMR frame loss.
-        'sample_count': len(decoded) // 2, 'packet_loss': record.get('frame_loss'), 'jitter': None,
+        'sample_count': len(decoded) // 2, 'packet_loss': record.get('frame_loss'),
+        'jitter': record.get('frame_jitter'),
+        # G.711 key names (codecs.telephone_roundtrip), so FR-D6 union totals read one schema.
+        'packet_concealment': _as_packet_concealment(record.get('frame_concealment')),
         **library_versions(),
     }

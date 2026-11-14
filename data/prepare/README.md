@@ -169,7 +169,11 @@ repeat_then_silence substitution: architecture §2.2 parity (hard cut after 3 re
 not GSM 06.11 gradual muting. Measured 14 Nov in an 8-frame burst inside noise: the
 first silence frame decodes at 15.6 % of the speech RMS (decoder state), later ones at
 1.5 %. A GSM loss spec must name `"concealment": "repeat_then_silence"`; AMR loss specs
-name none (decoder-native). Both selectable in `augment.py` specs; no jitter. A
+name none (decoder-native). Jitter (late frames, `jitter_plan` from `derive_jitter`,
+same model as G.711) joins the loss mask and is concealed once; records carry
+`frame_loss`, `frame_jitter`, `frame_concealment`, and the 16 kHz wrapper also exposes
+them under G.711's `packet_loss`/`jitter`/`packet_concealment` names (AMR mask counts
+include ffmpeg's padding and flush frame). Both selectable in `augment.py` specs. A
 live AMR-NB decoder has no encoder padding (parity is 6.x).
 
 Tool: Gyan.FFmpeg 9.0.2 full build, GPL-3.0 as built (libgsm: permissive TU Berlin licence; OpenCORE AMR: Apache-2.0),

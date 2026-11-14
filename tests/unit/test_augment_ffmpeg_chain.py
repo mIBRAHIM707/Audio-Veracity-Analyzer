@@ -42,13 +42,13 @@ class FakeTool:
     def __init__(self, fail_on=None, gain=0.5, sha256=SHA256):
         self.calls, self.fail_on, self.gain, self.sha256 = 0, fail_on, gain, sha256
 
-    def roundtrip(self, narrow, codec, loss_plan=None):
+    def roundtrip(self, narrow, codec, loss_plan=None, jitter_plan=None):
         self.calls += 1
         if self.fail_on == self.calls:
             raise ffmpeg_codecs.CodecToolError('fake tool fault')
         out = (np.frombuffer(narrow, dtype='<i2') * self.gain).astype('<i2').tobytes()
         return out, {'codec': codec, 'codec_implementation': 'fake', 'gain': self.gain,
-                     'frame_loss': loss_plan, 'ffmpeg_sha256': self.sha256,
+                     'frame_loss': loss_plan, 'frame_jitter': jitter_plan, 'ffmpeg_sha256': self.sha256,
                      'decoded_pcm_sha256': hashlib.sha256(out).hexdigest()}
 
 
@@ -78,9 +78,11 @@ class SpecTests(unittest.TestCase):
         for codec in fc_codecs():  # frame loss is allowed for GSM and AMR-NB
             concealment = 'repeat_then_silence' if codec == 'gsm' else None  # GSM names its rule
             augment.validate_spec(ffmpeg_spec(codec, packet_loss=True, concealment=concealment))
+        augment.validate_spec(ffmpeg_spec('amr_nb_7.4', jitter=True))
+        augment.validate_spec(ffmpeg_spec('gsm', jitter=True, concealment='repeat_then_silence'))
         bad = [ffmpeg_spec(concealment='repeat'), ffmpeg_spec('gsm', concealment='repeat_then_silence'),
                ffmpeg_spec('gsm', packet_loss=True), ffmpeg_spec('gsm', packet_loss=True, concealment='repeat'),
-               ffmpeg_spec('gsm', jitter=True),  ffmpeg_spec(jitter=True),
+               ffmpeg_spec('gsm', jitter=True), ffmpeg_spec(jitter=True, concealment='repeat_then_silence'),
                ffmpeg_spec(jitter=None), ffmpeg_spec(packet_loss=1), ffmpeg_spec(packet_loss=None),
                ffmpeg_spec('amr_nb_7.4', packet_loss=True, concealment='repeat'),
                ffmpeg_spec('amr_wb_23.85'), ffmpeg_spec([]), ffmpeg_spec({'x': 1}),
@@ -130,7 +132,8 @@ class FakeToolTests(Fixture):
     def test_cli_refuses_tool_options_for_g711_and_invalid_specs_before_tool_lookup(self):
         for chain, extra, message in ((spec(), ['--ffmpeg', 'x.exe'], 'apply only to GSM/AMR-NB'),
                                       (spec(), ['--ffmpeg-sha256', '0' * 64], 'apply only to GSM/AMR-NB'),
-                                      (ffmpeg_spec(jitter=True), ['--ffmpeg', 'missing.exe'], 'jitter must be false')):
+                                      (ffmpeg_spec(jitter=None), ['--ffmpeg', 'missing.exe'],
+                                       'jitter must be true or false')):
             path = self.base / 'spec.json'
             path.write_text(json.dumps(chain))
             err = io.StringIO()

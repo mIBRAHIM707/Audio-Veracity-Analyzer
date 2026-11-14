@@ -416,6 +416,54 @@ class RealFfmpegTests(unittest.TestCase):
         self.assertLess(quiet_rms, 0.05 * speech_rms, (quiet_rms, speech_rms))
         self.assertTrue(np.array_equal(out[:20 * 160], clean[:20 * 160]))
 
+    def test_loss_and_jitter_form_one_concealed_mask(self):
+        from data.prepare.codecs import _late_mask, _loss_mask, derive_jitter, derive_loss
+        pcm = tone(2.0)
+        ids = (f'j-{i}' for i in range(500))
+        clip = next(c for c in ids if derive_jitter(3, c)['jitter_ms'] > 15 and derive_loss(3, c)['loss_rate'] > 0.02)
+        loss, jitter = derive_loss(3, clip), derive_jitter(3, clip)
+        for codec in ('amr_nb_7.4', 'gsm'):
+            out, record = self.ffmpeg.roundtrip(pcm, codec, loss_plan=loss, jitter_plan=jitter)
+            n = record['frame_concealment']['frames']
+            lost, _ = _loss_mask(n, loss['loss_rate'], loss['seed'])
+            late, _ = _late_mask(n, jitter['jitter_ms'], jitter['buffer_ms'], jitter['seed'])
+            union = lost | late
+            self.assertGreater(int(late.sum()), 0, codec)
+            self.assertEqual(record['frame_concealment']['concealed_frames'], int(union.sum()))
+            self.assertEqual(record['frame_concealment']['concealed_indices_sha256'],
+                             hashlib.sha256(np.flatnonzero(union).astype('<i4').tobytes()).hexdigest())
+            self.assertEqual(record['frame_jitter']['late_packets'], int(late.sum()))
+            self.assertEqual(record['frame_concealment']['lost_and_late_frames'], int((lost & late).sum()))
+            self.assertEqual(len(out), len(pcm))
+            clean, _ = self.ffmpeg.roundtrip(pcm, codec)
+            cut = max(int(np.flatnonzero(union)[0]) * 160 - fc.CODEC_DELAY_SAMPLES[codec], 0)
+            self.assertEqual(out[:2 * cut], clean[:2 * cut])
+            # Loss only: byte-identical to the stream-level functions (regression guard).
+            _, only = self.ffmpeg.roundtrip(pcm, codec, loss_plan=loss)
+            encoded = self.ffmpeg.encode(pcm, codec)
+            stream = (fc.drop_amr_frames(encoded, codec, loss['loss_rate'], loss['seed'])[0] if codec != 'gsm'
+                      else fc.drop_gsm_frames(encoded, loss['loss_rate'], loss['seed'], self.ffmpeg.gsm_silence_frame())[0])
+            self.assertEqual(only['received_sha256'], hashlib.sha256(stream).hexdigest())
+            self.assertIsNone(only['frame_jitter'])
+        with self.assertRaisesRegex(ValueError, 'derive_jitter'):
+            self.ffmpeg.roundtrip(pcm, 'gsm', jitter_plan={**jitter, 'buffer_ms': 10})
+        with self.assertRaisesRegex(ValueError, 'different clips'):
+            self.ffmpeg.roundtrip(pcm, 'gsm', loss_plan=derive_loss(3, 'other'), jitter_plan=jitter)
+        _, wide = fc.telephone_codec_roundtrip(tone(0.5, rate=16000), 'amr_nb_12.2', self.ffmpeg, jitter_plan=jitter)
+        self.assertEqual(wide['jitter'], wide['frame_jitter'])
+        self.assertIsNone(wide['packet_loss'])
+        # Same schema as G.711's packet_concealment (codecs.telephone_roundtrip).
+        from data.prepare.codecs import derive_jitter as dj, telephone_roundtrip
+        _, g711 = telephone_roundtrip(tone(0.5, rate=16000), 'ulaw', concealment='repeat_then_silence',
+                                      loss_plan=derive_loss(3, clip), jitter_plan=dj(3, clip))
+        _, amr = fc.telephone_codec_roundtrip(tone(0.5, rate=16000), 'amr_nb_12.2', self.ffmpeg,
+                                              loss_plan=derive_loss(3, clip), jitter_plan=jitter)
+        for key in ('mask', 'packets', 'concealed_packets', 'concealed_fraction', 'lost_and_late_packets',
+                    'concealed_indices_sha256', 'concealment'):
+            self.assertIn(key, amr['packet_concealment'], key)
+            self.assertIn(key, g711['packet_concealment'], key)
+        self.assertIsNone(fc.telephone_codec_roundtrip(tone(0.5, rate=16000), 'gsm', self.ffmpeg)[1]['packet_concealment'])
+
     def test_plain_decode_refuses_no_data_frames(self):
         encoded = self.ffmpeg.encode(tone(0.5), 'amr_nb_12.2')
         lossy, _ = fc.drop_amr_frames(encoded, 'amr_nb_12.2', 0.05, 4)
