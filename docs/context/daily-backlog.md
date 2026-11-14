@@ -178,6 +178,11 @@ items needing that data are listed at the end and stay out of the queue.
   drop-oldest, FIFO, "behind" = a window still waiting at acceptance), 12
   Claude-authored tests, review fixed. Remaining: wiring into the live inference loop
   (needs 6.x/8.1); PRD to confirm "behind"; EMA per window vs per second under stride.
+  14 Nov: `services/scorer/pipeline.py` wires pending queue, stride controller,
+  micro-batcher, a batched detector and `LiveCalls` in a single-owner explicit-clock
+  loop (unmonitored published at the cap, cancellation of ended calls, detector faults
+  contained); Claude-authored fake-detector tests. Remaining: a real detector/ONNX
+  session and threads (10.1), file jobs through the batcher, tap input (6.x).
 - [ ] 8.QA Measure timings/RSS/load; separate observed results from PRD targets.
   Progress (12 Nov): `models/ava/benchmark_cpu.py` (interleaved seeded rounds, p95 only
   with >= 20 timings, RTF only at batch 1, raw timings, limitations); 7

@@ -204,6 +204,12 @@ and about 50,000 original clips, excluding codec copies.
   `monitor_lost` end of all calls). 29 Claude-authored tests, three review rounds
   fixed; still not wired to a tap or inference loop, no Redis/PostgreSQL. Unit suite
   with API deps 571 OK (2 skips).
+- **Backlog 8.1/8.2 progress (14 Nov): live inference loop wired (fake detector).**
+  `services/scorer/pipeline.py` connects per-direction pending queues and stride
+  control, the micro-batcher, a batched detector and `LiveCalls` with one window per
+  direction in flight, so slow inference grows the stride rather than a queue;
+  `unmonitored` published at the cap; cancellation and fault containment. 17
+  Claude-authored tests; review fixed. No real detector, threads or tap yet.
 - **Backlog 7.2 progress (14 Nov): FR-O6 metrics subset.** `/metrics` histograms for
   analysis time and per-stage time (decode, condition, inference; model load
   excluded, verified with a stepping clock) and live-call gauges/counters from the

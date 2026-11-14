@@ -197,6 +197,27 @@ speech seconds are published as 0.0 with a flag, because the contract needs a
 number. Not done: Redis/PostgreSQL state and
 restart resume (FR-I11, needs 5.1) and wiring to a real tap/inference loop (6.x/8.1).
 
+## Live inference loop (backlog 8.1/8.2 wiring; PRD FR-I9-FR-I11)
+
+`pipeline.LivePipeline(live, batcher, detector, config, max_pending=4)` is a
+single-owner loop with an explicit monotonic `now`: `offer` puts a built 4 s float32
+window into its direction's `PendingWindows` (stride, drop-oldest, `StrideController`)
+and publishes `unmonitored` once when the stride cap is reached; at most one window
+per direction is in the batcher or in inference, so a window still waiting when the
+next one arrives is "behind" and the stride grows instead of a queue (FR-I10);
+`schedule` serves idle directions from a rotating start while the `MicroBatcher` has
+live room; `now` must never go backwards (checked before any change); `step` runs one due
+batch through the detector (`[B, 64000]` -> `[B, 2]` logits) and applies the scores
+through `LiveCalls` with the direction's degraded flag and stride. `end_call` ends the
+call and cancels its waiting windows; batched windows of ended calls are skipped and
+calls ended elsewhere are cleaned up at the next `schedule`; a batched window from an
+earlier call with the same ID is skipped. A detector fault loses that batch's scores
+only, and a failing result is counted without stopping the rest of the batch. Windows
+are copied on offer. File jobs and the 25 % share are not driven here yet (a file
+batch handed out is counted, not run); no threads, no real detector or tap wired.
+Spec questions: whether the call card keeps `unmonitored` while scoring continues at
+the capped stride, and a time limit for the detector call.
+
 Not specified by the PRD and therefore not enforced in configuration: ordering between the
 suspicious and alert thresholds (for example `alert_enter >= suspicious_enter`), an
 upper bound on `min_windows`, or whether `agent` may be scored without `caller`.
