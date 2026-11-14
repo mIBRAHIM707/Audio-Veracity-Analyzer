@@ -138,7 +138,12 @@ items needing that data are listed at the end and stay out of the queue.
   Claude-authored tests (spooled uploads removed with rollover proven, no audio in
   job records after completion or shutdown, small filename-free responses); review
   fixed. Remaining: restart recovery and in-flight handling (need durable jobs, 5.1),
-  FR-O5 opt-in snippet retention on the live path.
+  FR-O5 opt-in snippet retention on the live path. 14 Nov: `services/retention/
+  snippets.py` (policy fixed at call start, 30 s ring per direction, one sealed file
+  per alert ID, TTL and purge-when-off cleanup, failures contained) with Claude-authored
+  tests. **Blocked part:** AES-256-GCM needs a crypto dependency (not cached); the
+  store refuses non-AES sealers. Remaining: crypto + key management, wiring to tap
+  audio and `alert.raised`, config setting, scheduled cleanup.
 - [ ] 5.QA Real service integration, disconnects, failures and state recovery.
 
 ## 6 — Asterisk laboratory (FR-T1–T5/T7, FR-I1/I2)

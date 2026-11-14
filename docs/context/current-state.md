@@ -204,6 +204,12 @@ and about 50,000 original clips, excluding codec copies.
   `monitor_lost` end of all calls). 29 Claude-authored tests, three review rounds
   fixed; still not wired to a tap or inference loop, no Redis/PostgreSQL. Unit suite
   with API deps 571 OK (2 skips).
+- **Backlog 5.3 progress (14 Nov): FR-O5 snippet retention without encryption.**
+  `services/retention/snippets.py` implements the retention rules (default off,
+  policy fixed at call start, 30 s ring per scored direction, exactly one sealed file
+  per alert ID, TTL and purge-when-off cleanup, failures never raised). AES-256-GCM is
+  blocked on a crypto dependency, so the store refuses to run in production. 11
+  Claude-authored tests with an insecure test sealer; review fixed.
 - **Backlog 8.1/8.2 progress (14 Nov): live inference loop wired (fake detector).**
   `services/scorer/pipeline.py` connects per-direction pending queues and stride
   control, the micro-batcher, a batched detector and `LiveCalls` with one window per
