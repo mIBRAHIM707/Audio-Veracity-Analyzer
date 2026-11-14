@@ -204,6 +204,11 @@ and about 50,000 original clips, excluding codec copies.
   `monitor_lost` end of all calls). 29 Claude-authored tests, three review rounds
   fixed; still not wired to a tap or inference loop, no Redis/PostgreSQL. Unit suite
   with API deps 571 OK (2 skips).
+- **Backlog 5.QA progress (14 Nov): in-process live-path integration.** Three
+  Claude-authored tests drive pipeline -> LiveCalls -> hub -> API (registry,
+  WebSocket, metrics) with a fake detector: alert lifecycle, capacity refusal event,
+  end reasons, late result after `monitor_lost`, detector outage. No telephony,
+  Redis/PostgreSQL or restart recovery. Unit suite 607 OK (2 skips).
 - **Backlog 5.3 progress (14 Nov): FR-O5 snippet retention without encryption.**
   `services/retention/snippets.py` implements the retention rules (default off,
   policy fixed at call start, 30 s ring per scored direction, exactly one sealed file

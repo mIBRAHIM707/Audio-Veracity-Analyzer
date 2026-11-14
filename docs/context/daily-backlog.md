@@ -145,6 +145,10 @@ items needing that data are listed at the end and stay out of the queue.
   store refuses non-AES sealers. Remaining: crypto + key management, wiring to tap
   audio and `alert.raised`, config setting, scheduled cleanup.
 - [ ] 5.QA Real service integration, disconnects, failures and state recovery.
+  Progress (14 Nov): in-process live-path integration test
+  (`tests/unit/test_live_path_integration.py`: pipeline -> LiveCalls -> hub -> API
+  registry/WebSocket/metrics, capacity refusal, monitor_lost, detector outage).
+  Remaining: real Redis/PostgreSQL services, process restarts and state recovery.
 
 ## 6 — Asterisk laboratory (FR-T1–T5/T7, FR-I1/I2)
 - [ ] 6.1 Docker/WSL preflight; Asterisk/SIPp endpoints and WAV injection.
