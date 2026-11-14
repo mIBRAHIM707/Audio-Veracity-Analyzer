@@ -2,6 +2,15 @@
 
 Read this file in both Codex and Claude Code. User instructions take precedence.
 
+## Approved daily automation (6 November 2026)
+
+In the dedicated `feat/4-daily-development` worktree, the user authorizes the
+ordered backlog in `docs/context/daily-backlog.md`, local commits of verified
+changes and pushes to that branch's dedicated draft PR. Never merge or enable
+auto-merge. This supersedes historical no-commit instructions only for this scope.
+Follow `docs/engineering/daily-development-prompt.md`; do not edit other checkouts.
+Daily window: noon–2 PM Asia/Karachi. Machine-local runner settings/logs stay ignored.
+
 ## Start here
 
 1. Read `docs/context/current-state.md` for measured state and unresolved work.
@@ -49,10 +58,10 @@ commit another worker's changes. Follow the workflow's clean-baseline requiremen
 
 ## Test design and execution
 
-- Use **GPT-6 Astra (`gpt-6-astra`)** to author substantive test-case designs as
-  requested by the user. Record actual model provenance; never relabel Claude output.
-- Claude can implement/run cases and prepare an Astra handoff. If Astra is
-  unavailable, report it; do not silently substitute a test designer.
+- Until 7 November 2026 **GPT-6 Astra** authored substantive test-case designs.
+  On 8 November 2026 Tughral moved all work to Claude Code (Codex/Astra access
+  ended): Claude now designs test cases, labelled Claude-authored with the date.
+  Existing Astra catalogues keep their Astra provenance. Never relabel either.
 - Use Playwright for browser crawling and browser tests. Use Python unit tests
   for data/scoring logic and dedicated tests for audio, model and telephony behavior.
 - Fixture smoke tests are infrastructure evidence, not AVA product acceptance.

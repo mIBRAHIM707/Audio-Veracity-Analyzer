@@ -1,0 +1,9 @@
+# Silero VAD runtime for FR-I3 (backlog 3.2). CPU only, no runtime downloads; the model
+# file (silero-vad 6.2.3 data/silero_vad.onnx, MIT) is provisioned locally outside Git.
+# Python 3.11. Licences checked 14 Nov 2026: onnxruntime MIT; flatbuffers Apache-2.0;
+# protobuf BSD-3-Clause. `packaging` matches requirements-model.txt.
+-r requirements-audio.txt
+onnxruntime==1.32.0
+flatbuffers==25.12.19
+protobuf==7.36.2
+packaging==24.1

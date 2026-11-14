@@ -11,6 +11,7 @@ import numpy as np
 
 from data.prepare.conditioning import canonicalize, peak_normalize
 from data.prepare.prepare_audio import process_manifest
+from tests.fixture_cleanup import cleanup_with_retry
 
 
 def pcm(values):
@@ -134,7 +135,7 @@ class ConditioningNumericTests(unittest.TestCase):
 class ConditionedPreparationTests(unittest.TestCase):
     def setUp(self):
         temporary = tempfile.TemporaryDirectory()
-        self.addCleanup(temporary.cleanup)
+        self.addCleanup(cleanup_with_retry, temporary)
         self.root = Path(temporary.name).resolve()
         self.source_root = self.root / "sources"
         self.source_root.mkdir()

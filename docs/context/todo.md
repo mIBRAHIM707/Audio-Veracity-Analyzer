@@ -1,5 +1,26 @@
 # AVA working checklist
 
+6 November automation update: the approved software queue is `daily-backlog.md`.
+Daily work is noon–2 PM Asia/Karachi on `feat/4-daily-development`; verified commits
+are pushed to its dedicated draft PR without merging. This supersedes the older
+no-commit instruction for that branch only. Collection tasks below remain tracked.
+11 Nov: augmentation chain stage (`data/prepare/augment.py`) is ready for the first
+real prepared root once a noise corpus and the concealment choice are confirmed.
+14 Nov: the API now serves the FR-A3 call list and the FR-A4 WebSocket from an
+in-process event hub (backlog 5.2 partial); no participant data involved.
+14 Nov (catch-up): data-relevant change — augmented copies now start
+`review_status: unreviewed` (parent statuses kept as `parent_*`), so any augmented
+root made before this needs a re-run of `augment.py`; only plain PCM (format tag 1)
+WAVs are accepted on every intake path (`data/prepare/README.md`).
+14 Nov (catch-up 2): backlog 2.3 done — a local upload page (`dashboard/`) for
+single PCM16 WAV analysis; useful for the 2.QA public-pilot check, no data change.
+2.QA done on public CSALT clips with the real checkpoint (local only). Data-relevant:
+`augment.py` can now make GSM 06.10 and AMR-NB copies (with loss/jitter) through a
+pinned local ffmpeg 9.0.2 (`--ffmpeg`, `--ffmpeg-sha256`); verify needs the same binary.
+14 Nov (catch-up 4): no data change. ONNX export/INT8 tooling (`models/export/`) works
+on the real checkpoint; for the dev evaluation later: the INT8 dev EER must state its
+batching, and a static-INT8 calibration set must be disjoint from EER/test windows.
+
 Updated 4 October 2026. This is the active sequence; evidence lives in
 `current-state.md` and `handoffs/`. Check marks mean the stated bounded task passed
 its QA, not that the final dataset or product is accepted.
@@ -59,13 +80,21 @@ independent preparation. Do not treat elapsed time as approval.
       versions and transcript hashes; real pilot read-only run PASS (12 rows, 6
       speakers, 13.0646 min). Prior-hash comparison stays inactive until a fresh
       record is written beside the prototype's; see `handoffs/pnb-verifier.md`.
-    - [ ] Parameterised prepared-output verifier that recomputes segmentation, metrics
-      and flags, scans values for transcript text, checks root contents, reads FLAC.
-    - [ ] Importer tightening: vacuous publisher-hash branch and string `review_flags`,
-      625 s versus 10 MB bound, CLI exit-code and 48 kHz/stereo fixtures, archive root
-      outside the repo. Needs an Astra case update since the catalogue is Astra's.
-    - [ ] `tests/unit/test_audio_preparation.py` fixture cleanup retry (Windows
-      `WinError 145`); do not use `ignore_cleanup_errors`.
+    - [x] Parameterised prepared-output verifier `scripts/verify_prepared_output.py`
+      (backlog 1.1, 9 Nov): recomputes conditioning, metrics, flags, pause boundaries
+      and the retained optimum, rebuilds every clip, exact key sets, transcript and
+      Arabic-script scan, root contents, original FLAC hashes. 40 Claude-authored
+      tests; real PASS on the Punjabi (187 clips), CSALT conditioned (450) and
+      synthetic (50) outputs; review fixes applied. See `handoffs/prepared-verifier.md`.
+    - [x] Importer tightening (backlog 1.2, 9 Nov): `inspect_pcm` without the vacuous
+      publisher-hash claim and list `review_flags`; over-long rows (> ~104 s) excluded
+      before ranking, mirrored in the verifier; CLI exit-code, 48 kHz and stereo
+      fixtures; archive root outside the repo. Separate Claude-authored module
+      `tests/pnb/test_meta_pnb_followups.py`; the Astra catalogue is unchanged apart
+      from fixture teardown. Real pilot re-verified with the new rule: PASS.
+    - [x] Fixture cleanup retry `tests/fixture_cleanup.py` (WinError 5/32/145 only,
+      bounded, re-raises, reported on stderr; no `ignore_cleanup_errors`), used by
+      the preparation, conditioning, verifier and Punjabi suites.
 - [ ] 8. Prepare original data collection. Tughral reported approval obtained on
   4 October; the approved protocol and individual consent govern every activity.
   - [ ] 8a. Record the approval reference, body, protocol/form versions, scope
@@ -85,18 +114,32 @@ independent preparation. Do not treat elapsed time as approval.
   document missing identity/lineage that prevents final training-set assignment.
   Spec: `_bmad-output/implementation-artifacts/spec-split-proposals.md` (six gap
   decisions recorded 4 Oct).
-  - [ ] 9a. Implementation and Claude-authored baseline tests (`data/manifest/`,
+  - [x] 9a. Implementation and Claude-authored baseline tests (`data/manifest/`,
     `tests/unit/test_split_proposals.py`), real proposal run on the three local
     reports, validator pass. First run (v1) passed all checks but exposed that the
     CSALT synthetic benchmark shares all 17 speakers with CSALT genuine, so a
     `benchmark_only` partition swallowed every Urdu genuine clip. Decision 7 in the
-    spec: benchmark rows follow their speaker and stay ineligible by flag. v2 run in
-    progress, data-engineer role.
-  - [ ] 9d. Intake follow-up from 9a: two CSALT genuine source hashes appear under
-    two different publisher speaker folders (four duplicated clip hashes). The
-    proposer merges them; intake should annotate or quarantine the originals and
-    the datasheet must mention it.
-  - [ ] 9e. Apply the 5 Oct owner decision (PRD FR-D11) to data: regenerate the
+    spec: benchmark rows follow their speaker and stay ineligible by flag. Done
+    9 Nov (backlog 1.3/1.4): schema-2 proposal on the FR-D11-migrated reports is
+    valid; see `handoffs/policy-migration.md`.
+  - [x] 9d. Intake follow-up from 9a: two CSALT genuine source hashes appear under
+    two different publisher speaker folders (four duplicated clip hashes). Done
+    9 Nov (backlog 1.3): `csalt_pilot.annotate_duplicates` marks new intakes with
+    `duplicate_original_rows`/`_speakers` and summary counts; read-only count on the
+    v2 inventory confirms 2 hashes, 4 rows, all selected; recorded as a datasheet
+    item in `data/collect/README.md` (no dataset datasheet exists yet). Annotated,
+    not quarantined; existing v2 manifests unchanged.
+  - [x] Spec decision 7 implemented (9 Nov, backlog 1.3): benchmark rows follow their
+    speaker, proposal schema 2, benchmark/trainable tables, decision 9 (explicit
+    benchmark flags, content digest). 16 Claude-authored cases
+    in `tests/unit/test_split_proposals_cases.py` replace the Astra request (Astra
+    access ended); catalogue `docs/qa/split-proposal-test-cases.md`. Real v2 rerun
+    is backlog 1.4.
+  - [x] 9e (done 9 Nov, backlog 1.4: `data/manifest/migrate_policy.py`; three
+    migrated manifests re-prepared and verified PASS; schema-2 proposal valid with
+    637 trainable rows; see `handoffs/policy-migration.md`). **Deviation to confirm:**
+    CSALT publisher synthetic rows were kept benchmark-only (not trainable), unlike
+    the wording below; reason and shortcut risk in the handoff. Apply the 5 Oct owner decision (PRD FR-D11) to data: regenerate the
     CSALT genuine, CSALT synthetic and Meta pnb manifests into new versions with
     `cloning_status: permitted_public_corpus`, `training_eligible: true` and the
     approval/licence basis recorded; rerun the split proposal on them; keep the

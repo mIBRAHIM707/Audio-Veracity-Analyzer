@@ -23,7 +23,7 @@ FIELDS = ('clip_id','source_id','source_version','speaker_id','source_recording_
           'language','label','sha256','duration_s','licence_ref','use_status','split',
           'path','sample_rate','channels','pcm_bits','selected_for_pilot',
           'validation_status','review_flags','label_provenance','listening_status',
-          'cloning_status','use_scope','error')
+          'cloning_status','use_scope','duplicate_original_rows','duplicate_original_speakers','error')
 
 
 def validate_catalog(catalog):
@@ -87,9 +87,17 @@ def fetch_remote(entry, revision):
 
 
 def inspect_audio(payload, entry):
+    """Publisher-verified inspection; review_flags stay a JSON string for CSV-shaped inventories."""
     digest=hashlib.sha256(payload).hexdigest()
     if len(payload)!=entry['size'] or digest!=entry['lfs']['oid']:
         raise ValueError('Publisher size or SHA256 mismatch')
+    info=inspect_pcm(payload)
+    return {**info,'review_flags':json.dumps(info['review_flags'])}
+
+
+def inspect_pcm(payload):
+    """Signal inspection of a PCM16 WAV with no publisher claim; review_flags is a list."""
+    digest=hashlib.sha256(payload).hexdigest()
     with wave.open(io.BytesIO(payload),'rb') as audio:
         rate,channels,width,count=audio.getframerate(),audio.getnchannels(),audio.getsampwidth(),audio.getnframes()
         if not 8000<=rate<=192000 or channels not in (1,2) or width!=2:
@@ -113,7 +121,7 @@ def inspect_audio(payload, entry):
     if sum(quiet)/len(quiet)>.5: flags.append('mostly_quiet')
     if sum(abs(x)/32768>=.999 for x in values)/len(values)>.001: flags.append('possible_digital_clipping')
     if not 3<=count/rate<=6: flags.append('requires_duration_processing')
-    return {'sha256':digest,'duration_s':count/rate,'sample_rate':rate,'channels':channels,'pcm_bits':width*8,'review_flags':json.dumps(flags)}
+    return {'sha256':digest,'duration_s':count/rate,'sample_rate':rate,'channels':channels,'pcm_bits':width*8,'review_flags':flags}
 
 
 def safe_path(root, relative):
@@ -126,6 +134,26 @@ def safe_path(root, relative):
             raise ValueError('Symlink sources unsupported')
         current=current.parent
     return path
+
+
+def annotate_duplicates(rows):
+    """Todo 9d: mark verified originals whose exact bytes recur under other paths.
+
+    Publisher labels are kept; nothing is quarantined. Counts are strings (CSV) and
+    empty when the bytes are unique. Cross-speaker duplicates mean one recording is
+    published under two speaker folders, so speaker identity for it is uncertain.
+    """
+    paths,speakers={},{}
+    for row in rows:
+        if row['validation_status']=='verified':
+            paths.setdefault(row['sha256'],set()).add(row['path'])
+            speakers.setdefault(row['sha256'],set()).add(row['speaker_id'])
+    for row in rows:
+        verified=row['validation_status']=='verified'
+        shared=len(paths[row['sha256']]) if verified else 0
+        owners=len(speakers[row['sha256']]) if verified else 0
+        row['duplicate_original_rows']=str(shared) if shared>1 else ''
+        row['duplicate_original_speakers']=str(owners) if owners>1 else ''
 
 
 def run_pilot(catalog_path, source_root, output_root, per_speaker=20, fetch_bytes=None, expected_speakers=None):
@@ -196,6 +224,7 @@ def run_pilot(catalog_path, source_root, output_root, per_speaker=20, fetch_byte
         for task in as_completed(tasks):
             row,new=task.result(); rows.append(row); downloaded+=new
     rows.sort(key=lambda r:r['path'])
+    annotate_duplicates(rows)
     balanced=[r for r in rows if r['selected_for_pilot']=='true']
     counts={speaker:sum(r['speaker_id']==speaker for r in balanced) for speaker in sorted({e['path'].split('/')[1] for e in entries})}
     errors=[{'path':r['path'],'error':r['error']} for r in rows if r['validation_status']=='failed']
@@ -204,7 +233,10 @@ def run_pilot(catalog_path, source_root, output_root, per_speaker=20, fetch_byte
         'errors':len(errors),'balanced_complete':all(n==per_speaker for n in counts.values()),
         'selected_minutes':sum(r['duration_s'] for r in balanced)/60,
         'selected_bytes':sum(e['size'] for e in entries if any(r['path']==e['path'] for r in balanced)),
-        'review_flagged_selected':sum(json.loads(r['review_flags'])!=[] for r in balanced)}
+        'review_flagged_selected':sum(json.loads(r['review_flags'])!=[] for r in balanced),
+        'duplicate_original_hashes':len({r['sha256'] for r in rows if r['duplicate_original_rows']}),
+        'cross_speaker_duplicate_hashes':len({r['sha256'] for r in rows if r['duplicate_original_speakers']}),
+        'duplicate_selected_files':sum(bool(r['duplicate_original_rows']) for r in balanced)}
     summary['selected_native_formats']={fmt:sum(f'{r["sample_rate"]}Hz/{r["channels"]}ch/{r["pcm_bits"]}bit'==fmt for r in balanced)
         for fmt in sorted({f'{r["sample_rate"]}Hz/{r["channels"]}ch/{r["pcm_bits"]}bit' for r in balanced})}
     with (output_root/'inventory.csv').open('w',encoding='utf-8',newline='') as stream:

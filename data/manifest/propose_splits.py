@@ -14,14 +14,14 @@ import stat
 import sys
 
 try:
-    from .validate_splits import (HASH_FIELDS, check_rows, is_benchmark, lineage_errors,
-                                  publisher_partitions)
+    from .validate_splits import (BENCHMARK_RULE, HASH_FIELDS, check_rows, is_benchmark,
+                                  lineage_errors, publisher_partitions)
 except ImportError:  # direct script execution or spec-based test import
     sys.path.insert(0, str(Path(__file__).resolve().parent))
-    from validate_splits import (HASH_FIELDS, check_rows, is_benchmark, lineage_errors,
-                                 publisher_partitions)
+    from validate_splits import (BENCHMARK_RULE, HASH_FIELDS, check_rows, is_benchmark,
+                                 lineage_errors, publisher_partitions)
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2  # 2: benchmark rows follow their speaker (spec decision 7)
 RATIOS = (("train", 70), ("dev", 10), ("test", 20))  # integer percents; exact arithmetic
 MAX_REPORTS = 20
 MAX_REPORT_BYTES = 8_000_000
@@ -38,8 +38,9 @@ LIMITATIONS = (
     "placement is not training approval.",
     "Exact SHA-256 equality is the only duplicate signal; near-duplicates, re-encodes "
     "and reused voices are not detected.",
-    "A speaker group containing any benchmark-only row is placed in benchmark_only in "
-    "full, so its non-benchmark rows are unavailable to train, dev or test.",
+    "Benchmark-only rows follow their speaker group's partition (spec decision 7) and keep "
+    "benchmark_only true and training_eligible false; exclusion from training is carried "
+    "by those flags and the trainable table, not by placement.",
     "Small per-source speaker counts make 70/10/20 approximate; realised clip and "
     "second shares are reported, not targets.",
     "Codec copies and same-speaker synthetic lineage from consented participants do not "
@@ -98,9 +99,7 @@ def build_groups(rows):
 
 
 def group_decision(members):
-    """Rules in order: benchmark, publisher held-out (test over dev), else hashed."""
-    if any(is_benchmark(row) for row in members):
-        return "benchmark_only", "benchmark_only"
+    """Publisher held-out (test over dev), else hashed. Benchmark rows follow the group."""
     publisher = {value for row in members for value in publisher_partitions(row)}
     if publisher:
         return "publisher_held_out", "held_out_publisher_" + ("test" if "test" in publisher else "dev")
@@ -121,8 +120,7 @@ def propose(rows, seed):
         "\n".join([seed, *canonical]).encode("utf-8")).hexdigest()[:16]
     groups = build_groups(rows)
     decided, pools = {}, defaultdict(list)
-    detail = {"allocation": {}, "hash_linked_speaker_groups": [],
-              "publisher_split_conflicts": [], "benchmark_coupled_rows": 0}
+    detail = {"allocation": {}, "hash_linked_speaker_groups": [], "publisher_split_conflicts": []}
     for root, members in groups.items():
         keys = sorted({(row["source_id"], row["speaker_id"]) for row in members})
         label = "+".join(f"{source}|{speaker}" for source, speaker in keys)
@@ -130,8 +128,6 @@ def propose(rows, seed):
         if len(keys) > 1:
             detail["hash_linked_speaker_groups"].append(
                 {"group_key": label, "speakers": len(keys), "clips": len(members), "rule": rule})
-        if rule == "benchmark_only":
-            detail["benchmark_coupled_rows"] += sum(not is_benchmark(row) for row in members)
         if rule == "publisher_held_out" and any(
                 publisher_partitions(row) != (partition.rsplit("_", 1)[1],) for row in members):
             detail["publisher_split_conflicts"].append(
@@ -155,8 +151,9 @@ def propose(rows, seed):
     for root, members in groups.items():
         rule, partition, label = decided[root]
         output.extend({**row, "proposed_split": partition, "proposal_id": proposal_id,
-                       "proposal_seed": seed, "assignment_rule": rule, "group_key": label,
-                       "status": "proposal"} for row in members)
+                       "proposal_seed": seed, "group_key": label, "status": "proposal",
+                       "assignment_rule": BENCHMARK_RULE if is_benchmark(row) else rule}
+                      for row in members)
     output.sort(key=lambda r: (r["source_id"], r["speaker_id"], r["source_recording_id"],
                                r["path"], r["sha256"]))
     return proposal_id, output, detail
@@ -192,7 +189,10 @@ def build_report(proposal_id, seed, inputs, rows, detail, validation):
             "ratios_percent": dict(RATIOS),
             "order": "sha256(U+001F-joined seed, source_id, speaker_id) hex ascending per "
                      "source; merged groups order by their smallest member hash",
-            "rules": ["any benchmark-only row -> whole speaker group benchmark_only",
+            "rules": ["benchmark-only rows follow their speaker group's partition "
+                      "(benchmark_follows_speaker) and keep benchmark_only true and "
+                      "training_eligible false; trainable counts include only rows with "
+                      "training_eligible true that are not benchmark rows",
                       "any publisher dev/test row -> whole group held_out_publisher_<split>, "
                       "test over dev",
                       "remaining groups: largest remainder 70/10/20 per source, one per "
@@ -205,10 +205,12 @@ def build_report(proposal_id, seed, inputs, rows, detail, validation):
             "recordings": len({(r["source_id"], r["source_recording_id"]) for r in rows}),
             "groups": len({r["group_key"] for r in rows}),
             "partitions": validation["partitions"],
-            "benchmark_coupled_rows": detail["benchmark_coupled_rows"],
+            "benchmark_rows": sum(validation["benchmark_rows_by_partition"].values()),
+            "trainable_rows": sum(validation["trainable_rows_by_partition"].values()),
             "training_ineligible_placements": sum(
-                r.get("training_eligible") is False and r["assignment_rule"] == "hashed_speaker"
-                for r in rows)},
+                r.get("training_eligible") is False and not is_benchmark(r) for r in rows)},
+        "benchmark_rows_by_partition": validation["benchmark_rows_by_partition"],
+        "trainable_rows_by_partition": validation["trainable_rows_by_partition"],
         "allocation": detail["allocation"],
         "hash_linked_speaker_groups": detail["hash_linked_speaker_groups"],
         "publisher_split_conflicts": detail["publisher_split_conflicts"],

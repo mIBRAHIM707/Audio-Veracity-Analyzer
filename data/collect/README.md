@@ -117,6 +117,19 @@ explicitly unreviewed where no clip-specific review record exists. Preserve the
 original published partitions and source speaker IDs; all AVA splits remain
 `unassigned`. This genuine-only pilot is not yet a final training dataset.
 
+Known source duplicates (datasheet item, todo 9d). In the pinned revision, two
+genuine recordings are published byte-identically under two different speaker
+folders: 2 SHA-256 values, 4 inventory rows, all 4 in the balanced selection
+(read-only count on the v2 inventory, 9 November 2026). New intakes annotate every
+verified row whose bytes recur with `duplicate_original_rows` (rows sharing the
+bytes) and `duplicate_original_speakers` (distinct speaker folders, empty when
+one); the summary reports `duplicate_original_hashes`,
+`cross_speaker_duplicate_hashes` and `duplicate_selected_files`. Publisher labels
+are kept and nothing is quarantined, but speaker identity for those recordings is
+uncertain: do not use them as voice-cloning references, even after the FR-D11
+policy migration, until a human resolves which speaker folder is correct. The split proposer merges hash-linked speakers into one group, so the
+copies cannot straddle partitions. Existing v2 manifests are not rewritten.
+
 ## Separate existing-synthetic benchmark
 
 `csalt_synthetic.py` imports a small deterministic selection from both published

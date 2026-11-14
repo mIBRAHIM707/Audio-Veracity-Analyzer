@@ -1,7 +1,9 @@
 """Fictional PCM fixtures only; no real audio or main-repository writes."""
 
 import array
+import contextlib
 import hashlib
+import io
 import importlib.util
 import json
 from pathlib import Path
@@ -11,6 +13,8 @@ import tempfile
 import unittest
 from unittest.mock import patch
 import wave
+
+from tests.fixture_cleanup import cleanup_with_retry
 
 
 MODULE = Path(__file__).resolve().parents[2] / "data/prepare/prepare_audio.py"
@@ -23,7 +27,7 @@ RATE = 16_000
 class AudioPreparationTests(unittest.TestCase):
     def setUp(self):
         temporary = tempfile.TemporaryDirectory()
-        self.addCleanup(temporary.cleanup)
+        self.addCleanup(cleanup_with_retry, temporary)
         self.root = Path(temporary.name).resolve()
         self.sources = self.root / "sources"
         self.sources.mkdir()
@@ -289,6 +293,46 @@ class AudioPreparationTests(unittest.TestCase):
         repeat = subprocess.run(command, capture_output=True, text=True, timeout=15, check=False)
         self.assertNotEqual(repeat.returncode, 0)
         self.assertNotIn("Traceback", repeat.stderr)
+
+
+class FixtureCleanupRetryTests(unittest.TestCase):
+    """Claude-authored, 9 November 2026 (backlog 1.2): bounded cleanup retry, never ignored."""
+
+    class FlakyDirectory:
+        def __init__(self, failures, code=145):
+            self.failures, self.calls, self.code = failures, 0, code
+
+        def cleanup(self):
+            self.calls += 1
+            if self.calls <= self.failures:
+                raise OSError(self.code, "fictional cleanup failure")
+
+    def test_transient_cleanup_error_is_retried_until_removed(self):
+        delays, directory = [], self.FlakyDirectory(failures=2)
+        with contextlib.redirect_stderr(io.StringIO()) as stderr:
+            cleanup_with_retry(directory, sleep=delays.append)
+        self.assertEqual(stderr.getvalue().count("fixture cleanup retry"), 2)
+        self.assertEqual(directory.calls, 3)
+        self.assertEqual(delays, [0.2, 0.4])
+
+    def test_persistent_cleanup_error_still_fails_after_bounded_attempts(self):
+        delays, directory = [], self.FlakyDirectory(failures=99)
+        with self.assertRaises(OSError), contextlib.redirect_stderr(io.StringIO()):
+            cleanup_with_retry(directory, attempts=3, sleep=delays.append)
+        self.assertEqual(directory.calls, 3)
+        self.assertEqual(len(delays), 2)
+
+    def test_non_transient_cleanup_error_is_raised_without_retry(self):
+        delays, directory = [], self.FlakyDirectory(failures=1, code=2)
+        with self.assertRaises(OSError):
+            cleanup_with_retry(directory, sleep=delays.append)
+        self.assertEqual((directory.calls, delays), (1, []))
+
+    def test_real_directory_is_removed(self):
+        temporary = tempfile.TemporaryDirectory()
+        (Path(temporary.name) / "fictional.wav").write_bytes(b"RIFF")
+        cleanup_with_retry(temporary)
+        self.assertFalse(Path(temporary.name).exists())
 
 
 if __name__ == "__main__":

@@ -1,5 +1,16 @@
 # AVA current state
 
+## Current daily automation instruction — 6 November 2026
+
+The user approved the autonomous software phase order and daily noon–2 PM
+Asia/Karachi work. On `feat/4-daily-development`, commit verified tasks and push
+to its dedicated draft PR; never merge. Historical no-commit notes below no longer
+apply to that isolated worktree. Other pending edits remain in the original checkout.
+See `daily-backlog.md` and `autonomous-development-plan.md` for scope, and
+`../engineering/daily-development-prompt.md` for session rules. Docker is not
+installed on the setup machine: report it when required and do independent work.
+Setup progress/evidence is recorded in `handoffs/daily-scheduler.md` when finalized.
+
 Updated 4 October 2026. This is shared, reviewable project memory, not a transcript.
 The coordinator updates it after meaningful integration. Consult actual Git status
 and latest test reports before relying on a historical result below.
@@ -67,6 +78,311 @@ and about 50,000 original clips, excluding codec copies.
 
 ## Implemented locally
 
+- **Backlog 2.1 complete (9 Nov): bounded analysis service.** `services/inference/`
+  analyses one PCM16 WAV with the pinned pretrained AntiDeepfake MMS-300M CPU
+  baseline (hash-verified local load, no downloads): shared conditioning to 16 kHz,
+  4 s windows every 2 s, mean of full windows, fewer than two full windows →
+  `undetermined`, typed errors with HTTP hints (413, 422, 202 job, 503 busy, 500),
+  single-flight lock, explicit `uncalibrated_baseline` labelling. 19 Claude-authored
+  tests; real smoke on two clips (1-window genuine → undetermined; 3-window synthetic
+  benchmark → synthetic, load 24.8 s, scoring 6.5 s). No accuracy claim.
+- **Backlog 2.2 complete (9 Nov): local analysis API.** `services/api/app.py`
+  (FastAPI, pinned in `requirements-api.txt`): `POST /v1/analyze` (≤60 s sync, to
+  10 min as an in-memory job), `GET /v1/jobs/{id}`, `/healthz`, local
+  `/openapi.json`; 411/413/422/503/500 mapping; bounded uploads and job queue;
+  shutdown stops the worker. 7 Claude-authored tests. Jobs are not durable (5.2);
+  `/docs` pages off (CDN) is a recorded FR-A11 deviation.
+- **Backlog 2.3 complete (14 Nov): batch upload page (FR-U4).** `dashboard/` React
+  18.3.1 + TypeScript + Vite 5.4.11 with exact pins and lockfile, built to static files
+  the API serves on its origin (`create_app(..., dashboard_dir="dashboard/dist")`):
+  drag-and-drop, bounded job polling, verdict with the uncalibrated-baseline label,
+  FR-U3 SVG timeline, §1.4 limitations, same-origin CSP. 13 Claude-authored Playwright
+  cases (real API, fake detector; `npm run test:dashboard`) and 6 mount tests;
+  independent review fixed. Infrastructure only.
+- **Backlog 2.QA complete (14 Nov): real checkpoint through the page.** Local-only
+  Playwright project `real-model` (`npm run test:real-model`, gitignored
+  `.local/real-model-qa.json`): pinned AntiDeepfake checkpoint with `/readyz` warm-up,
+  public CSALT genuine and synthetic-benchmark audio, a >60 s job and damaged files;
+  the page shows exactly the API's result. 5 Claude-authored cases pass; review fixed.
+  Observations only (uncalibrated baseline, concatenated clips): genuine 24 s mean
+  0.000, synthetic 23 s mean 0.611; not an accuracy result.
+- **Backlog 7.2/8.2 progress (14 Nov catch-up 3): live pipeline metrics (FR-O6).**
+  `LivePipeline.metrics_snapshot()` (ID-free; every accepted window accounted for once:
+  dropped, cancelled, skipped, scored, lost, result error, not applied, waiting or in
+  the batcher), `PipelineStats` hand-over to the API, `/metrics` `ava_live_*` families
+  with snapshot age and validity. Review fixes: a failed batcher submit keeps the
+  window; per-direction state bound to `LiveCalls.token` so reused call IDs never get an
+  earlier call's windows. Fake detector only; not wired to a real tap or model.
+- **Backlog 10.1 progress (14 Nov catch-up 4): ONNX export and FR-M7 parity harness.**
+  `models/export/onnx_export.py`: FP32 opset-17 export with a dynamic batch (opset read
+  back, outside-repo, no-overwrite), CPU-only session with hash pin, I/O contract check,
+  parity harness (>= 100 windows, strict < 1e-3) and the pure INT8 -> static -> FP32
+  rule; `requirements-export.txt` pins onnx 1.23.2. Dynamic INT8 of MatMul/Gemm
+  (`quantize_int8_dynamic`) with a drift report. Finding: dynamic INT8 output depends
+  on batch partners (cross-call micro-batching question; INT8 EER must state its
+  batching). Static INT8 (`quantize_int8_static`, MinMax calibration, fixed scales)
+  is batch-independent by test. `checkpoint_parity.py` real run (8 layers of the
+  AntiDeepfake MMS-300M checkpoint, untrained seeded SLS head, 100 noise windows): FP32
+  ONNX parity max |logit diff| 4.95e-6 (< 1e-3); dynamic INT8 458 -> 153 MB, drift max
+  0.024 / mean 0.003 logits, no class flips. Graph numerics only; trained-head parity on
+  dev windows and dev EER remain. 8.QA: `benchmark_onnx.py`; on this laptop (4 threads,
+  batch 1) the 8-layer FP32 graph takes a median 0.69 s and dynamic INT8 0.43 s per 4 s
+  window (not box A1, untrained head; no §6.1 claim). 8.1: `services/inference/
+  onnx_detector.py` `OnnxBatchDetector` feeds an ONNX session to `LivePipeline`
+  (`per_window` required; True for dynamic INT8); tested through the real pipeline
+  with tiny exports. Open PRD/architecture question: per-window INT8 versus ADR-3
+  micro-batching for FR-I9 capacity. 7.2: live inference latency
+  histogram added to `/metrics` (1839139).
+- **Backlog 3.3 advanced (14 Nov): GSM 06.10 and AMR-NB codecs.**
+  `data/prepare/ffmpeg_codecs.py` through pinned ffmpeg 9.0.2 (winget user install,
+  GPL-3.0, Windows hash pinned): known-answer frame/mode checks, measured AMR frame
+  rule and 40-sample delay compensation, lineage with exact arguments; 19
+  Claude-authored tests (7 need the local ffmpeg; CI skips them). Same day: wired into
+  `augment.py` (and the training window loader), seeded frame loss (AMR NO_DATA,
+  GSM repeat_then_silence) and jitter from the G.711 plans, concealed once, with
+  G.711-compatible record names. Catch-up 3: per-clip codec mix (`codec_mix` spec,
+  seeded weighted choice per derivation clip ID recorded as `chain.codec_choice`,
+  per-codec counts, codec per window in the loader). Backlog 3.3 complete as file
+  pipeline infrastructure; Opus/G.729 belong to 3.4, RFC 4867 RTP payloads to 6.x.
+- **Backlog 3.1 in progress (9 Nov): offline/serving conditioning parity.**
+  `tests/unit/test_conditioning_parity.py` (Claude-authored) runs one WAV through
+  `prepare_audio.py --condition` and the analysis service: identical canonical PCM
+  hash and sample count for 16/8/48 kHz mono and 44.1/22.05 kHz stereo; prepared clip
+  offsets address the service's samples; both paths refuse PCM24, 3-channel and
+  6 kHz input. Recorded divergence: the service applies no peak normalization and
+  skips a final tail under 1.5 s. Open for 3.1: speaker-turn boundary contract.
+- **Backlog 3.3 in progress (9 Nov): G.711 file codec.** `data/prepare/codecs.py`
+  mu-law/A-law encode/decode (exhaustively equal to CPython 3.11 `audioop`) and an
+  8 kHz telephone roundtrip with lineage; seeded 0-5 % 20 ms packet loss with
+  silence/repeat concealment; recorded per-clip loss plans (`derive_loss`);
+  jitter as late-packet loss behind a fixed buffer with per-clip plans
+  (`derive_jitter`); since 10 Nov `telephone_roundtrip(loss_plan=, jitter_plan=)`
+  conceals lost and late packets as one mask and records both plus the union
+  (`packet_concealment`). Open for Tughral: the per-mechanism 5 % bounds let the
+  union exceed 5 % of a clip's packets; FR-D6 does not say whether 0-5 % bounds the
+  sum. GSM and AMR-NB remain. 3.2 VAD is blocked on an unprovisioned VAD
+  dependency/model. 11 Nov: `data/prepare/augment.py` wires noise (FR-D7) and the G.711
+  loss/jitter roundtrip over a published prepared root into new augmented-copy roots
+  with the chain recorded per clip, explicit concealment, content-based derivation IDs,
+  `counts_toward_clip_total: false` and a read-only whole-report rebuild check; 15
+  Claude-authored fixture tests, independent review fixed. Infrastructure only; no
+  real corpus was augmented. Open data decision: noise-clipping refusals can bias SNR
+  toward 20 dB on −3 dBFS parents (refusal SNRs are recorded).
+- **Backlog 4.1 complete (10 Nov): scoring configuration.** `services/scorer/config.py`
+  validates the FR-I4/§2.4 rules (both threshold pairs `0 < exit < enter <= 1`,
+  `0 < hop <= window`, window equal to the model card) plus labelled sanity rules,
+  with §7.3 defaults; `ConfigStore` gives calls immutable snapshots, serialized atomic
+  reloads from a mapping or a hardened JSON file, and a restart-stable fingerprint.
+  Deviation: no YAML parser or Pydantic is pinned, so JSON stands in. Open for the
+  PRD: ordering between suspicious and alert thresholds, `min_windows` upper bound,
+  agent-only scoring.
+- **Backlog 4.2 complete (10 Nov): per-direction scoring session.**
+  `services/scorer/session.py`: EMA (α from config, first window seeds), provisional
+  until `min_windows`, `undetermined` below it, the architecture §2.4 hysteresis
+  transitions with a 2-window alert streak, a new alert ID per alert, `ended_open`
+  for an alert open at the end. Pure logic; persistence/events are backlog 5. Open
+  for the PRD: FR-I7 `ended_open` wording for `suspicious`, threshold ordering,
+  end-of-call verdict vocabulary, `state.changed` as an internal event.
+- **Partial backlog 5.1, 8.1, 8.2, 9.3 (10 Nov), pure logic only.**
+  `services/events/` FR-A4 envelope and bounded non-blocking fan-out;
+  `services/inference/capacity.py` call gate (capacity refusal) and live-first
+  micro-batcher with a 25 % token bucket; `services/scorer/degraded.py` FR-I10 stride
+  controller and `services/scorer/pending.py` bounded per-call pending-window queue
+  that defines "behind" (a waiting window at acceptance; interpretation for the PRD);
+  `services/scorer/ordered.py` serialized in-order per-call boundary (phase-4 QA M1/L3);
+  `models/evaluation/metrics.py` EER, FAR at FRR 5 %, minDCF (costs required:
+  ASVspoof 5 Track 1 constants confirmed 14 Nov, see below), bootstrap, ECE, temperature, FR-M9 evidence curve,
+  FR-M5 subset table, reliability bins and FR-M10 per-dialect FAR. Unit suite 472 OK
+  (9 skips) on 10 Nov; daily report `docs/context/daily-runs/2026-11-10.md`. Blocked:
+  PostgreSQL/Redis need a driver/Redis decision (PostgreSQL 18 binaries present, the
+  architecture names 16); warm-up/threads need the exported model; capacity needs
+  measurement.
+- **Backlog 9.1 complete (12 Nov): AVA model harness.** `models/ava/` truncated
+  wav2vec 2.0 backbone (strict state truncation; tiny-model test shows equality with
+  the full model's first layers), SLS head (learned softmax layer weighting, 256-d
+  projection, attentive statistics pooling, 256-d embedding, 2 classes), FR-M8
+  mean-pool head, `float32[B,64000] -> logits[B,2], embedding[B,256]` with in-model
+  per-window layer norm, AdamW 2e-5/1e-3 with frozen-encoder epochs, class-weighted
+  CE and a layer-sweep harness. 28 Claude-authored tiny random-model tests;
+  independent review fixed (centred variance, whole-set eval loss, no decay on layer
+  logits/biases/norms, warm median timing). `models/ava/windows.py` loads FR-M11
+  windows (zero-pad; >4 s keeps the first 64,000 samples, to confirm) from conditioned
+  prepared roots or verified augmented roots: train split only, trainable rows only,
+  refuses split-shared speakers/source hashes, quarantined sources (unless allowed),
+  duplicates and altered clips; 12 Claude-authored fixture tests, review fixed. No
+  checkpoint run, no accuracy or capacity evidence; the real checkpoint is outside the
+  runner's allowed directory.
+- **Backlog 9.2 in progress (12 Nov): RawBoost.** `models/augmentation/rawboost.py`
+  re-implements RawBoost (Tak et al. 2022) in NumPy with the reference defaults and
+  modes 1-8, per-clip seeded draws and a record (seed, clip, parameters, NumPy version);
+  inputs must be in [-1, 1]. 16 Claude-authored tests (filter properties, FFT check,
+  SNR bounds, every mode's composition, normalization known answers, refusals);
+  review fixed. Not bit-parity with scipy (not installed). Unit suite 503 OK (9 skips).
+  `models/baselines/rawnet2.py` RawNet2 baseline in the ASVspoof 2021 layout on the
+  shared window and harness contract, `RAWNET2_TRAIN_CONFIG` (1e-4, decay 1e-4,
+  weights 0.1/0.9); 13 Claude-authored random-weight tests; review fixed. Written
+  without the upstream source: verify fidelity before reporting baseline numbers.
+- **Backlog 7.2 progress (12 Nov): FR-A8 readiness and metrics.** `services/api/app.py`
+  adds `/readyz` (first call runs `AnalysisService.warm_up()`: one silent window with
+  validated logits; sticky; 503 with reason when busy before warm-up, on detector
+  failure or when the job worker stopped) and `/metrics` in Prometheus text 0.0.4.
+  Known gaps: the model still loads lazily (FR-O4 "fail loudly at startup" not met;
+  use a startup probe or longer timeout in k3s), readiness does not revert after
+  later detector faults, `ava_analysis_seconds` is a summary not the planned stage
+  histograms, and FR-O6 telephony metrics are absent. Unit suite 514 OK (2 skips)
+  with API dependencies.
+- **Backlog 5.3 progress (12 Nov): no-audio-retention default verified on the API.**
+  `tests/unit/test_api_no_audio_retention.py` shows uploads over 1 MB really spool to
+  a temporary file that is gone after the request, job records keep no raw or decoded
+  audio after completion or shutdown, and responses are small and filename-free. Not
+  covered: process memory, logs, swap, other framework versions; on Linux the spool
+  check skips. Unit suite 517 OK (2 skips).
+- **Backlog 5.2 progress (14 Nov): FR-A3 calls read model and FR-A4 WebSocket.**
+  `services/calls/registry.py` builds the call list from published FR-A4 envelopes
+  (30 min of each call at full resolution, older points in 10 s per-direction buckets,
+  alert lifecycle incl. `ended_open`, per-call stale/duplicate rejection, bounded
+  calls/points/buckets/alerts, idle calls flagged `stale` and evicted only under slot
+  pressure). `services/api/app.py` serves `GET /v1/calls`, `GET /v1/calls/{id}` and
+  `WS /v1/events` (call filter, `stream.gap` on overflow, 1013 at the subscriber limit,
+  send timeout) when given an in-process `EventHub`. 25 Claude-authored tests, two
+  independent review rounds fixed. Not done: scorer-to-FR-A4 mapping, Redis,
+  PostgreSQL history, authentication; unit suite with API deps 542 OK (2 skips).
+  Later the same day: `services/scorer/publish.py` maps scorer events to FR-A4
+  (call-level state on every `score.updated`, unscored update for the quality gate,
+  call-level `call.ended` summing speech seconds) and `services/scorer/live.py`
+  owns live calls (CallGate admission with `system.health` capacity refusal, config
+  snapshot per call, apply+publish under a per-call lock, FR-I11 late-result discard,
+  `monitor_lost` end of all calls). 29 Claude-authored tests, three review rounds
+  fixed; still not wired to a tap or inference loop, no Redis/PostgreSQL. Unit suite
+  with API deps 571 OK (2 skips).
+- **Backlog 5.QA progress (14 Nov): in-process live-path integration.** Three
+  Claude-authored tests drive pipeline -> LiveCalls -> hub -> API (registry,
+  WebSocket, metrics) with a fake detector: alert lifecycle, capacity refusal event,
+  end reasons, late result after `monitor_lost`, detector outage. No telephony,
+  Redis/PostgreSQL or restart recovery. Unit suite 607 OK (2 skips).
+- **Owner decision (Tughral, 14 Nov 13:22, commit b4db2b7):** scheduled sessions may
+  install the free/open-source software the backlog needs (pinned, licence recorded,
+  stored outside Git); earlier missing-package blockers are superseded. Installs needing
+  admin rights, reboots or interactive prompts are recorded for a human.
+- **Backlog 3.QA progress (14 Nov catch-up): phase-3 audio-path QA.**
+  `docs/qa/phase-3-qa.md` (independent conditional pass as infrastructure; file-mode
+  sample parity proven). Fixed: one plain-PCM fmt rule (`data/prepare/wav_format.py`)
+  for preparation, augmentation, the analysis service and the verifier; inflated
+  header sizes refused before duration routing; nested JSON as ValueError; empty
+  quarantine errors; augmented copies start `unreviewed`. 14 Claude-authored tests.
+  Open: §2.2 8 kHz batch rule and normalization unit (M1, PRD decision).
+- **Backlog 3.2 progress (14 Nov catch-up): FR-I3 speech windows (fake VAD).**
+  `services/scorer/speech_windows.py` excludes non-speech frames (time still advances),
+  windows the speech-only stream exactly like file mode, marks partial windows below
+  2.5 s of speech not scorable, reports no-speech time; a VAD fault drops that audio
+  and resets the VAD. 11 Claude-authored tests; review fixed. Silero VAD 6.2.3 ONNX
+  (MIT, hash-pinned, local under `D:/AVA-Data/models/silero-vad/6.2.3/`) runs through
+  `services/inference/silero_vad.py` on onnxruntime 1.32.0 CPU; it matches the
+  reference wrapper frame by frame (atol 1e-5) on synthetic audio. VAD accuracy on
+  Urdu/Punjabi telephone speech is not measured. `services/scorer/speech_feed.py`
+  connects windows to the live pipeline (call-level `no_speech`, tails before the end,
+  VAD speech seconds at the end, faults contained). Backlog 3.2 checked; the tap
+  feeding it is 6.x. Unit suite with audio, API and retention deps 662 OK (3 skips);
+  model tests 3 OK.
+- **Backlog 5.3 progress (14 Nov catch-up): AES-256-GCM for FR-O5 snippets.**
+  `AesGcmSealer` on pinned `cryptography==50.0.2` (`requirements-retention.txt`), key file
+  outside the repository, `open_snippet` authenticates header/alert binding; 11
+  Claude-authored tests incl. NIST GCM known answers; review fixed. Unit suite with
+  audio, API and retention deps 632 OK (3 skips). Key provisioning/rotation open.
+- **Backlog 5.3 progress (14 Nov): FR-O5 snippet retention without encryption.**
+  `services/retention/snippets.py` implements the retention rules (default off,
+  policy fixed at call start, 30 s ring per scored direction, exactly one sealed file
+  per alert ID, TTL and purge-when-off cleanup, failures never raised). AES-256-GCM is
+  blocked on a crypto dependency, so the store refuses to run in production. 11
+  Claude-authored tests with an insecure test sealer; review fixed.
+- **Backlog 8.1/8.2 progress (14 Nov): live inference loop wired (fake detector).**
+  `services/scorer/pipeline.py` connects per-direction pending queues and stride
+  control, the micro-batcher, a batched detector and `LiveCalls` with one window per
+  direction in flight, so slow inference grows the stride rather than a queue;
+  `unmonitored` published at the cap; cancellation and fault containment. 17
+  Claude-authored tests; review fixed. No real detector, threads or tap yet.
+- **Backlog 7.2 progress (14 Nov): FR-O6 metrics subset.** `/metrics` histograms for
+  analysis time and per-stage time (decode, condition, inference; model load
+  excluded, verified with a stepping clock) and live-call gauges/counters from the
+  call registry without IDs. 5 Claude-authored tests; the 12 Nov parser now checks
+  histogram buckets. Unit suite 576 OK (2 skips).
+- **Backlog 8.QA progress (12 Nov): FP32 CPU proxy timings.** `models/ava/benchmark_cpu.py`
+  times the real-size truncated MMS-300M + SLS with random weights. On the dev laptop
+  (Intel family 6 model 140, 4 physical/8 logical CPUs, torch 2.8.0+cpu, 4 threads,
+  batch 1, 3 interleaved rounds x 7 calls) medians per 4 s window were 4L 0.46 s, 6L
+  0.56, 7L 0.62, 8L 0.65, 10L 0.74, 12L 0.81 (p95 0.58-0.96 s; RTF medians 0.12-0.20).
+  Two earlier single-round runs on the same host gave medians up to 1.26 s with one
+  12.7 s outlier and an unstable cut order. FP32 PyTorch eager, random weights, a
+  noisy laptop: no PRD §6.1 target is met or missed and INT8 latency is not bounded.
+  INT8/ONNX is blocked: onnx and onnxruntime are not installed or cached.
+- **Backlog 9.3 progress (12 Nov): report generator.** `models/evaluation/report.py`
+  scores loaded windows (`p_synthetic = sigmoid((l_syn - l_gen)/T)`), builds the FR-M5
+  subset table (language, codec, dialect, generator family, source partition, source),
+  ECE/reliability with a required temperature status, optional FR-M10 dialect FAR,
+  and writes new JSON outside the repository; windows now carry codec and provenance.
+  11 Claude-authored tests, review fixed. FR-M5 (e) code-switched and (g) phone-call
+  subsets lack manifest fields. 14 Nov: minDCF costs confirmed from the ASVspoof 5
+  Evaluation Plan v0.6 Table 1 (Track 1: C_miss 1, C_fa 10, pi_spf 0.05) and exposed
+  as `asvspoof5_track1_costs()` / `ASVSPOOF5_TRACK1_SOURCE`; PRD FR-M5 and
+  architecture §4.5 corrected from "DF-track" to Track 1.
+- **Phase 4 QA (10 Nov): conditional pass as infrastructure** (`docs/qa/phase-4-qa.md`).
+  The scorer objects are single-owner and not thread-safe (documented); backlog 5 must
+  serialize per call, reject reordered/duplicate results and copy event data on
+  publish. Ten interpretation choices await PRD decisions.
+- **Backlog 4.3 complete (10 Nov): call-level scoring.** `services/scorer/call.py`
+  scores only configured directions (caller by default), starts the agent direction
+  at the human answer (IVR windows ignored), drops windows over the FR-I2 10 %
+  concealment gate and marks the call `quality=low`, and reports the more severe
+  direction with the driving direction. Interpretations awaiting the PRD: quality
+  stays low for the call, ties go to the caller, a call is `undetermined` unless every
+  scored direction has enough evidence or one is suspicious/alert. `no_speech`,
+  `unmonitored` and answer detection belong to 3.2, 8.2 and 6.
+- **Backlog 3.4 in progress (9 Nov): additive noise at SNR (FR-D7).**
+  `data/prepare/noise.py` mixes same-rate PCM16 noise at 0-20 dB whole-clip SNR
+  from a seeded, recorded offset with clipping and achieved SNR recorded, plus
+  per-clip SNR/seed plans (`derive_noise`, `mix_planned`); 18 Claude-authored tests.
+  Library only: no noise corpus, RIRs, speech-active SNR or manifest wiring yet.
+- **Backlog 1.1 complete (9 Nov, daily branch): prepared-output verifier.**
+  `scripts/verify_prepared_output.py` re-derives every `prepare_audio.py` output
+  without importing it: conditioning, metrics and flags (exact float sums), pause
+  boundaries and the retained-sample optimum (tie-break independent), byte-exact
+  clips, exact field sets, summary totals, root contents, original FLAC hashes and
+  a transcript/Arabic-script scan. Read-only PASS on the Punjabi (187 clips), CSALT
+  conditioned (450) and synthetic benchmark (50) outputs, matching earlier totals.
+  40 Claude-authored tests; independent review findings fixed. The exact-mode CSALT
+  pilot v2 cannot be re-verified: its input manifest is not on disk.
+  See `handoffs/prepared-verifier.md`.
+- **Backlog 1.2 complete (9 Nov): Punjabi importer follow-ups and cleanup fix.**
+  `csalt_pilot.inspect_pcm` gives signal inspection without a publisher claim
+  (CSALT `inspect_audio` output unchanged); Punjabi `review_flags` are now lists;
+  rows declared longer than ~104 s are excluded before ranking (counted as
+  `excluded_over_duration_bound`, a speaker losing all rows fails before output),
+  mirrored in `scripts/verify_pnb_pilot.py`; archive root must be outside the repo.
+  The real 12-row pilot re-verifies PASS under the new rule (selection unchanged).
+  Intermittent Windows WinError 145 fixture-cleanup errors are handled by the
+  bounded `tests/fixture_cleanup.py` retry. Existing pilot manifests keep string
+  flags; only new imports change.
+- **Backlog 1.3 complete (9 Nov): split proposals at schema 2.** Spec decision 7
+  is implemented: benchmark rows follow their speaker (`benchmark_follows_speaker`)
+  and keep `benchmark_only: true`/`training_eligible: false`; there is no
+  `benchmark_only` partition; reports carry benchmark and trainable tables.
+  Decision 9 (coordinator): benchmark scope must be explicit, and the validator
+  recomputes the `proposal_id` content digest. 16 Claude-authored cases plus 20
+  updated baseline tests. Todo 9d: CSALT intake annotates duplicate originals; the
+  real v2 inventory has 2 cross-speaker duplicate hashes (4 rows, all selected).
+  Open: benchmark-only speaker groups still take allocation slots (not material now).
+- **Backlog 1.4 complete (9 Nov): FR-D11 policy applied to data (todo 9e).**
+  `data/manifest/migrate_policy.py` wrote policy-versioned copies
+  (`fr-d11-2026-10-05`) of the CSALT genuine (340 rows trainable), CSALT synthetic
+  benchmark (68, still excluded) and Meta pnb (12 trainable) manifests; consent
+  status unchanged. Re-prepared outputs match the earlier totals and verify PASS.
+  Split proposal v2 (schema 2, seed `ava-split-2026-11-09`): 687 rows, 23 speakers
+  in 22 groups, train/dev/test 520/75/92 rows, 637 trainable, zero crossings. This
+  supersedes the v1 proposals for planning; it is a proposal, not an accepted
+  split. CSALT publisher synthetic rows stay benchmark-only, so all 637 trainable
+  rows (Urdu and Punjabi) are genuine until AVA-generated fakes exist (D11 shortcut risk;
+  deviation from todo 9e wording awaits Tughral). Use the `-frd11-r2` outputs.
+  See `handoffs/policy-migration.md`.
 - **Todo 8b complete: collection preparation written; 8a and 8c blocked on the
   approval document.** `docs/data-collection/collection-plan.md` lists the eight
   fields only the approval can supply (reference, body, protocol and form

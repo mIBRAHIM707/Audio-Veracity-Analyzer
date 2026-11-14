@@ -25,9 +25,10 @@ human approval. See `data/collect/README.md` for scope and the balanced manifest
   workflows. Do not reinstall or upgrade it without an intentional version change.
 - Project agents are in `.claude/agents/`; their detailed contracts are shared in
   `docs/agents/`. Use only the agents needed for the bounded task.
-- `ava-test-designer` in Claude is an Astra handoff role, not an OpenAI model
-  running inside Claude. GPT-6 Astra test design runs in Codex; Claude can execute
-  the resulting cases with the same Playwright/Python commands.
+- Since 8 November 2026 Claude Code is the only development client and designs
+  test cases itself (Claude-authored label). The daily scheduler runs Claude
+  headless; see `scripts/automation/README.md`. `ava-test-designer` remains for
+  structured test-design handoffs.
 - Neither tool's private conversation history is the source of project truth.
   Shared state, decisions, tests, and per-task handoffs must live in the repository.
 

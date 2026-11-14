@@ -1,0 +1,6 @@
+# Local analysis API (backlog 2.2). CPU only; no runtime downloads. Python 3.11.
+-r requirements-audio.txt
+fastapi==0.115.6
+python-multipart==0.0.20
+httpx==0.28.1
+uvicorn==0.32.1

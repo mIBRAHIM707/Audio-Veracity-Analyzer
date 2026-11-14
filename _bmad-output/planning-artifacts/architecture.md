@@ -271,7 +271,7 @@ AASIST and RawNet2 (raw-waveform) and XLS-R + AASIST with RawBoost (the standard
 
 ### 4.5 Evaluation outputs
 
-- EER, minDCF (ASVspoof 5 DF-track cost) and FAR at FRR = 5% on every PRD FR-M5 partition, with 95% bootstrap intervals.
+- EER, minDCF (ASVspoof 5 Track 1 cost, values in PRD FR-M5) and FAR at FRR = 5% on every PRD FR-M5 partition, with 95% bootstrap intervals.
 - Expected Calibration Error after temperature scaling.
 - **Time-versus-evidence curve** (PRD FR-M9): EER and FAR as a function of 1, 2, 3, 4 and 6 windows of speech, per codec, from which N is chosen.
 - **Per-dialect FAR** (PRD FR-M10) on dialect-held-out genuine sets meeting the 10-speaker, 500-clip floor.

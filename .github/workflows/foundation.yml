@@ -8,6 +8,17 @@ permissions:
   contents: read
 
 jobs:
+  daily-runner:
+    runs-on: windows-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Scheduler logic and Windows process containment
+        run: python -m unittest discover -s tests/automation -v
+
   foundation:
     runs-on: ubuntu-latest
     timeout-minutes: 15
