@@ -58,6 +58,16 @@
   with a latency re-benchmark). Pure; EERs are measured elsewhere
   (`models/evaluation`).
 
+`checkpoint_parity.py` runs the above on the real AntiDeepfake MMS-300M backbone: it
+loads the hash-verified local checkpoint through `models/smoke/antideepfake.py` (no
+download), truncates to `--kept-layers`, adds a seeded untrained SLS head (no
+AVA-trained head exists yet), exports FP32 into a new directory outside the
+repository, runs parity on 100 seeded noise windows and, with `--int8`, makes the
+dynamic INT8 model and reports its drift. `report.json` records provenance, hashes,
+parity, timings, versions and limitations; an `INCOMPLETE` marker stays in the
+directory if the run fails (consume a report only without it). It checks graph numerics only, with no
+accuracy or latency claim; the loader is injectable and tested with a tiny backbone.
+
 Limits: the model's Python input checks (shape, finite samples) are traced as
 constants, so the ONNX graph does not refuse NaN or wrong shapes by itself; serving
 must validate windows before `session.run`. Other known limits: `open_session` and

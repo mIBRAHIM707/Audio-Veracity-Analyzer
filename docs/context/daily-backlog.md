@@ -303,9 +303,13 @@ items needing that data are listed at the end and stay out of the queue.
   review fixed. Finding: dynamic INT8 output
   depends on batch partners (cross-call micro-batching question for the PRD). Then
   static INT8 (`quantize_int8_static`, QOperator, MinMax calibration with recorded set
-  hash; batch-independent by test); 7 Claude-authored model tests, review pass.
-  Remaining: real-checkpoint export and parity on dev windows, INT8 latency and dev-EER
-  measurement (with the batching policy and a disjoint calibration set).
+  hash; batch-independent by test); 7 Claude-authored model tests, review pass. Then
+  `models/export/checkpoint_parity.py`: real AntiDeepfake MMS-300M backbone truncated,
+  seeded untrained SLS head, FP32 export + parity on noise windows, optional dynamic
+  INT8 drift, report with INCOMPLETE marker; 8 Claude-authored tests with an injected
+  loader; real 8-layer run recorded in the 14 Nov report. Remaining: the AVA-trained
+  head and parity on real dev windows, INT8 latency and dev-EER measurement (with the
+  batching policy and a disjoint calibration set).
 - [ ] 10.2 Model-card generator, container/Compose and deployment manifests.
 - [ ] 10.QA Reproducible startup, CPU parity where measurable, rollback/readiness.
 
