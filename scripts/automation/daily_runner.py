@@ -205,13 +205,18 @@ ALLOWED_TOOLS = (
     "Bash(npm install:*)", "Bash(npm ci:*)", "Bash(npm run:*)", "Bash(npx playwright install:*)",
     "Bash(winget install:*)", "Bash(winget list:*)", "Bash(winget search:*)", "Bash(winget show:*)",
     "Bash(git clone:*)", "Bash(git check-ignore:*)",
+    # 14 Nov 2026 (later): sessions must see CI results; owner allowed web research and Docker.
+    "Bash(gh run list:*)", "Bash(gh run view:*)", "Bash(gh pr checks:*)",
+    "Bash(docker:*)", "Bash(wsl --status)", "Bash(wsl --list:*)",
+    "WebFetch", "WebSearch",
     "Bash(gh pr view:*)", "Bash(gh pr list:*)", "Bash(gh pr edit:*)",
     "Bash(gh issue view:*)", "Bash(gh issue list:*)", "Bash(gh issue create:*)",
 )
 DENIED_TOOLS = (
     "Bash(gh pr merge:*)", "Bash(git push --force:*)", "Bash(git push -f:*)",
     "Bash(git reset --hard:*)", "Bash(git clean:*)", "Bash(git checkout main:*)",
-    "WebFetch", "WebSearch",
+    "Bash(gh run rerun:*)", "Bash(gh run cancel:*)", "Bash(gh workflow:*)",
+    "Bash(docker login:*)", "Bash(docker push:*)", "Bash(docker system prune:*)",
 )
 
 

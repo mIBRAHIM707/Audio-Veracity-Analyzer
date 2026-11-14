@@ -33,6 +33,10 @@ the globally active `gh` account cannot break PR edits; no token is stored.
 pinned versions committed, licences and hashes recorded, weights and corpora under
 `D:/AVA-Data`, nothing that needs administrator rights. Merge, force push, reset,
 clean and web tools stay denied.
+Later on 14 November the owner also allowed web research (WebSearch, WebFetch) and
+Docker (`docker` commands; registry login and image push denied). Sessions can now
+read GitHub check results (`gh run list/view`, `gh pr checks`) and must fix a failing
+check before new work; rerunning or editing workflows is denied.
 Sessions also enable Claude Code's PowerShell tool, and every Bash allow/deny rule is
 mirrored onto it, because this host's Git Bash is missing `usr\bin\bash.exe`.
 

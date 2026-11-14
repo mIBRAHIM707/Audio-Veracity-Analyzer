@@ -285,7 +285,7 @@ class SchedulerTests(unittest.TestCase):
         self.assertEqual(result, 0)
         for call in launch.call_args_list:
             self.assertGreater(call.args[3], 0)
-            self.assertLessEqual(call.args[3], 1)
+            self.assertLessEqual(call.args[3], 1.000001)  # monotonic subtraction rounding (CI, 14 Nov 2026)
 
     def test_invalid_duration_never_launches(self):
         for value in ("0", "-1", "nan", "inf", "-inf", "7201", "text"):
@@ -374,7 +374,16 @@ class SchedulerTests(unittest.TestCase):
             for rule in ("gh pr merge:*", "git push --force:*", "git push -f:*", "git reset --hard:*", "git clean:*"):
                 self.assertIn(f"{shell}({rule})", denied)
         self.assertFalse(any("uninstall" in tool or "sudo" in tool or "runas" in tool for tool in allowed))
-        self.assertNotIn("WebFetch", allowed)
+        # Claude-authored (14 Nov 2026, later): CI visibility, web research and Docker allowed
+        # by the owner; publishing images, registry login and CI control stay denied.
+        for rule in ("gh run list:*", "gh run view:*", "gh pr checks:*", "docker:*"):
+            self.assertIn(f"PowerShell({rule})", allowed)
+        self.assertIn("WebFetch", allowed)
+        self.assertIn("WebSearch", allowed)
+        self.assertNotIn("WebFetch", denied)
+        for shell in ("Bash", "PowerShell"):
+            for rule in ("docker push:*", "docker login:*", "gh run rerun:*", "gh workflow:*"):
+                self.assertIn(f"{shell}({rule})", denied)
 
     def test_final_message_extracted_from_stream_json_or_absent(self):
         log, out = self.root / "s.jsonl", self.root / "s.md"
