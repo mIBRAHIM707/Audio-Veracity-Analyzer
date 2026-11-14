@@ -173,6 +173,45 @@ class InjectedRunnerTests(unittest.TestCase):
                 os.environ['AVA_FFMPEG'] = previous
 
 
+def amr_stream(codec, count):
+    """A syntactically valid storage stream of `count` frames (payload zeros)."""
+    bit_rate = fc.CODECS[codec]['bit_rate']
+    frame = bytes([fc.AMR_MODES[bit_rate] << 3 | 0x04]) + bytes(fc.AMR_FRAME_BYTES[bit_rate] - 1)
+    return fc.AMR_MAGIC + frame * count
+
+
+class AmrFrameLossTests(unittest.TestCase):
+    """Claude-authored, 14 Nov 2026: stream-level AMR frame loss (no ffmpeg needed)."""
+
+    def test_mask_record_and_no_data_positions_match_the_g711_rule(self):
+        from data.prepare.codecs import _loss_mask
+        stream = amr_stream('amr_nb_12.2', 400)
+        out, record = fc.drop_amr_frames(stream, 'amr_nb_12.2', 0.05, 99)
+        lost, expected = _loss_mask(400, 0.05, 99)
+        self.assertEqual({k: record[k] for k in expected}, expected)
+        self.assertGreater(record['lost_packets'], 5)
+        frames = fc._amr_frames(out, 'amr_nb_12.2')
+        self.assertEqual(len(frames), 400)
+        self.assertEqual([f == bytes([fc.AMR_NO_DATA]) for f in frames], list(lost))
+        self.assertEqual(record['concealment'], fc.FRAME_LOSS_CONCEALMENT)
+        self.assertEqual(fc.drop_amr_frames(stream, 'amr_nb_12.2', 0.05, 99), (out, record))
+        self.assertEqual(fc.drop_amr_frames(stream, 'amr_nb_12.2', 0.0, 1)[0], stream)
+
+    def test_refusals(self):
+        stream = amr_stream('amr_nb_4.75', 20)
+        for args in (('gsm', 0.01, 1), ('amr_nb_4.75', 0.06, 1), ('amr_nb_4.75', 0.01, -1),
+                     ('amr_nb_4.75', True, 1), ('amr_nb_7.4', 0.01, 1)):
+            with self.assertRaises((ValueError, fc.CodecToolError), msg=args):
+                fc.drop_amr_frames(stream if args[0] != 'gsm' else bytes(33), *args)
+        lossy, _ = fc.drop_amr_frames(amr_stream('amr_nb_4.75', 400), 'amr_nb_4.75', 0.05, 3)
+        with self.assertRaisesRegex(ValueError, 'already'):
+            fc.drop_amr_frames(lossy, 'amr_nb_4.75', 0.05, 3)
+        with self.assertRaises(fc.CodecToolError):
+            fc._amr_frames(stream[:-1], 'amr_nb_4.75')
+        with self.assertRaises(fc.CodecToolError):
+            fc._amr_frames(fc.AMR_MAGIC + bytes([0x7C & ~0x04]), 'amr_nb_4.75')  # NO_DATA with Q=0
+
+
 @unittest.skipIf(real_ffmpeg_path() is None and os.environ.get('AVA_REQUIRE_FFMPEG') != '1',
                  'pinned ffmpeg 9.0.2 not installed (set AVA_FFMPEG; AVA_REQUIRE_FFMPEG=1 makes this a failure)')
 class RealFfmpegTests(unittest.TestCase):
@@ -265,6 +304,66 @@ class RealFfmpegTests(unittest.TestCase):
         decoded8, record8 = fc.telephone_codec_roundtrip(tone(1.0), 'gsm', self.ffmpeg, rate=8000)
         self.assertEqual(record8['resampler'], 'bypass')
         self.assertEqual(len(decoded8), 16000)
+
+    def test_amr_frame_loss_is_concealed_by_the_decoder_and_keeps_timing(self):
+        from data.prepare.codecs import derive_loss
+        rng = np.random.default_rng(5)
+        pcm = np.rint(np.convolve(rng.normal(0, 3000, 16000), np.ones(4) / 4, mode='same')).astype('<i2').tobytes()
+        plan = next(p for p in (derive_loss(1, f'clip-{i}') for i in range(200))
+                    if p['loss_rate'] > 0.03)
+        clean, _ = self.ffmpeg.roundtrip(pcm, 'amr_nb_12.2')
+        lossy, record = self.ffmpeg.roundtrip(pcm, 'amr_nb_12.2', loss_plan=plan)
+        loss = record['frame_loss']
+        self.assertEqual(len(lossy), len(pcm))
+        self.assertEqual((loss['clip_id'], loss['loss_rate'], loss['concealment']),
+                         (plan['clip_id'], plan['loss_rate'], fc.FRAME_LOSS_CONCEALMENT))
+        self.assertGreater(loss['lost_packets'], 0, 'pick a plan that loses frames')
+        from data.prepare.codecs import _loss_mask
+        lost, _ = _loss_mask(record['encoded_frames'], plan['loss_rate'], plan['seed'])
+        first = int(np.flatnonzero(lost)[0])
+        a, b = np.frombuffer(clean, dtype='<i2'), np.frombuffer(lossy, dtype='<i2')
+        cut = max(first * 160 - fc.CODEC_DELAY_SAMPLES['amr_nb_12.2'], 0)
+        self.assertTrue(np.array_equal(a[:cut], b[:cut]), 'audio before the first lost frame must not change')
+        self.assertFalse(np.array_equal(a, b))
+        region, reference = b[cut:cut + 160].astype(np.float64), a[cut:cut + 160].astype(np.float64)
+        self.assertEqual(len(region), 160, 'pick a plan whose first loss is inside the clip')
+        self.assertFalse(np.array_equal(region, reference))
+        rms = np.sqrt(np.mean(region ** 2))
+        self.assertGreater(rms, 0.02 * np.sqrt(np.mean(reference ** 2)), 'concealed, not muted')
+        self.assertEqual(record['decoded_samples_before_alignment'], 160 * record['encoded_frames'])
+        self.assertNotEqual(record['received_sha256'], record['encoded_sha256'])
+        self.assertEqual(loss['applied_via'], 'amr_no_data_frames')
+        again, record2 = self.ffmpeg.roundtrip(pcm, 'amr_nb_12.2', loss_plan=plan)
+        self.assertEqual((again, record2), (lossy, record))
+        low, low_record = self.ffmpeg.roundtrip(pcm, 'amr_nb_4.75', loss_plan=plan)
+        self.assertEqual(len(low), len(pcm))
+        self.assertGreater(low_record['frame_loss']['lost_packets'], 0)
+        self.assertNotEqual(low, self.ffmpeg.roundtrip(pcm, 'amr_nb_4.75')[0])
+
+    def test_plain_decode_refuses_no_data_frames(self):
+        encoded = self.ffmpeg.encode(tone(0.5), 'amr_nb_12.2')
+        lossy, _ = fc.drop_amr_frames(encoded, 'amr_nb_12.2', 0.05, 4)
+        all_lost = fc.AMR_MAGIC + bytes([fc.AMR_NO_DATA]) * 26
+        for stream in (all_lost,) + ((lossy,) if lossy != encoded else ()):
+            with self.assertRaises(ValueError):
+                self.ffmpeg.decode(stream, 'amr_nb_12.2')
+        with self.assertRaises(ValueError):
+            self.ffmpeg.decode(all_lost, 'amr_nb_12.2', allow_lost_frames=True)
+
+    def test_frame_loss_plan_validation(self):
+        from data.prepare.codecs import derive_loss
+        plan = derive_loss(1, 'clip')
+        with self.assertRaisesRegex(ValueError, 'AMR-NB only'):
+            self.ffmpeg.roundtrip(tone(0.2), 'gsm', loss_plan=plan)
+        with self.assertRaisesRegex(ValueError, 'derive_loss'):
+            self.ffmpeg.roundtrip(tone(0.2), 'amr_nb_4.75', loss_plan={**plan, 'loss_rate': 0.05})
+        decoded, record = fc.telephone_codec_roundtrip(tone(0.5, rate=16000), 'amr_nb_4.75', self.ffmpeg,
+                                                       loss_plan=plan)
+        self.assertEqual(record['frame_loss']['clip_id'], 'clip')
+        self.assertEqual(record['packet_loss'], record['frame_loss'])  # same key as G.711
+        self.assertEqual(len(decoded), 2 * 4000)
+        _, plain = self.ffmpeg.roundtrip(tone(0.2), 'gsm')
+        self.assertIsNone(plain['frame_loss'])
 
     def test_foreign_or_damaged_streams_refused_before_decoding(self):
         # ffmpeg 9.0.2 itself decodes an AMR-WB header forced as AMR, so the module checks.

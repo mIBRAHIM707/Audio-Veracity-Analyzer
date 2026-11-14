@@ -160,8 +160,12 @@ and decoded AMR lags the input by exactly 40 samples (5 ms) in every mode, GSM b
 `roundtrip` drops that delay and cuts to the input length, so decoded sample i lines
 up with input sample i (a test re-measures lag 0 on seeded noise); the record keeps
 `delay_compensated_samples` and the exact ffmpeg arguments. `AVA_REQUIRE_FFMPEG=1`
-turns the real-ffmpeg skip into a failure. No packet/frame loss for these codecs yet
-(G.711 only); a live AMR-NB decoder has no encoder padding (parity is 6.x).
+turns the real-ffmpeg skip into a failure. AMR-NB frame loss (14 Nov):
+`roundtrip(..., loss_plan=codecs.derive_loss(seed, clip_id))` drops 20 ms frames with
+the G.711 Bernoulli mask rule and replaces each by an RFC 4867 NO_DATA frame, so the
+OpenCORE decoder conceals natively and timing is kept; the record holds `frame_loss`
+and `received_sha256`. Not yet in `augment.py` specs; no GSM frame loss or jitter. A
+live AMR-NB decoder has no encoder padding (parity is 6.x).
 
 Tool: Gyan.FFmpeg 9.0.2 full build, GPL-3.0 as built (libgsm: permissive TU Berlin licence; OpenCORE AMR: Apache-2.0),
 installed per user with `winget install --id Gyan.FFmpeg --version 9.0.2 --exact`;

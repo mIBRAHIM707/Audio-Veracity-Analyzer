@@ -14,8 +14,9 @@ sample i lines up with input sample i and labels stay aligned. A live AMR-NB dec
 
 `telephone_codec_roundtrip` mirrors `codecs.telephone_roundtrip`: canonical PCM16 at
 `rate` -> soxr HQ 8 kHz -> encode -> decode -> 8 kHz PCM16 plus a lineage record; bring
-it back to the model grid with `conditioning.canonicalize(decoded, 8000, 1)`. Packet or
-frame loss for these codecs is not implemented here (G.711 only, `codecs.py`).
+it back to the model grid with `conditioning.canonicalize(decoded, 8000, 1)`. AMR-NB
+frame loss (`drop_amr_frames`, `loss_plan=`) replaces lost frames with NO_DATA frames
+for the decoder's own concealment; GSM frame loss and jitter are not implemented.
 """
 import hashlib
 import os
@@ -25,9 +26,10 @@ import subprocess
 import numpy as np
 
 if __package__:
+    from .codecs import _loss_mask, derive_loss
     from .conditioning import library_versions, resample_to_pcm16
-else:  # direct script execution, as prepare_audio.py supports
-    from conditioning import library_versions, resample_to_pcm16
+else:  # a script-directory 'codecs' import would shadow the standard library module
+    raise SystemExit('Import as data.prepare.ffmpeg_codecs')
 
 TELEPHONE_RATE = 8000
 FRAME_SAMPLES = 160
@@ -131,14 +133,21 @@ class Ffmpeg:
         _check_stream(encoded, codec, encoded_frames(codec, len(narrow) // 2))
         return encoded
 
-    def decode(self, encoded, codec):
+    def decode(self, encoded, codec, allow_lost_frames=False):
         """Encoded stream -> 8 kHz PCM16 bytes (whole frames; no length correction). The
-        stream is checked first (ffmpeg itself decodes e.g. an AMR-WB header as AMR)."""
+        stream is checked first (ffmpeg itself decodes e.g. an AMR-WB header as AMR).
+        NO_DATA (lost) AMR frames are accepted only with `allow_lost_frames`, which
+        `roundtrip` sets after its own seeded loss; a plain decode refuses them."""
         spec = _spec(codec)
         if not isinstance(encoded, bytes) or not encoded:
             raise ValueError('Expected nonempty encoded bytes')
         try:
-            _check_stream(encoded, codec)
+            if spec['format'] == 'amr' and allow_lost_frames:
+                frames = _amr_frames(encoded, codec)  # this mode's frames, or NO_DATA (lost) frames
+                if all(frame[0] == AMR_NO_DATA for frame in frames):
+                    raise CodecToolError('AMR stream has no speech frame')
+            else:
+                _check_stream(encoded, codec)
         except CodecToolError as error:
             raise ValueError(f'Not a {codec} stream: {error}') from None
         decoded = self._call(_decode_args(spec), encoded)
@@ -146,12 +155,25 @@ class Ffmpeg:
             raise CodecToolError('ffmpeg returned no or odd-length PCM')
         return decoded
 
-    def roundtrip(self, narrow, codec):
-        """8 kHz PCM16 -> encode -> decode -> remove the codec delay -> 8 kHz PCM16 of the
-        input length. Returns (decoded bytes, record). Raises CodecToolError if the
-        decoder returned too few samples to cover the input after the delay."""
+    def roundtrip(self, narrow, codec, loss_plan=None):
+        """8 kHz PCM16 -> encode -> optional seeded AMR frame loss (`loss_plan` from
+        codecs.derive_loss, AMR-NB only) -> decode -> remove the codec delay -> 8 kHz
+        PCM16 of the input length. Returns (decoded bytes, record). Raises CodecToolError
+        if the decoder returned too few samples to cover the input after the delay."""
+        if loss_plan is not None:
+            if _spec(codec)['format'] != 'amr':
+                raise ValueError(f'frame loss is implemented for AMR-NB only, not {codec}')
+            if not isinstance(loss_plan, dict) or loss_plan != derive_loss(
+                    loss_plan.get('master_seed'), loss_plan.get('clip_id')):
+                raise ValueError('loss_plan must come unchanged from codecs.derive_loss')
         encoded = self.encode(narrow, codec)
-        raw = self.decode(encoded, codec)
+        received, frame_loss = encoded, None
+        if loss_plan is not None:
+            received, frame_loss = drop_amr_frames(encoded, codec, loss_plan['loss_rate'], loss_plan['seed'])
+            frame_loss.update({key: loss_plan[key] for key in ('derivation', 'master_seed', 'clip_id')},
+                              applied_via='amr_no_data_frames',
+                              mask_covers='every encoded frame incl. ffmpeg padding and the flush frame')
+        raw = self.decode(received, codec, allow_lost_frames=loss_plan is not None)
         delay, target = 2 * CODEC_DELAY_SAMPLES[codec], len(narrow)
         if len(raw) < delay + target:
             raise CodecToolError(f'decoder returned {len(raw) // 2} samples, need {(delay + target) // 2}')
@@ -169,6 +191,8 @@ class Ffmpeg:
             'delay_compensated_samples': CODEC_DELAY_SAMPLES[codec],
             'length_policy': 'drop_codec_delay_then_cut_to_input_length',
             'encoded_sha256': hashlib.sha256(encoded).hexdigest(), 'encoded_bytes': len(encoded),
+            'frame_loss': frame_loss,
+            'received_sha256': hashlib.sha256(received).hexdigest(),
             'decoded_pcm_sha256': hashlib.sha256(decoded).hexdigest(),
         }
 
@@ -206,6 +230,46 @@ def encoded_frames(codec, samples):
     return -(-samples // FRAME_SAMPLES)
 
 
+AMR_NO_DATA = 0x7C  # RFC 4867 frame header FT=15 (NO_DATA), Q=1: a one-byte frame
+AMR_MODES = {4750: 0, 7400: 4, 12200: 7}
+FRAME_LOSS_CONCEALMENT = 'amr_decoder_native_no_data'
+
+
+def _amr_frames(encoded, codec):
+    """Split an RFC 4867 storage stream of `codec` into frames, allowing NO_DATA frames
+    (lost frames). Raises CodecToolError on any other header or a truncated frame."""
+    spec = CODECS[codec]
+    size, mode = AMR_FRAME_BYTES[spec['bit_rate']], AMR_MODES[spec['bit_rate']]
+    if not encoded.startswith(AMR_MAGIC):
+        raise CodecToolError('AMR stream lacks the #!AMR storage header')
+    frames, offset = [], len(AMR_MAGIC)
+    while offset < len(encoded):
+        header = encoded[offset]
+        length = 1 if header == AMR_NO_DATA else size if header == (mode << 3 | 0x04) else None
+        if length is None or offset + length > len(encoded):
+            raise CodecToolError(f'AMR frame {len(frames)} has header {header:#04x} or is truncated')
+        frames.append(encoded[offset:offset + length])
+        offset += length
+    if not frames:
+        raise CodecToolError('AMR stream has no frames')
+    return frames
+
+
+def drop_amr_frames(encoded, codec, loss_rate, seed):
+    """Seeded Bernoulli loss of 20 ms AMR-NB frames (PRD FR-D6, 0-5 %): each lost frame is
+    replaced by a NO_DATA frame, so the OpenCORE decoder applies its own error
+    concealment and the frame count (timing) is kept. Same mask rule and record as the
+    G.711 packet loss (`codecs._loss_mask`). Returns (stream, record)."""
+    if CODECS.get(codec, {}).get('format') != 'amr':
+        raise ValueError(f'frame loss is implemented for AMR-NB only, not {codec!r}')
+    frames = _amr_frames(encoded, codec)
+    if any(frame[0] == AMR_NO_DATA for frame in frames):
+        raise ValueError('stream already contains NO_DATA frames')
+    lost, record = _loss_mask(len(frames), loss_rate, seed)
+    stream = AMR_MAGIC + b''.join(bytes([AMR_NO_DATA]) if gone else frame for frame, gone in zip(frames, lost))
+    return stream, {**record, 'unit': 'amr_frame_20ms', 'concealment': FRAME_LOSS_CONCEALMENT}
+
+
 def _check_stream(encoded, codec, frames=None):
     """Known-answer framing check: exact frame size, mode and (when `frames` is given)
     count for the requested codec, so a different mode, codec or truncated stream is
@@ -231,7 +295,7 @@ def _check_stream(encoded, codec, frames=None):
         raise CodecToolError('AMR stream contains frames of another mode, bad-quality frames or set padding bits')
 
 
-def telephone_codec_roundtrip(canonical, codec, ffmpeg, *, rate=16000):
+def telephone_codec_roundtrip(canonical, codec, ffmpeg, *, rate=16000, loss_plan=None):
     """Canonical PCM16 at `rate` -> soxr HQ 8 kHz -> `codec` encode/decode via `ffmpeg`
     (an `Ffmpeg`) -> 8 kHz PCM16. Returns (decoded bytes, lineage record)."""
     _spec(codec)
@@ -243,12 +307,15 @@ def telephone_codec_roundtrip(canonical, codec, ffmpeg, *, rate=16000):
         raise ValueError(f'Input longer than {MAX_SECONDS} s')
     samples = np.frombuffer(canonical, dtype='<i2').astype(np.float64)
     narrow, saturated = resample_to_pcm16(samples, rate, TELEPHONE_RATE)
-    decoded, record = ffmpeg.roundtrip(narrow, codec)
+    # `loss_plan` (AMR-NB only) is validated by Ffmpeg.roundtrip; passed only when given.
+    decoded, record = (ffmpeg.roundtrip(narrow, codec) if loss_plan is None
+                       else ffmpeg.roundtrip(narrow, codec, loss_plan=loss_plan))
     return decoded, {
         **record, 'input_rate': rate, 'input_sample_count': len(samples),
         'input_sha256': hashlib.sha256(canonical).hexdigest(),
         'resampler': 'bypass' if rate == TELEPHONE_RATE else 'soxr_hq',
         'quantization': 'round_nearest_even_clip_pcm16', 'saturated_samples': saturated,
-        'sample_count': len(decoded) // 2, 'packet_loss': None, 'jitter': None,
+        # Same key as the G.711 record, so FR-D6 impairment counts see AMR frame loss.
+        'sample_count': len(decoded) // 2, 'packet_loss': record.get('frame_loss'), 'jitter': None,
         **library_versions(),
     }

@@ -119,8 +119,10 @@ items needing that data are listed at the end and stay out of the queue.
   (codec `gsm`/`amr_nb_*` with explicit no-loss spec, injected tool, `--ffmpeg`/
   `--ffmpeg-sha256`, abort before writing on tool failure, tool-hash check in verify,
   training loader `ffmpeg=`); 10 Claude-authored tests, review fixed.
-  Remaining: frame loss/jitter for GSM/AMR, a per-clip codec mix across copies, AMR
-  decode of RFC 4867 RTP payloads (6.x).
+  Then AMR-NB seeded frame loss (NO_DATA frames, decoder-native concealment, G.711 mask
+  rule and plans); 5 Claude-authored tests, review fixed. Remaining: AMR loss in
+  `augment.py` specs, GSM frame loss, jitter for GSM/AMR, a per-clip codec mix across
+  copies, AMR decode of RFC 4867 RTP payloads (6.x).
 - [ ] 3.4 Other PRD codec/noise paths with bounded reproducible fixtures.
   Progress (9 Nov): `data/prepare/noise.py` seeded additive noise at 0-20 dB SNR
   (FR-D7) with lineage and per-clip plans (`derive_noise`/`mix_planned`); 18
