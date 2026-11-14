@@ -68,6 +68,16 @@ parity, timings, versions and limitations; an `INCOMPLETE` marker stays in the
 directory if the run fails (consume a report only without it). It checks graph numerics only, with no
 accuracy or latency claim; the loader is injectable and tested with a tiny backbone.
 
+`benchmark_onnx.py` times hash-pinned ONNX models through CPU onnxruntime sessions with
+the method of `models/ava/benchmark_cpu.py` (seeded interleaved rounds, median, round
+medians, p95 only with >= 20 timings, RTF only at batch 1; session creation reported
+separately). Run on a quiet host: anything else running skews the numbers. 14 Nov,
+this laptop (Intel family 6 model 140, 4 threads, batch 1, 2 rounds x 20), the real
+8-layer exports with an untrained head: FP32 median 0.691 s (p95 0.799 s, RTF 0.17);
+dynamic INT8 median 0.432 s (p95 0.497 s, RTF 0.11); a first run that overlapped test
+runs on the same host was discarded for contention. Development-laptop observations,
+not box A1 and not the final model: no PRD §6.1 target is met or missed by them.
+
 Limits: the model's Python input checks (shape, finite samples) are traced as
 constants, so the ONNX graph does not refuse NaN or wrong shapes by itself; serving
 must validate windows before `session.run`. Other known limits: `open_session` and

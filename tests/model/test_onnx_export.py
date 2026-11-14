@@ -190,6 +190,19 @@ class ExportParityTests(unittest.TestCase):
         self.assertFalse(target.with_name('opset18.onnx.partial').exists())
         self.assertEqual(self.record['opset'], 17)  # read back from the real export
 
+    def test_benchmark_runs_real_sessions(self):
+        from models.export import benchmark_onnx as bo
+        spec = {'path': self.record['path'], 'sha256': self.record['sha256']}
+        report = bo.benchmark({'tiny': spec}, threads=1, warmup=1, repeats=3)
+        row = report['rows'][0]
+        self.assertEqual(row['timings'], 3)
+        self.assertTrue(all(t > 0 for t in row['timings_seconds']))
+        self.assertIn('median_rtf', row)
+        import onnxruntime
+        self.assertEqual(report['environment']['onnxruntime'], onnxruntime.__version__)
+        with self.assertRaises(ValueError):  # the hash pin is enforced
+            bo.benchmark({'tiny': dict(spec, sha256='0' * 64)}, threads=1, repeats=2)
+
     def test_open_session_refusals(self):
         with self.assertRaises(ValueError):
             ox.open_session(self.record['path'], expected_sha256='0' * 64)

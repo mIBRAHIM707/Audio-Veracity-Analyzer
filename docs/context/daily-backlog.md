@@ -254,8 +254,11 @@ items needing that data are listed at the end and stay out of the queue.
   Progress (12 Nov): `models/ava/benchmark_cpu.py` (interleaved seeded rounds, p95 only
   with >= 20 timings, RTF only at batch 1, raw timings, limitations); 7
   Claude-authored tests, review fixed. FP32 random-weight proxy on the dev laptop
-  recorded in the 12 Nov report (not a §6.1 result). Remaining: INT8 ONNX (blocked on
-  onnx/onnxruntime), box A1, concurrency/load and RSS per worker.
+  recorded in the 12 Nov report (not a §6.1 result). 14 Nov (catch-up 4):
+  `models/export/benchmark_onnx.py` ONNX session timing with the same method; 5
+  Claude-authored unit + 1 model test; real 8-layer exports on this laptop: FP32 median
+  0.69 s, dynamic INT8 0.43 s per 4 s window (4 threads, batch 1; untrained head, not
+  A1). Remaining: box A1 with the trained model, concurrency/load and RSS per worker.
 
 ## 9 — Model research tooling (FR-M1–M6/M8–M12)
 - [x] 9.1 SLS and layer-sweep/training harness with tiny smoke runs.
