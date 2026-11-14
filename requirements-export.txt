@@ -1,0 +1,9 @@
+# ONNX export and parity for FR-M7 (backlog 10.1). Export-time tooling only: serving
+# needs onnxruntime (requirements-vad.txt), not these. Combine with
+# requirements-model.txt (torch) to export. Python 3.11. Licences checked 14 Nov 2026:
+# onnx Apache-2.0; ml-dtypes Apache-2.0; typing-extensions PSF-2.0. onnx 1.23.2 needs
+# protobuf >= 6.31.1 (7.36.2 pinned via requirements-vad.txt).
+-r requirements-vad.txt
+onnx==1.23.2
+ml-dtypes==0.6.0
+typing-extensions==4.16.0

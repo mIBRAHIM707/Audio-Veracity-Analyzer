@@ -113,6 +113,13 @@ and about 50,000 original clips, excluding codec copies.
   with snapshot age and validity. Review fixes: a failed batcher submit keeps the
   window; per-direction state bound to `LiveCalls.token` so reused call IDs never get an
   earlier call's windows. Fake detector only; not wired to a real tap or model.
+- **Backlog 10.1 progress (14 Nov catch-up 4): ONNX export and FR-M7 parity harness.**
+  `models/export/onnx_export.py`: FP32 opset-17 export with a dynamic batch (opset read
+  back, outside-repo, no-overwrite), CPU-only session with hash pin, I/O contract check,
+  parity harness (>= 100 windows, strict < 1e-3) and the pure INT8 -> static -> FP32
+  rule; `requirements-export.txt` pins onnx 1.23.2. Tiny random model only; INT8,
+  real-checkpoint export/parity and dev EER remain. 7.2: live inference latency
+  histogram added to `/metrics` (1839139).
 - **Backlog 3.3 advanced (14 Nov): GSM 06.10 and AMR-NB codecs.**
   `data/prepare/ffmpeg_codecs.py` through pinned ffmpeg 9.0.2 (winget user install,
   GPL-3.0, Windows hash pinned): known-answer frame/mode checks, measured AMR frame

@@ -292,6 +292,13 @@ items needing that data are listed at the end and stay out of the queue.
 
 ## 10 — Export/deployment (FR-M7, architecture deployment)
 - [ ] 10.1 ONNX/INT8 pipeline and checkpoint-based parity harness/fallback rules.
+  Progress (14 Nov catch-up 4): `models/export/onnx_export.py` FP32 export (opset 17
+  read back, static 64,000 input, dynamic batch, outside-repo, no-overwrite hard-link
+  publish), CPU-only session with hash pin, I/O contract check, FR-M7 parity harness
+  (>= 100 windows, strict < 1e-3), pure FR-M7 INT8 -> static -> FP32 decision rule;
+  `requirements-export.txt` (onnx 1.23.2); 9 Claude-authored unit + 14 model tests on a
+  tiny random detector; review fixed. Remaining: INT8 dynamic/static quantization,
+  real-checkpoint export and parity on dev windows, dev-EER measurement.
 - [ ] 10.2 Model-card generator, container/Compose and deployment manifests.
 - [ ] 10.QA Reproducible startup, CPU parity where measurable, rollback/readiness.
 
