@@ -111,7 +111,12 @@ items needing that data are listed at the end and stay out of the queue.
   11 Nov: manifest wiring done as a separate stage, `data/prepare/augment.py` (noise
   -> G.711 with loss/jitter plans -> 16 kHz; explicit concealment; content-based
   derivation ID; copies not counted; read-only whole-report rebuild `--verify`); 15
-  Claude-authored tests, review fixed. Remaining: GSM, AMR-NB (codec library).
+  Claude-authored tests, review fixed. 14 Nov (catch-up 2): `data/prepare/
+  ffmpeg_codecs.py` GSM 06.10 and AMR-NB 4.75/7.4/12.2 roundtrip through pinned ffmpeg
+  9.0.2 (winget, GPL-3.0, hash recorded) with known-answer frame/mode checks, measured
+  AMR frame rule and 40-sample delay compensation, lineage with exact args; 19
+  Claude-authored tests (7 real-ffmpeg), review fixed. Remaining: wiring GSM/AMR into
+  `augment.py`, frame loss for GSM/AMR, AMR decode of RFC 4867 RTP payloads (6.x).
 - [ ] 3.4 Other PRD codec/noise paths with bounded reproducible fixtures.
   Progress (9 Nov): `data/prepare/noise.py` seeded additive noise at 0-20 dB SNR
   (FR-D7) with lineage and per-clip plans (`derive_noise`/`mix_planned`); 18

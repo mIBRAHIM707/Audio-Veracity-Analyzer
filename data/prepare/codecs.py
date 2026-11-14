@@ -7,7 +7,7 @@ and decodes it, and returns 8 kHz PCM16; bring it back to the model grid through
 `conditioning.canonicalize(decoded, 8000, 1)` so the shared path does the upsampling.
 `drop_packets` applies seeded 20 ms packet loss (0-5 %, PRD FR-D6) with concealment;
 `drop_late_packets` models jitter as late-packet loss behind a fixed buffer; the
-roundtrip combines both from per-clip plans. GSM and AMR-NB are not implemented here yet.
+roundtrip combines both from per-clip plans. GSM and AMR-NB are in `ffmpeg_codecs.py`.
 Inputs must be `bytes` (not bytearray/memoryview), matching `conditioning.py`.
 """
 import hashlib

@@ -139,8 +139,38 @@ for A-law, so a serving buffer that zero-fills decoded PCM differs by +8 on A-la
 Training chains meant to match serving need `concealment='repeat_then_silence'`; the
 manifest wiring must choose it explicitly, and the serving jitter buffer should reuse
 `REPEAT_LIMIT` and `_conceal` rather than copy them.
-`augment.py` (below) wires it over prepared clips; GSM and AMR-NB are not
-implemented.
+`augment.py` (below) wires it over prepared clips; GSM and AMR-NB are in
+`ffmpeg_codecs.py` (next section) but not yet wired into `augment.py`.
+
+## GSM 06.10 and AMR-NB through ffmpeg (partial backlog 3.3, 14 Nov 2026)
+
+`ffmpeg_codecs.py` runs the FR-D6 GSM 06.10 (libgsm) and AMR-NB 4.75/7.4/12.2 kbps
+(OpenCORE AMR-NB, RFC 4867 storage, DTX off) roundtrips through a local ffmpeg over
+pipes: `Ffmpeg(path)` checks the version is 9.0.2, that both codec libraries are
+present and (optionally) a SHA-256 pin, and records the executable hash in every
+record. `telephone_codec_roundtrip(canonical, codec, ffmpeg, rate=16000)` mirrors
+`codecs.telephone_roundtrip` (soxr HQ to 8 kHz, encode, decode, 8 kHz PCM16 plus
+lineage: codec, mode bit rate, encoder/decoder, encoded and decoded hashes, frames).
+Encoded streams are checked against known frame sizes (GSM 33 bytes; AMR 13/20/32
+bytes with the mode bits in each frame header); decode refuses foreign or truncated
+streams itself, because ffmpeg 9.0.2 decodes an AMR-WB header forced as AMR. Measured
+and pinned by tests (14 Nov, every remainder 0-159): the AMR stream has
+floor((samples + 50) / 160) + 1 frames (ffmpeg's 50-sample padding plus a flush frame),
+and decoded AMR lags the input by exactly 40 samples (5 ms) in every mode, GSM by 0.
+`roundtrip` drops that delay and cuts to the input length, so decoded sample i lines
+up with input sample i (a test re-measures lag 0 on seeded noise); the record keeps
+`delay_compensated_samples` and the exact ffmpeg arguments. `AVA_REQUIRE_FFMPEG=1`
+turns the real-ffmpeg skip into a failure. No packet/frame loss for these codecs yet
+(G.711 only); a live AMR-NB decoder has no encoder padding (parity is 6.x).
+
+Tool: Gyan.FFmpeg 9.0.2 full build, GPL-3.0 as built (libgsm: permissive TU Berlin licence; OpenCORE AMR: Apache-2.0),
+installed per user with `winget install --id Gyan.FFmpeg --version 9.0.2 --exact`;
+`ffmpeg.exe` SHA-256 589e50b766d251afdf181dd664d40bd94407e200b019989fd7468c7d118a28d0,
+227,823,104 bytes. It is run as a separate program, not linked. Point `AVA_FFMPEG` (or
+the `Ffmpeg(path)` argument) at it; the winget command alias is not visible to every
+process. Tests: `tests/unit/test_ffmpeg_codecs.py` (19 Claude-authored; the 7 real-ffmpeg
+cases skip when it is absent, as in CI). Fictional tones and seeded noise only:
+plumbing, not quality.
 
 ## Additive noise at SNR (partial backlog 3.4, PRD FR-D7)
 

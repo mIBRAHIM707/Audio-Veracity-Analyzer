@@ -106,6 +106,12 @@ and about 50,000 original clips, excluding codec copies.
   the page shows exactly the API's result. 5 Claude-authored cases pass; review fixed.
   Observations only (uncalibrated baseline, concatenated clips): genuine 24 s mean
   0.000, synthetic 23 s mean 0.611; not an accuracy result.
+- **Backlog 3.3 advanced (14 Nov): GSM 06.10 and AMR-NB codecs.**
+  `data/prepare/ffmpeg_codecs.py` through pinned ffmpeg 9.0.2 (winget user install,
+  GPL-3.0, Windows hash pinned): known-answer frame/mode checks, measured AMR frame
+  rule and 40-sample delay compensation, lineage with exact arguments; 19
+  Claude-authored tests (7 need the local ffmpeg; CI skips them). Not yet in
+  `augment.py`; no GSM/AMR frame loss.
 - **Backlog 3.1 in progress (9 Nov): offline/serving conditioning parity.**
   `tests/unit/test_conditioning_parity.py` (Claude-authored) runs one WAV through
   `prepare_audio.py --condition` and the analysis service: identical canonical PCM
