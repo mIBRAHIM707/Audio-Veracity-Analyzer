@@ -39,8 +39,15 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument('--port', type=int, required=True)
     parser.add_argument('--dashboard', required=True)
+    parser.add_argument('--model-root', help='real pinned AntiDeepfake checkpoint instead of the fake '
+                        '(needs requirements-model.txt; backlog 2.QA)')
+    parser.add_argument('--threads', type=int, default=4)
     args = parser.parse_args()
-    service = AnalysisService(lambda: fake_detector, model_id='browser-fixture-fake-detector')
+    if args.model_root:
+        from services.inference.baseline import baseline_factory, model_id
+        service = AnalysisService(baseline_factory(args.model_root, threads=args.threads), model_id=model_id())
+    else:
+        service = AnalysisService(lambda: fake_detector, model_id='browser-fixture-fake-detector')
     app = create_app(service, dashboard_dir=args.dashboard)
     uvicorn.run(app, host='127.0.0.1', port=args.port, log_level='warning')
 

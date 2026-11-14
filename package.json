@@ -7,6 +7,7 @@
     "test:browser": "playwright test --project=foundation",
     "test:browser:report": "playwright show-report",
     "test:dashboard": "npm run build --prefix dashboard && playwright test --project=dashboard",
+    "test:real-model": "npm run build --prefix dashboard && playwright test --project=real-model",
     "crawl": "node scripts/browser/crawl.cjs",
     "browser:install": "playwright install chromium"
   },

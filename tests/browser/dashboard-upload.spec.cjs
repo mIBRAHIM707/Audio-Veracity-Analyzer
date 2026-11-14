@@ -10,72 +10,24 @@
 // vanishing); every other case goes through the real server. Infrastructure evidence
 // only: no claim about detection accuracy. Build first: `npm run build --prefix dashboard`.
 const { test, expect } = require('@playwright/test');
-const { spawn } = require('node:child_process');
 const fs = require('node:fs');
-const net = require('node:net');
 const path = require('node:path');
+const { DIST, startApi, tones } = require('./support/api-server.cjs');
 
-const ROOT = path.resolve(__dirname, '..', '..');
-const DIST = path.join(ROOT, 'dashboard', 'dist');
+const wav = segments => tones(segments, 8000); // [{ seconds, hz }], hz 0 = silence
 let server;
 let base;
-
-function wav(segments, rate = 8000) {
-  // segments: [{ seconds, hz }], hz 0 = silence; mono PCM16.
-  const total = segments.reduce((n, s) => n + Math.round(s.seconds * rate), 0);
-  const buffer = Buffer.alloc(44 + 2 * total);
-  buffer.write('RIFF'); buffer.writeUInt32LE(buffer.length - 8, 4); buffer.write('WAVEfmt ', 8);
-  buffer.writeUInt32LE(16, 16); buffer.writeUInt16LE(1, 20); buffer.writeUInt16LE(1, 22);
-  buffer.writeUInt32LE(rate, 24); buffer.writeUInt32LE(rate * 2, 28); buffer.writeUInt16LE(2, 32);
-  buffer.writeUInt16LE(16, 34); buffer.write('data', 36); buffer.writeUInt32LE(2 * total, 40);
-  let i = 0;
-  for (const { seconds, hz } of segments) {
-    for (let k = 0; k < Math.round(seconds * rate); k++, i++) {
-      buffer.writeInt16LE(hz ? Math.round(8000 * Math.sin(2 * Math.PI * hz * k / rate)) : 0, 44 + 2 * i);
-    }
-  }
-  return buffer;
-}
-
-function freePort() {
-  return new Promise((resolve, reject) => {
-    const probe = net.createServer();
-    probe.once('error', reject);
-    probe.listen(0, '127.0.0.1', () => { const { port } = probe.address(); probe.close(() => resolve(port)); });
-  });
-}
-
-async function waitHealthy(url, child, timeoutMs) {
-  const deadline = Date.now() + timeoutMs;
-  while (Date.now() < deadline) {
-    if (child.exitCode !== null) throw new Error(`test server exited with ${child.exitCode}`);
-    try { if ((await fetch(`${url}/healthz`)).ok) return; } catch { /* not listening yet */ }
-    await new Promise(r => setTimeout(r, 250));
-  }
-  throw new Error('test server did not become healthy');
-}
 
 test.describe.configure({ mode: 'serial' });
 
 test.beforeAll(async () => {
   test.setTimeout(180000);
   if (!fs.existsSync(path.join(DIST, 'index.html'))) throw new Error('dashboard/dist missing: run `npm run build --prefix dashboard`');
-  const port = await freePort();
-  base = `http://127.0.0.1:${port}`;
-  server = spawn('uv', ['run', '--no-project', '--python', '3.11', '--with-requirements', 'requirements-api.txt',
-    'python', '-m', 'tests.browser.serve_dashboard_api', '--port', String(port), '--dashboard', DIST],
-  { cwd: ROOT, stdio: ['ignore', 'ignore', 'pipe'], windowsHide: true });
-  server.stderr.on('data', chunk => process.stderr.write(chunk));
-  await waitHealthy(base, server, 150000);
+  server = await startApi();
+  base = server.base;
 });
 
-test.afterAll(async () => {
-  if (server && server.exitCode === null) {
-    const exited = new Promise(resolve => server.once('exit', resolve));
-    server.kill();
-    await Promise.race([exited, new Promise(r => setTimeout(r, 5000))]);
-  }
-});
+test.afterAll(async () => { if (server) await server.stop(); });
 
 async function open(page, query = '') {
   const offOrigin = [];

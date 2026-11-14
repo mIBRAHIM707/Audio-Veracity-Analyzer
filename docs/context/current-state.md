@@ -98,7 +98,14 @@ and about 50,000 original clips, excluding codec copies.
   drag-and-drop, bounded job polling, verdict with the uncalibrated-baseline label,
   FR-U3 SVG timeline, §1.4 limitations, same-origin CSP. 13 Claude-authored Playwright
   cases (real API, fake detector; `npm run test:dashboard`) and 6 mount tests;
-  independent review fixed. Infrastructure only; real audio through the page is 2.QA.
+  independent review fixed. Infrastructure only.
+- **Backlog 2.QA complete (14 Nov): real checkpoint through the page.** Local-only
+  Playwright project `real-model` (`npm run test:real-model`, gitignored
+  `.local/real-model-qa.json`): pinned AntiDeepfake checkpoint with `/readyz` warm-up,
+  public CSALT genuine and synthetic-benchmark audio, a >60 s job and damaged files;
+  the page shows exactly the API's result. 5 Claude-authored cases pass; review fixed.
+  Observations only (uncalibrated baseline, concatenated clips): genuine 24 s mean
+  0.000, synthetic 23 s mean 0.611; not an accuracy result.
 - **Backlog 3.1 in progress (9 Nov): offline/serving conditioning parity.**
   `tests/unit/test_conditioning_parity.py` (Claude-authored) runs one WAV through
   `prepare_audio.py --condition` and the analysis service: identical canonical PCM

@@ -72,8 +72,28 @@ rather than closing cleanly. Not exercised by a test: the result error boundary
 mid-read (Playwright route mocks cannot stall a body; the code reports it as a
 time-out).
 
-Infrastructure evidence only: the fake detector says nothing about accuracy. Real
-audio through the page with the real checkpoint is backlog 2.QA.
+Infrastructure evidence only: the fake detector says nothing about accuracy.
+
+### Real checkpoint and public audio (backlog 2.QA, local only)
+
+`tests/browser/real-model-dashboard.spec.cjs` (5 Claude-authored cases, project
+`real-model`) starts the API with the pinned AntiDeepfake MMS-300M checkpoint
+(`serve_dashboard_api.py --model-root`), waits for `/readyz`, and uploads prepared
+public CSALT clips concatenated in memory: genuine pilot and synthetic benchmark
+audio (about 20 s each), one short clip (undetermined), a job over 60 s, and two
+damaged files (422). Each case asserts that the page shows exactly the API's
+verdict, mean, model ID and every timeline row. Verdicts are logged as observations,
+never asserted: this is not an accuracy result. It needs a gitignored
+`.local/real-model-qa.json` and is skipped without it:
+
+```json
+{"model_root": "<local checkpoint dir>", "threads": 4,
+ "genuine": ["<prepared PCM16 mono clip>", "..."], "synthetic": ["..."]}
+```
+
+```text
+npm run test:real-model
+```
 
 ## Not yet
 

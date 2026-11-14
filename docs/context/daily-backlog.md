@@ -64,7 +64,15 @@ items needing that data are listed at the end and stay out of the queue.
   `dashboard`, `npm run test:dashboard`) + 6 mount unit tests; independent review
   (H1 CI pickup, M1 validation, M2 unbounded poll, lows) fixed and re-reviewed. Real
   checkpoint/public audio through the page is 2.QA.
-- [ ] 2.QA Actual public-pilot audio through browser/API/model; Playwright negative cases.
+- [x] 2.QA Actual public-pilot audio through browser/API/model; Playwright negative cases.
+  Evidence (14 Nov catch-up 2): `tests/browser/real-model-dashboard.spec.cjs` (project
+  `real-model`, local gitignored `.local/real-model-qa.json`): pinned checkpoint, `/readyz`
+  warm-up, public CSALT genuine/synthetic concatenations, short clip, >60 s job, damaged
+  files; page-equals-API parity (verdict, mean, model, flags, duration, reason, every
+  row); 5 Claude-authored cases pass with the 13 fake-detector cases (negative paths).
+  Independent review conditional pass; fixed vacuous pass without config, audio in
+  failure traces, clip paths in errors, setup budget, Windows tree kill, strict WAV
+  reader. Infrastructure evidence only: no accuracy claim (uncalibrated baseline).
 
 ## 3 — Shared audio path (FR-D6/D12/D13, FR-I3/I4)
 - [ ] 3.1 Shared offline/live conditioning parity; speaker-turn boundary contract.
