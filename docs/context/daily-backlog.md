@@ -66,20 +66,23 @@ items needing that data are listed at the end and stay out of the queue.
   (prepare vs analysis service, 5 formats, refusals, gain divergence recorded).
   Remaining: speaker-turn boundary contract (not defined in PRD/architecture; needs
   a scope definition) and live/streaming-side parity.
-- [ ] 3.2 VAD, speech-only windows, no-speech/partial-window semantics.
-  **Blocked 9 Nov:** no VAD package or Silero weights are installed; adding them is a
-  dependency/model download outside the runner window rules. Needs a human to pin
-  and provision them locally (or approve an energy-based interim VAD).
-  14 Nov (catch-up): blocker superseded by the owner's install decision. Done:
+- [x] 3.2 VAD, speech-only windows, no-speech/partial-window semantics.
+  Evidence (14 Nov catch-up, after the owner's install decision superseded the 9 Nov
+  VAD blocker): windower, Silero adapter and `services/scorer/speech_feed.py` below,
+  30 Claude-authored unit tests + 3 model tests, three independent reviews fixed; unit
+  suite 662 OK (3 skips). Open PRD questions (not blockers): 1.5-2.5 s tails, no_speech
+  delay/level/over-alert/numeric field, audio-time rule; Linux check of VAD pins. Done:
   `services/scorer/speech_windows.py` VAD-gated speech-only windows with the file-mode
   plan, partial/scorable rule, no-speech timing, VAD fault drop+reset; 11
   Claude-authored tests with fake VADs; review fixed. Then `services/inference/
   silero_vad.py` Silero ONNX adapter (onnxruntime 1.32.0 in `requirements-vad.txt`;
   silero-vad 6.2.3 `silero_vad.onnx`, MIT, SHA-256 pinned, at `D:/AVA-Data/models/
   silero-vad/6.2.3/`): 5 unit + 3 model tests incl. frame-by-frame parity (atol 1e-5)
-  with the reference wrapper; review fixed. Remaining: connection to
-  `LivePipeline.offer`, PRD rule for 1.5-2.5 s tails (file mode scores them; live marks
-  them not scorable), Linux resolution check of the VAD pins.
+  with the reference wrapper; review fixed. Then `SpeechFeed`: scorable windows to
+  `LivePipeline.offer`, call-level `no_speech` once per quiet spell, tails before the
+  end, VAD speech seconds for the scored directions, `sweep` after `end_all`, clock/
+  late-audio/factory faults contained; 14 Claude-authored tests; review fixed. The tap
+  that feeds it is 6.x.
 - [ ] 3.3 G.711/GSM and AMR-NB file codec pipeline; loss/jitter and source lineage.
   Progress (9 Nov): `data/prepare/codecs.py` G.711 mu/A-law + 8 kHz roundtrip with
   lineage; 10 Claude-authored tests (exhaustive audioop oracle). Seeded 0-5 % packet

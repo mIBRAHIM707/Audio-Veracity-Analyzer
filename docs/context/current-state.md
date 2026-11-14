@@ -228,8 +228,11 @@ and about 50,000 original clips, excluding codec copies.
   (MIT, hash-pinned, local under `D:/AVA-Data/models/silero-vad/6.2.3/`) runs through
   `services/inference/silero_vad.py` on onnxruntime 1.32.0 CPU; it matches the
   reference wrapper frame by frame (atol 1e-5) on synthetic audio. VAD accuracy on
-  Urdu/Punjabi telephone speech is not measured. Unit suite with audio, API and
-  retention deps 648 OK (3 skips); model tests 3 OK.
+  Urdu/Punjabi telephone speech is not measured. `services/scorer/speech_feed.py`
+  connects windows to the live pipeline (call-level `no_speech`, tails before the end,
+  VAD speech seconds at the end, faults contained). Backlog 3.2 checked; the tap
+  feeding it is 6.x. Unit suite with audio, API and retention deps 662 OK (3 skips);
+  model tests 3 OK.
 - **Backlog 5.3 progress (14 Nov catch-up): AES-256-GCM for FR-O5 snippets.**
   `AesGcmSealer` on pinned `cryptography==50.0.2` (`requirements-retention.txt`), key file
   outside the repository, `open_snippet` authenticates header/alert binding; 11
