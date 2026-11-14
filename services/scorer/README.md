@@ -230,9 +230,14 @@ only partial windows can fall below it) and float32 [64000] PCM (int16/32768,
 zero-padded). `no_speech`, `speech_seconds` and `seconds_since_speech` feed the
 `no_speech` state. A VAD fault raises `VadFailure` after dropping that audio as
 non-speech and calling `vad.reset()` (do not retry the audio); at `finish()` it drops
-only the last part-frame. Not done: the Silero ONNX adapter (needs onnxruntime and the
-model file), connecting windows to `LivePipeline.offer` (drop non-scorable windows,
-carry `partial` and times), configurable window/hop, and peak normalization.
+only the last part-frame. The real VAD is `services/inference/silero_vad.SileroVad`
+(ONNX on CPU, `requirements-vad.txt`, model silero-vad 6.2.3 `silero_vad.onnx`, MIT,
+SHA-256 pinned, provisioned locally at e.g.
+`D:/AVA-Data/models/silero-vad/6.2.3/`; one instance per direction; parity with the
+reference wrapper in `tests/model/test_silero_vad_onnx.py`). Not done: connecting
+windows to `LivePipeline.offer` (drop non-scorable windows, carry `partial` and
+times), configurable window/hop, peak normalization, and a Linux resolution check of
+`requirements-vad.txt` (`uv pip compile` was not permitted in the 14 Nov session).
 Spec questions: file mode scores a lone 1.5-2.5 s partial window while this marks it
 not scorable; the meaning of "2.5 s is speech" when windows hold speech only.
 
