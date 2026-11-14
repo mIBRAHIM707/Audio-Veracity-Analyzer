@@ -121,8 +121,11 @@ and about 50,000 original clips, excluding codec copies.
   (`quantize_int8_dynamic`) with a drift report. Finding: dynamic INT8 output depends
   on batch partners (cross-call micro-batching question; INT8 EER must state its
   batching). Static INT8 (`quantize_int8_static`, MinMax calibration, fixed scales)
-  is batch-independent by test. Tiny random model only; real-checkpoint export/parity,
-  INT8 latency and dev EER remain. 7.2: live inference latency
+  is batch-independent by test. `checkpoint_parity.py` real run (8 layers of the
+  AntiDeepfake MMS-300M checkpoint, untrained seeded SLS head, 100 noise windows): FP32
+  ONNX parity max |logit diff| 4.95e-6 (< 1e-3); dynamic INT8 458 -> 153 MB, drift max
+  0.024 / mean 0.003 logits, no class flips. Graph numerics only; trained-head parity on
+  dev windows, INT8 latency and dev EER remain. 7.2: live inference latency
   histogram added to `/metrics` (1839139).
 - **Backlog 3.3 advanced (14 Nov): GSM 06.10 and AMR-NB codecs.**
   `data/prepare/ffmpeg_codecs.py` through pinned ffmpeg 9.0.2 (winget user install,

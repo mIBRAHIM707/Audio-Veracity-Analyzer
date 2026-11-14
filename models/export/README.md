@@ -78,10 +78,12 @@ misread; a graph of 2 GB or more makes torch write external-data files named aft
 `.partial` file, which this export does not handle (MMS-300M FP32 is about 1.2 GB);
 parity holds at most 2,000 windows and batches of at most 64 per call.
 
-The real-checkpoint export, INT8 latency on the real graph and the dev-EER measurement
-are not done yet. Evidence so far is a tiny random model on synthetic noise (infrastructure only):
-FR-M7 parity stays unmet until it is measured on the real truncated MMS-300M graph with
-real dev windows.
+Real-checkpoint run (14 Nov, 8 layers, untrained head, noise windows; details in
+`docs/context/daily-runs/2026-11-14.md`): FP32 parity max |logit diff| 4.95e-6;
+dynamic INT8 drift max 0.024 logits. Not done: parity with the AVA-trained head on real
+dev windows, INT8 latency on the reference CPU, and the dev-EER measurement. The unit
+and model tests use a tiny random model on synthetic noise (infrastructure only);
+FR-M7 parity is accepted only when measured with the trained head on real dev windows.
 
 ```text
 uv run --no-project --python 3.11 --with-requirements requirements-audio.txt python -m unittest tests.unit.test_onnx_export_rules -v
