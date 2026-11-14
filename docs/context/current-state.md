@@ -186,6 +186,16 @@ and about 50,000 original clips, excluding codec copies.
   audio after completion or shutdown, and responses are small and filename-free. Not
   covered: process memory, logs, swap, other framework versions; on Linux the spool
   check skips. Unit suite 517 OK (2 skips).
+- **Backlog 5.2 progress (14 Nov): FR-A3 calls read model and FR-A4 WebSocket.**
+  `services/calls/registry.py` builds the call list from published FR-A4 envelopes
+  (30 min of each call at full resolution, older points in 10 s per-direction buckets,
+  alert lifecycle incl. `ended_open`, per-call stale/duplicate rejection, bounded
+  calls/points/buckets/alerts, idle calls flagged `stale` and evicted only under slot
+  pressure). `services/api/app.py` serves `GET /v1/calls`, `GET /v1/calls/{id}` and
+  `WS /v1/events` (call filter, `stream.gap` on overflow, 1013 at the subscriber limit,
+  send timeout) when given an in-process `EventHub`. 25 Claude-authored tests, two
+  independent review rounds fixed. Not done: scorer-to-FR-A4 mapping, Redis,
+  PostgreSQL history, authentication; unit suite with API deps 542 OK (2 skips).
 - **Backlog 8.QA progress (12 Nov): FP32 CPU proxy timings.** `models/ava/benchmark_cpu.py`
   times the real-size truncated MMS-300M + SLS with random weights. On the dev laptop
   (Intel family 6 model 140, 4 physical/8 logical CPUs, torch 2.8.0+cpu, 4 threads,

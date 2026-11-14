@@ -51,7 +51,8 @@ events); deployments should use smaller buffers or fewer subscribers. `seq` rest
 
 Mapping scorer domain events to these types (`services/scorer` produces per-direction
 events; the published `call.ended` needs a call-level speech-seconds rule), Redis
-pub/sub and the WebSocket endpoint (5.2), and the PostgreSQL schema and migrations.
+pub/sub, and the PostgreSQL schema and migrations. The WebSocket endpoint and the
+FR-A3 calls read model now consume this hub (`services/api`, `services/calls`, 14 Nov).
 PostgreSQL 18 binaries exist on this machine (architecture names 16), but no Python
 driver or Redis is pinned or installed, so migrations cannot be verified here without
 a dependency decision.

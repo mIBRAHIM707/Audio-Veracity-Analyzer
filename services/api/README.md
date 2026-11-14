@@ -10,6 +10,14 @@ persistence yet; bind it to localhost.
 | `GET /v1/jobs/{id}` | `{job_id, status}` with `queued`, `running`, `done` (+ `result`) or `failed` (+ `error.status`, `error.detail`); 404 unknown |
 | `GET /healthz` | `status`, `detector_loaded`, `model_id` |
 | `GET /openapi.json` | local schema; the `/docs` pages stay off (CDN assets), a recorded deviation from FR-A11 |
+| `GET /v1/calls[?status=all\|active\|ended]` | FR-A3 summaries from `services/calls` (state, last score, 20-point score trend, alert counts) plus registry counters; 422 bad status; 503 without an event hub |
+| `GET /v1/calls/{id}` | FR-A3 detail: alerts (`open`, `cleared`, `ended_open`) and the timeline (`full_resolution`, `downsampled`); 404 unknown |
+| `WS /v1/events[?call_id=]` | FR-A4 envelopes as JSON text, oldest first; a `{"type": "stream.gap", "dropped": n}` control message when a slow client's 256-envelope buffer overflowed (re-read REST); closes 1013 at the subscriber limit, 1011 without an event hub; client messages are ignored |
+
+The calls and events routes need `create_app(service, hub=EventHub())`: the in-process
+hub the scorer publishes to (Redis pub/sub is backlog 5.1). A background task drains
+the hub into the registry every 0.2 s and each calls request drains first, so
+responses include everything published so far.
 
 Long files are routed to a job before the analyser is touched, so they queue even
 while another analysis runs. Jobs are held in a bounded in-memory store (4 queued,

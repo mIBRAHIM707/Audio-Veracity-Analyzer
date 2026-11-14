@@ -6,6 +6,8 @@ are pushed to its dedicated draft PR without merging. This supersedes the older
 no-commit instruction for that branch only. Collection tasks below remain tracked.
 11 Nov: augmentation chain stage (`data/prepare/augment.py`) is ready for the first
 real prepared root once a noise corpus and the concealment choice are confirmed.
+14 Nov: the API now serves the FR-A3 call list and the FR-A4 WebSocket from an
+in-process event hub (backlog 5.2 partial); no participant data involved.
 
 Updated 4 October 2026. This is the active sequence; evidence lives in
 `current-state.md` and `handoffs/`. Check marks mean the stated bounded task passed

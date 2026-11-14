@@ -124,6 +124,11 @@ items needing that data are listed at the end and stay out of the queue.
   (phase-4 QA M1/L3): monotonic per-direction `window_idx`, duplicate/stale results
   rejected and counted, copied events; 12 Claude-authored tests incl. a deterministic
   lock test; review fixed. Open: index restart after a stream reconnect (PRD/6.x).
+  14 Nov: FR-A3 `services/calls/registry.py` read model (30 min full resolution, 10 s
+  buckets, alert lifecycle, bounds, stale/idle eviction) and API `GET /v1/calls`,
+  `/v1/calls/{id}`, `WS /v1/events` on the in-process hub; 25 Claude-authored tests,
+  two review rounds fixed. Remaining: scorer-to-FR-A4 mapping, job cancellation/
+  idempotency, Redis pub/sub and durable state (5.1).
 - [ ] 5.3 Restart recovery, in-flight handling and default no-audio-retention behavior.
   Progress (12 Nov): default no-raw-audio retention on the analysis API verified by 3
   Claude-authored tests (spooled uploads removed with rollover proven, no audio in

@@ -10,6 +10,14 @@ GET  /readyz      FR-A8 readiness: the first call runs one warm-up inference; 20
 GET  /metrics     FR-A8 Prometheus text format (no client library): requests by route
                   and status class, job states, queue depth/capacity, uploads in flight,
                   detector loaded, ready, analysis seconds (sum/count).
+GET  /v1/calls[?status=all|active|ended]  FR-A3 call summaries (state, score trend,
+                  alert counts) from the in-memory registry (`services/calls`).
+GET  /v1/calls/{id} FR-A3 detail: alerts and the timeline (30 min full resolution,
+                  older points in 10 s buckets).
+WS   /v1/events[?call_id=]  FR-A4 envelopes as JSON text; a `stream.gap` control
+                  message reports envelopes dropped for a slow client (re-read REST).
+The calls and events routes need an `EventHub` passed to `create_app`; otherwise
+they answer 503 / close with 1011. Redis pub/sub and PostgreSQL history are backlog 5.1.
 
 Errors: 411 no Content-Length, 413 oversize/too long, 422 undecodable/unsupported,
 503 busy, too many concurrent uploads or job queue full, 500 detector failure.
@@ -21,29 +29,37 @@ held in memory only while queued or analysed (architecture §2.5 batch path).
 import asyncio
 from collections import OrderedDict
 from contextlib import asynccontextmanager
+import json
 import threading
 import uuid
 
-from fastapi import FastAPI, File, HTTPException, UploadFile
+from fastapi import FastAPI, File, HTTPException, UploadFile, WebSocket, WebSocketDisconnect
 from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import JSONResponse, PlainTextResponse
 
+from services.calls.registry import CallRegistry, RegistryFeed
+from services.events.fanout import HubFull
 from services.inference.analysis import (AnalysisError, AnalyzerBusy, MAX_ASYNC_SECONDS, MAX_BYTES,
                                          NeedsAsyncJob, decode_wav)
 
+PUMP_INTERVAL_S = 0.2
+WS_BUFFER, WS_BATCH, WS_POLL_S, WS_SEND_TIMEOUT_S = 256, 64, 0.1, 10.0
 MAX_QUEUED_JOBS, MAX_KEPT_JOBS = 4, 64
 CHUNK = 1 << 20
 MULTIPART_OVERHEAD = 64 * 1024
 MAX_CONCURRENT_UPLOADS = 2
 JOB_STATES = ('queued', 'running', 'done', 'failed')
-ROUTES = ('/healthz', '/readyz', '/metrics', '/v1/analyze', '/v1/jobs/:id')
+ROUTES = ('/healthz', '/readyz', '/metrics', '/v1/analyze', '/v1/jobs/:id', '/v1/calls',
+          '/v1/calls/:id')
 STATUS_CLASSES = ('2xx', '3xx', '4xx', '5xx')
 
 
 def route_label(path):
-    """Fixed route labels keep metric cardinality bounded (job IDs are never labels)."""
+    """Fixed route labels keep metric cardinality bounded (job/call IDs are never labels)."""
     if path.startswith('/v1/jobs/'):
         return '/v1/jobs/:id'
+    if path.startswith('/v1/calls/'):
+        return '/v1/calls/:id'
     return path if path in ROUTES else 'other'
 
 
@@ -170,6 +186,14 @@ class JobStore:
                 self._jobs[job_id].update(update)
 
 
+async def _close_quietly(websocket, code, reason):
+    """Close without waiting on a stuck client for longer than the send timeout."""
+    try:
+        await asyncio.wait_for(websocket.close(code=code, reason=reason), WS_SEND_TIMEOUT_S)
+    except (asyncio.TimeoutError, WebSocketDisconnect, OSError, RuntimeError):  # already closing
+        pass
+
+
 async def read_bounded(upload):
     data = bytearray()
     while chunk := await upload.read(CHUNK):
@@ -179,15 +203,47 @@ async def read_bounded(upload):
     return bytes(data)
 
 
-def create_app(service):
+def create_app(service, *, hub=None, registry=None):
+    """`hub` is the in-process `services.events.EventHub` carrying FR-A4 events; with it
+    the app serves `/v1/calls` from a `CallRegistry` (a new one unless given) and
+    `WS /v1/events`. Without it those routes answer 503: no live source is connected."""
+    if registry is not None and hub is None:
+        raise ValueError('a call registry needs the event hub that feeds it')
     metrics = Metrics()
     jobs = JobStore(service, on_result=lambda result: metrics.observe_analysis(result.get('processing_seconds')))
     in_flight = [0]
+    registry = None if hub is None else (registry or CallRegistry())
+    feeds = []  # the live feed; subscribed only while the app runs (lifespan)
+    pump_errors = [0]
+
+    def pump_once():
+        try:
+            feeds[0].pump()
+        except Exception:  # the read model must not take the API down; counted, retried
+            pump_errors[0] += 1
+
+    async def pump_forever():
+        while True:
+            await run_in_threadpool(pump_once)  # registry work stays off the event loop
+            await asyncio.sleep(PUMP_INTERVAL_S)
 
     @asynccontextmanager
     async def lifespan(_app):
-        yield
-        await run_in_threadpool(jobs.close)
+        pump_task = None
+        if hub is not None:
+            feeds.append(RegistryFeed(registry, hub))
+            pump_task = asyncio.create_task(pump_forever())
+        try:
+            yield
+        finally:
+            if pump_task is not None:
+                pump_task.cancel()
+                try:
+                    await pump_task
+                except asyncio.CancelledError:
+                    pass
+                feeds.pop().close()
+            await run_in_threadpool(jobs.close)
 
     # Swagger/ReDoc pages load CDN assets, so they stay off; /openapi.json is served locally.
     app = FastAPI(title='AVA local analysis API', version='0.1.0', docs_url=None, redoc_url=None,
@@ -196,6 +252,7 @@ def create_app(service):
     app.state.jobs = jobs
 
     app.state.metrics = metrics
+    app.state.calls_registry = registry
 
     @app.get('/healthz')
     def health():
@@ -271,5 +328,61 @@ def create_app(service):
         if record is None:
             raise HTTPException(404, 'Unknown job')
         return record
+
+    def current_registry():
+        if not feeds:
+            raise HTTPException(503, 'No live event source is connected')
+        pump_once()  # serve what has been published so far, not only the last background pump
+        return registry
+
+    @app.get('/v1/calls')
+    def calls(status: str = 'all'):
+        if status not in ('all', 'active', 'ended'):
+            raise HTTPException(422, "status must be 'all', 'active' or 'ended'")
+        registry_now = current_registry()
+        return {'calls': registry_now.list_calls(status),
+                'registry': {**registry_now.stats(), 'pump_errors': pump_errors[0]}}
+
+    @app.get('/v1/calls/{call_id}')
+    def call_detail(call_id: str):
+        record = current_registry().get_call(call_id)
+        if record is None:
+            raise HTTPException(404, 'Unknown call')
+        return record
+
+    @app.websocket('/v1/events')
+    async def events(websocket: WebSocket, call_id: str | None = None):
+        await websocket.accept()
+        if hub is None:
+            await websocket.close(code=1011, reason='No live event source is connected')
+            return
+        try:
+            subscription = hub.subscribe(call_id=call_id or None, buffer=WS_BUFFER)
+        except HubFull:
+            await websocket.close(code=1013, reason='Too many event subscribers; retry later')
+            return
+        receiver = asyncio.create_task(websocket.receive())  # watches for the client leaving
+        try:
+            while True:
+                if receiver.done():
+                    if receiver.result()['type'] == 'websocket.disconnect':
+                        break
+                    receiver = asyncio.create_task(websocket.receive())  # client text is ignored
+                envelopes, dropped = subscription.drain(WS_BATCH)
+                texts = [envelope.to_json() for envelope in envelopes]
+                if dropped:  # control message, not an FR-A4 event: the client should re-read REST
+                    texts.insert(0, json.dumps({'type': 'stream.gap', 'dropped': dropped}))
+                for text in texts:
+                    # A client that stops reading must not hold the server: give up after a timeout.
+                    await asyncio.wait_for(websocket.send_text(text), WS_SEND_TIMEOUT_S)
+                if not envelopes:
+                    await asyncio.wait({receiver}, timeout=WS_POLL_S)
+        except asyncio.TimeoutError:
+            await _close_quietly(websocket, 1008, 'Client is not reading events')
+        except (WebSocketDisconnect, OSError):
+            pass  # client went away mid-send (Starlette or the server's transport)
+        finally:
+            receiver.cancel()
+            subscription.close()
 
     return app
