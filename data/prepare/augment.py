@@ -24,8 +24,8 @@ A noise mix that would clip is refused per clip with its drawn SNR recorded, so 
 refusal rate per SNR band can be audited (it can bias the FR-D7 0-20 dB spread).
 The channel may instead be GSM 06.10 or AMR-NB 4.75/7.4/12.2 (`ffmpeg_codecs`, a pinned
 local ffmpeg passed as `ffmpeg`/`--ffmpeg`); those chains declare concealment null and
-no jitter; AMR-NB may take seeded frame loss (`packet_loss: true`, decoder-native
-NO_DATA concealment), GSM may not. A codec-tool failure aborts
+no jitter; both may take seeded frame loss (`packet_loss: true`: AMR-NB decoder-native
+NO_DATA concealment, GSM repeat_then_silence substitution). A codec-tool failure aborts
 the run before anything is written. Opus/G.729 and room impulse responses are not
 implemented.
 """
@@ -124,17 +124,17 @@ def validate_spec(spec):
     if 'codec' in spec and codec not in G711_CODECS + tuple(FFMPEG_CODECS):
         problems.append(f'codec must be one of {list(G711_CODECS + tuple(FFMPEG_CODECS))}')
     if codec in FFMPEG_CODECS:
-        # GSM/AMR: concealment is the decoder's own (AMR NO_DATA frames), so the spec
-        # names none; AMR may take seeded frame loss; GSM loss and any jitter are not
-        # implemented and must be declared false rather than silently ignored.
-        if spec.get('concealment') is not None:
-            problems.append(f'concealment must be null for {codec} (decoder-native or no loss)')
+        # GSM/AMR: AMR conceals natively (NO_DATA), so its spec names no concealment; a
+        # GSM chain with loss must name the rule it gets ('repeat_then_silence', as G.711
+        # specs must), so the spec hash covers it. Jitter is not implemented: false.
         if spec.get('jitter') is not False:
             problems.append(f'jitter must be false for {codec} (not implemented)')
-        amr = FFMPEG_CODECS[codec]['format'] == 'amr'
-        if type(spec.get('packet_loss')) is not bool or (spec['packet_loss'] and not amr):
-            problems.append(f'packet_loss must be false for {codec} (not implemented)' if not amr
-                            else 'packet_loss must be true or false')
+        if type(spec.get('packet_loss')) is not bool:
+            problems.append('packet_loss must be true or false')
+        wanted = 'repeat_then_silence' if codec == 'gsm' and spec.get('packet_loss') is True else None
+        if spec.get('concealment') != wanted:
+            problems.append(f'concealment must be {wanted!r} for {codec} with packet_loss '
+                            f'{spec.get("packet_loss")!r}')
     else:
         if 'concealment' in spec and spec['concealment'] not in CONCEALMENTS:
             problems.append(f'concealment must be one of {CONCEALMENTS}')

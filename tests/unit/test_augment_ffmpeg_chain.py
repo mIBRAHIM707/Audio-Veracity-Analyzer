@@ -23,6 +23,10 @@ from tests.unit.test_augment_chain import RATE, speechlike, spec, tree_hashes, w
 from tests.unit.test_ffmpeg_codecs import real_ffmpeg_path
 
 
+def fc_codecs():
+    return tuple(ffmpeg_codecs.CODECS)
+
+
 def ffmpeg_spec(codec='amr_nb_12.2', **overrides):
     value = spec(codec=codec, concealment=None, packet_loss=False, jitter=False)
     value.update(overrides)
@@ -71,9 +75,12 @@ class SpecTests(unittest.TestCase):
         for codec in ffmpeg_codecs.CODECS:
             self.assertEqual(augment.validate_spec(ffmpeg_spec(codec)), ffmpeg_spec(codec))
             self.assertTrue(augment.needs_ffmpeg(ffmpeg_spec(codec)))
-        for codec in ('amr_nb_4.75', 'amr_nb_7.4', 'amr_nb_12.2'):  # AMR frame loss is allowed
-            augment.validate_spec(ffmpeg_spec(codec, packet_loss=True))
-        bad = [ffmpeg_spec(concealment='repeat'), ffmpeg_spec('gsm', packet_loss=True), ffmpeg_spec(jitter=True),
+        for codec in fc_codecs():  # frame loss is allowed for GSM and AMR-NB
+            concealment = 'repeat_then_silence' if codec == 'gsm' else None  # GSM names its rule
+            augment.validate_spec(ffmpeg_spec(codec, packet_loss=True, concealment=concealment))
+        bad = [ffmpeg_spec(concealment='repeat'), ffmpeg_spec('gsm', concealment='repeat_then_silence'),
+               ffmpeg_spec('gsm', packet_loss=True), ffmpeg_spec('gsm', packet_loss=True, concealment='repeat'),
+               ffmpeg_spec('gsm', jitter=True),  ffmpeg_spec(jitter=True),
                ffmpeg_spec(jitter=None), ffmpeg_spec(packet_loss=1), ffmpeg_spec(packet_loss=None),
                ffmpeg_spec('amr_nb_7.4', packet_loss=True, concealment='repeat'),
                ffmpeg_spec('amr_wb_23.85'), ffmpeg_spec([]), ffmpeg_spec({'x': 1}),

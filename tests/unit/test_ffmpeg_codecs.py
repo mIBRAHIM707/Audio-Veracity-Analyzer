@@ -212,6 +212,42 @@ class AmrFrameLossTests(unittest.TestCase):
             fc._amr_frames(fc.AMR_MAGIC + bytes([0x7C & ~0x04]), 'amr_nb_4.75')  # NO_DATA with Q=0
 
 
+class GsmFrameLossTests(unittest.TestCase):
+    """Claude-authored, 14 Nov 2026: GSM repeat_then_silence substitution (no ffmpeg)."""
+
+    def test_rule_on_hand_masks(self):
+        f = [bytes([i]) * 33 for i in range(10)]
+        s = b'S' * 33
+        cases = [  # (lost mask, expected frame sources: index or 'S')
+            ([1, 0, 0, 0, 0, 0, 0, 0, 0, 0], ['S', 1, 2, 3, 4, 5, 6, 7, 8, 9]),  # no previous frame
+            ([0, 1, 1, 1, 0, 0, 0, 0, 0, 0], [0, 0, 0, 0, 4, 5, 6, 7, 8, 9]),  # burst of 3 repeats
+            ([0, 1, 1, 1, 1, 1, 0, 0, 0, 0], [0, 0, 0, 0, 'S', 'S', 6, 7, 8, 9]),  # 4th+ is silence
+            ([0, 0, 1, 0, 1, 1, 1, 1, 0, 1], [0, 1, 1, 3, 3, 3, 3, 'S', 8, 8]),  # run resets
+            ([1] * 10, ['S'] * 10)]
+        for mask, sources in cases:
+            expected = [s if src == 'S' else f[src] for src in sources]
+            self.assertEqual(fc.substitute_frames(f, [bool(x) for x in mask], s), expected, mask)
+        with self.assertRaises(ValueError):
+            fc.substitute_frames(f, [False] * 9, s)
+
+    def test_stream_record_and_refusals(self):
+        from data.prepare.codecs import _loss_mask
+        stream = b''.join(bytes([i % 251]) * 33 for i in range(400))
+        out, record = fc.drop_gsm_frames(stream, 0.05, 99, b'S' * 33)
+        lost, expected = _loss_mask(400, 0.05, 99)
+        self.assertEqual({k: record[k] for k in expected}, expected)
+        self.assertEqual((record['concealment'], record['repeat_limit'], record['applied_via']),
+                         ('repeat_then_silence', 3, 'gsm_frame_substitution'))
+        frames = [stream[i:i + 33] for i in range(0, len(stream), 33)]
+        self.assertEqual(out, b''.join(fc.substitute_frames(frames, lost, b'S' * 33)))
+        self.assertEqual(len(out), len(stream))
+        self.assertGreater(record['lost_packets'], 5)
+        for args in ((stream[:-1], 0.01, 1, b'S' * 33), (stream, 0.06, 1, b'S' * 33),
+                     (stream, 0.01, 1, b'S' * 32), (stream, 0.01, 1, 'S' * 33)):
+            with self.assertRaises((ValueError, fc.CodecToolError)):
+                fc.drop_gsm_frames(*args)
+
+
 @unittest.skipIf(real_ffmpeg_path() is None and os.environ.get('AVA_REQUIRE_FFMPEG') != '1',
                  'pinned ffmpeg 9.0.2 not installed (set AVA_FFMPEG; AVA_REQUIRE_FFMPEG=1 makes this a failure)')
 class RealFfmpegTests(unittest.TestCase):
@@ -340,6 +376,46 @@ class RealFfmpegTests(unittest.TestCase):
         self.assertGreater(low_record['frame_loss']['lost_packets'], 0)
         self.assertNotEqual(low, self.ffmpeg.roundtrip(pcm, 'amr_nb_4.75')[0])
 
+    def test_gsm_frame_loss_keeps_timing_and_conceals_by_substitution(self):
+        from data.prepare.codecs import _loss_mask, derive_loss
+        rng = np.random.default_rng(6)
+        pcm = np.rint(np.convolve(rng.normal(0, 3000, 16000), np.ones(4) / 4, mode='same')).astype('<i2').tobytes()
+        plan = next(p for p in (derive_loss(2, f'g-{i}') for i in range(200)) if p['loss_rate'] > 0.03)
+        clean, _ = self.ffmpeg.roundtrip(pcm, 'gsm')
+        lossy, record = self.ffmpeg.roundtrip(pcm, 'gsm', loss_plan=plan)
+        loss = record['frame_loss']  # Ffmpeg.roundtrip record; the 16 kHz wrapper adds packet_loss
+        self.assertEqual(len(lossy), len(pcm))
+        self.assertEqual((loss['clip_id'], loss['applied_via']), (plan['clip_id'], 'gsm_frame_substitution'))
+        self.assertEqual(loss['silence_frame_sha256'], hashlib.sha256(self.ffmpeg.gsm_silence_frame()).hexdigest())
+        lost, _ = _loss_mask(record['encoded_frames'], plan['loss_rate'], plan['seed'])
+        self.assertGreater(int(lost.sum()), 0)
+        first = int(np.flatnonzero(lost)[0])
+        a, b = np.frombuffer(clean, dtype='<i2'), np.frombuffer(lossy, dtype='<i2')
+        self.assertTrue(np.array_equal(a[:first * 160], b[:first * 160]))
+        self.assertFalse(np.array_equal(a, b))
+        self.assertEqual(self.ffmpeg.roundtrip(pcm, 'gsm', loss_plan=plan), (lossy, record))
+        silence = np.frombuffer(self.ffmpeg.decode(self.ffmpeg.gsm_silence_frame(), 'gsm'), dtype='<i2')
+        self.assertEqual(len(self.ffmpeg.gsm_silence_frame()), 33)
+        self.assertLess(np.abs(silence).max(), 50)
+
+    def test_gsm_silence_frames_inside_speech_decode_quiet(self):
+        # Review (14 Nov): the silence frame comes from a fresh encoder but is decoded
+        # after speech; check the decoder state does not make it ring. Burst of 8 lost
+        # frames at 20-27 in seeded noise: 20-22 repeat, 23-27 silence frames.
+        rng = np.random.default_rng(8)
+        pcm = np.rint(np.convolve(rng.normal(0, 3000, 8000), np.ones(4) / 4, mode='same')).astype('<i2').tobytes()
+        encoded = self.ffmpeg.encode(pcm, 'gsm')
+        frames = [encoded[i:i + 33] for i in range(0, len(encoded), 33)]
+        lost = [20 <= i < 28 for i in range(len(frames))]
+        stream = b''.join(fc.substitute_frames(frames, lost, self.ffmpeg.gsm_silence_frame()))
+        out = np.frombuffer(self.ffmpeg.decode(stream, 'gsm'), dtype='<i2').astype(np.float64)
+        clean = np.frombuffer(self.ffmpeg.decode(encoded, 'gsm'), dtype='<i2').astype(np.float64)
+        speech_rms = np.sqrt(np.mean(clean[23 * 160:28 * 160] ** 2))
+        # One transition frame (23) allowed; frames 24-27 must be near silence.
+        quiet_rms = np.sqrt(np.mean(out[24 * 160:28 * 160] ** 2))
+        self.assertLess(quiet_rms, 0.05 * speech_rms, (quiet_rms, speech_rms))
+        self.assertTrue(np.array_equal(out[:20 * 160], clean[:20 * 160]))
+
     def test_plain_decode_refuses_no_data_frames(self):
         encoded = self.ffmpeg.encode(tone(0.5), 'amr_nb_12.2')
         lossy, _ = fc.drop_amr_frames(encoded, 'amr_nb_12.2', 0.05, 4)
@@ -353,8 +429,8 @@ class RealFfmpegTests(unittest.TestCase):
     def test_frame_loss_plan_validation(self):
         from data.prepare.codecs import derive_loss
         plan = derive_loss(1, 'clip')
-        with self.assertRaisesRegex(ValueError, 'AMR-NB only'):
-            self.ffmpeg.roundtrip(tone(0.2), 'gsm', loss_plan=plan)
+        with self.assertRaisesRegex(ValueError, 'derive_loss'):
+            self.ffmpeg.roundtrip(tone(0.2), 'gsm', loss_plan={**plan, 'seed': 1})
         with self.assertRaisesRegex(ValueError, 'derive_loss'):
             self.ffmpeg.roundtrip(tone(0.2), 'amr_nb_4.75', loss_plan={**plan, 'loss_rate': 0.05})
         decoded, record = fc.telephone_codec_roundtrip(tone(0.5, rate=16000), 'amr_nb_4.75', self.ffmpeg,

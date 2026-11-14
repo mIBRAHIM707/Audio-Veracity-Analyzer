@@ -164,7 +164,12 @@ turns the real-ffmpeg skip into a failure. AMR-NB frame loss (14 Nov):
 `roundtrip(..., loss_plan=codecs.derive_loss(seed, clip_id))` drops 20 ms frames with
 the G.711 Bernoulli mask rule and replaces each by an RFC 4867 NO_DATA frame, so the
 OpenCORE decoder conceals natively and timing is kept; the record holds `frame_loss`
-and `received_sha256`. Selectable in `augment.py` specs; no GSM frame loss or jitter. A
+and `received_sha256`. GSM frame loss (`drop_gsm_frames`) uses the same plans with
+repeat_then_silence substitution: architecture §2.2 parity (hard cut after 3 repeats),
+not GSM 06.11 gradual muting. Measured 14 Nov in an 8-frame burst inside noise: the
+first silence frame decodes at 15.6 % of the speech RMS (decoder state), later ones at
+1.5 %. A GSM loss spec must name `"concealment": "repeat_then_silence"`; AMR loss specs
+name none (decoder-native). Both selectable in `augment.py` specs; no jitter. A
 live AMR-NB decoder has no encoder padding (parity is 6.x).
 
 Tool: Gyan.FFmpeg 9.0.2 full build, GPL-3.0 as built (libgsm: permissive TU Berlin licence; OpenCORE AMR: Apache-2.0),
@@ -229,9 +234,11 @@ reuses the writer's build step, so it detects drift and tampering, not a defect
 shared with the writer. Chains are not stacked on an augmented root.
 
 GSM/AMR-NB chains (14 Nov 2026): `"codec"` may be `gsm`, `amr_nb_4.75`, `amr_nb_7.4` or
-`amr_nb_12.2` with `"concealment": null, "jitter": false`; `"packet_loss"` may be true
-for AMR-NB only (per-clip `derive_loss` plan, NO_DATA frames, decoder-native
-concealment) and must be false for GSM; pass the pinned ffmpeg with `--ffmpeg <path>` (or
+`amr_nb_12.2` with `"jitter": false` and `"concealment": null` (except GSM with loss,
+below); `"packet_loss"` may be true
+(per-clip `derive_loss` plan; AMR-NB: NO_DATA frames with decoder-native concealment;
+GSM: architecture §2.2 repeat_then_silence frame substitution with a GSM-encoded
+silence frame, spec `"concealment": "repeat_then_silence"`); pass the pinned ffmpeg with `--ffmpeg <path>` (or
 `AVA_FFMPEG`) and, for manifest runs, `--ffmpeg-sha256` (see `ffmpeg_codecs.
 PINNED_WINDOWS_SHA256`). The record carries the executable hash, so `--verify` needs
 the same binary. A codec-tool failure aborts the run before anything is written.

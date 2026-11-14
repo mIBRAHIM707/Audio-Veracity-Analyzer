@@ -16,7 +16,8 @@ sample i lines up with input sample i and labels stay aligned. A live AMR-NB dec
 `rate` -> soxr HQ 8 kHz -> encode -> decode -> 8 kHz PCM16 plus a lineage record; bring
 it back to the model grid with `conditioning.canonicalize(decoded, 8000, 1)`. AMR-NB
 frame loss (`drop_amr_frames`, `loss_plan=`) replaces lost frames with NO_DATA frames
-for the decoder's own concealment; GSM frame loss and jitter are not implemented.
+for the decoder's own concealment; GSM frame loss (`drop_gsm_frames`) substitutes frames
+by the architecture §2.2 repeat_then_silence rule. Jitter is not implemented here.
 """
 import hashlib
 import os
@@ -26,7 +27,7 @@ import subprocess
 import numpy as np
 
 if __package__:
-    from .codecs import _loss_mask, derive_loss
+    from .codecs import REPEAT_LIMIT, _loss_mask, derive_loss
     from .conditioning import library_versions, resample_to_pcm16
 else:  # a script-directory 'codecs' import would shadow the standard library module
     raise SystemExit('Import as data.prepare.ffmpeg_codecs')
@@ -155,24 +156,34 @@ class Ffmpeg:
             raise CodecToolError('ffmpeg returned no or odd-length PCM')
         return decoded
 
+    def gsm_silence_frame(self):
+        """One GSM 06.10 frame encoding 160 samples of digital silence (cached)."""
+        if getattr(self, '_gsm_silence', None) is None:
+            self._gsm_silence = self.encode(bytes(2 * FRAME_SAMPLES), 'gsm')
+        return self._gsm_silence
+
     def roundtrip(self, narrow, codec, loss_plan=None):
-        """8 kHz PCM16 -> encode -> optional seeded AMR frame loss (`loss_plan` from
-        codecs.derive_loss, AMR-NB only) -> decode -> remove the codec delay -> 8 kHz
-        PCM16 of the input length. Returns (decoded bytes, record). Raises CodecToolError
-        if the decoder returned too few samples to cover the input after the delay."""
-        if loss_plan is not None:
-            if _spec(codec)['format'] != 'amr':
-                raise ValueError(f'frame loss is implemented for AMR-NB only, not {codec}')
-            if not isinstance(loss_plan, dict) or loss_plan != derive_loss(
-                    loss_plan.get('master_seed'), loss_plan.get('clip_id')):
-                raise ValueError('loss_plan must come unchanged from codecs.derive_loss')
+        """8 kHz PCM16 -> encode -> optional seeded frame loss (`loss_plan` from
+        codecs.derive_loss: AMR-NB NO_DATA frames, GSM repeat_then_silence substitution)
+        -> decode -> remove the codec delay -> 8 kHz PCM16 of the input length. Returns
+        (decoded bytes, record). Raises CodecToolError if the decoder returned too few
+        samples to cover the input after the delay."""
+        spec = _spec(codec)
+        if loss_plan is not None and (not isinstance(loss_plan, dict) or loss_plan != derive_loss(
+                loss_plan.get('master_seed'), loss_plan.get('clip_id'))):
+            raise ValueError('loss_plan must come unchanged from codecs.derive_loss')
         encoded = self.encode(narrow, codec)
         received, frame_loss = encoded, None
         if loss_plan is not None:
-            received, frame_loss = drop_amr_frames(encoded, codec, loss_plan['loss_rate'], loss_plan['seed'])
-            frame_loss.update({key: loss_plan[key] for key in ('derivation', 'master_seed', 'clip_id')},
-                              applied_via='amr_no_data_frames',
-                              mask_covers='every encoded frame incl. ffmpeg padding and the flush frame')
+            if spec['format'] == 'amr':
+                received, frame_loss = drop_amr_frames(encoded, codec, loss_plan['loss_rate'], loss_plan['seed'])
+                frame_loss.update(applied_via='amr_no_data_frames',
+                                  mask_covers='every encoded frame incl. ffmpeg padding and the flush frame')
+            else:
+                received, frame_loss = drop_gsm_frames(encoded, loss_plan['loss_rate'], loss_plan['seed'],
+                                                       self.gsm_silence_frame())
+                frame_loss.update(mask_covers='every encoded frame')
+            frame_loss.update({key: loss_plan[key] for key in ('derivation', 'master_seed', 'clip_id')})
         raw = self.decode(received, codec, allow_lost_frames=loss_plan is not None)
         delay, target = 2 * CODEC_DELAY_SAMPLES[codec], len(narrow)
         if len(raw) < delay + target:
@@ -270,6 +281,39 @@ def drop_amr_frames(encoded, codec, loss_rate, seed):
     return stream, {**record, 'unit': 'amr_frame_20ms', 'concealment': FRAME_LOSS_CONCEALMENT}
 
 
+GSM_CONCEALMENT = 'repeat_then_silence'
+
+
+def substitute_frames(frames, lost, silence_frame):
+    """Pure: the repeat_then_silence rule on encoded frames (see drop_gsm_frames)."""
+    output, previous, run = [], None, 0
+    for frame, gone in zip(frames, lost, strict=True):
+        if not gone:
+            output.append(frame)
+            previous, run = frame, 0
+            continue
+        run += 1
+        output.append(previous if previous is not None and run <= REPEAT_LIMIT else silence_frame)
+    return output
+
+
+def drop_gsm_frames(encoded, loss_rate, seed, silence_frame):
+    """Seeded Bernoulli loss of 20 ms GSM 06.10 frames (PRD FR-D6, 0-5 %), concealed in
+    the bitstream by the architecture §2.2 rule used for G.711: a lost frame repeats the
+    previous received frame for the first REPEAT_LIMIT frames of a burst, then (or with
+    no previous frame) becomes `silence_frame` (GSM-encoded digital silence); a hard
+    cut, no fade. libgsm has no bad-frame input, so this substitution is the decoder
+    side. Same mask rule and record as `codecs.drop_packets`. Returns (stream, record)."""
+    _check_stream(encoded, 'gsm')
+    if not isinstance(silence_frame, bytes) or len(silence_frame) != GSM_FRAME_BYTES:
+        raise ValueError('silence_frame must be one 33-byte GSM frame')
+    frames = [encoded[i:i + GSM_FRAME_BYTES] for i in range(0, len(encoded), GSM_FRAME_BYTES)]
+    lost, record = _loss_mask(len(frames), loss_rate, seed)
+    return b''.join(substitute_frames(frames, lost, silence_frame)), {**record, 'unit': 'gsm_frame_20ms', 'concealment': GSM_CONCEALMENT,
+                              'repeat_limit': REPEAT_LIMIT, 'applied_via': 'gsm_frame_substitution',
+                              'silence_frame_sha256': hashlib.sha256(silence_frame).hexdigest()}
+
+
 def _check_stream(encoded, codec, frames=None):
     """Known-answer framing check: exact frame size, mode and (when `frames` is given)
     count for the requested codec, so a different mode, codec or truncated stream is
@@ -307,7 +351,7 @@ def telephone_codec_roundtrip(canonical, codec, ffmpeg, *, rate=16000, loss_plan
         raise ValueError(f'Input longer than {MAX_SECONDS} s')
     samples = np.frombuffer(canonical, dtype='<i2').astype(np.float64)
     narrow, saturated = resample_to_pcm16(samples, rate, TELEPHONE_RATE)
-    # `loss_plan` (AMR-NB only) is validated by Ffmpeg.roundtrip; passed only when given.
+    # `loss_plan` is validated by Ffmpeg.roundtrip; passed only when given.
     decoded, record = (ffmpeg.roundtrip(narrow, codec) if loss_plan is None
                        else ffmpeg.roundtrip(narrow, codec, loss_plan=loss_plan))
     return decoded, {
