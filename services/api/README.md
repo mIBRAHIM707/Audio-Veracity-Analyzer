@@ -34,9 +34,12 @@ batcher), `ava_live_batches_total`, `ava_live_detector_failures_total`,
 `ava_live_directions_degraded`, `ava_live_directions_unmonitored`,
 `ava_live_max_effective_stride_seconds`, `ava_live_pipeline_snapshot_age_seconds` (grows
 when the loop stalls) and `ava_live_pipeline_snapshot_valid` (0 before the first
-publish or for a malformed snapshot, which never breaks `/metrics`). FR-O6 is still
-partial: telephony metrics, live per-window inference latency histograms, structured
-JSON logs and Grafana remain.
+publish or for a malformed snapshot, which never breaks `/metrics`), and the histogram
+`ava_live_inference_seconds{outcome=ok|failed}` (time of each live detector call per
+batch, measured by the pipeline's monotonic `timer`; buckets 5 ms to 30 s travel with
+the snapshot and are validated; untimed calls counted in
+`ava_live_inference_timer_failures_total`). FR-O6 is still partial: telephony
+metrics, structured JSON logs and Grafana remain.
 
 The calls and events routes need `create_app(service, hub=EventHub())`: the in-process
 hub the scorer publishes to (Redis pub/sub is backlog 5.1). A background task drains

@@ -126,6 +126,8 @@ PIPELINE_COUNTERS = (('ava_live_batches_total', 'batches', 'Live batches sent to
                       'Failed hand-overs of the pipeline snapshot to the metrics reader.'),
                      ('ava_live_status_publish_failures_total', 'status_publish_failures',
                       'Failed unmonitored status publications (the window was kept).'),
+                     ('ava_live_inference_timer_failures_total', 'timer_failures',
+                      'Detector calls not timed because the timer failed or went backwards.'),
                      ('ava_live_file_batches_not_run_total', 'file_batches_not_run',
                       'File batches handed to the live loop and not run (file jobs are not driven there).'))
 PIPELINE_GAUGES = (('ava_live_directions', 'directions', 'Call directions with a window queue.'),
@@ -143,6 +145,28 @@ def _number(value):
     return value
 
 
+def _inference_histogram(histogram):
+    """`ava_live_inference_seconds{outcome}` from the pipeline's cumulative-ready bucket
+    counts; the bounds travel with the snapshot and are checked, not trusted."""
+    bounds, series = histogram['bounds'], histogram['series']
+    if not bounds or any(not isinstance(b, (int, float)) or isinstance(b, bool) or not math.isfinite(b)
+                         for b in bounds) or list(bounds) != sorted(set(bounds)) \
+            or set(series) != {'ok', 'failed'}:
+        raise ValueError('inference histogram bounds/series are malformed')
+    lines = ['# HELP ava_live_inference_seconds Live detector call time per batch (FR-O6), by outcome.',
+             '# TYPE ava_live_inference_seconds histogram']
+    for outcome in ('ok', 'failed'):
+        counts, count = series[outcome]['buckets'], _number(series[outcome]['count'])
+        if len(counts) != len(bounds) or any(_number(n) > count for n in counts) or list(counts) != sorted(counts):
+            raise ValueError('inference histogram buckets are malformed')
+        lines += [f'ava_live_inference_seconds_bucket{{outcome="{outcome}",le="{float(bound)!r}"}} {n}'
+                  for bound, n in zip(bounds, counts)]
+        lines += [f'ava_live_inference_seconds_bucket{{outcome="{outcome}",le="+Inf"}} {count}',
+                  f'ava_live_inference_seconds_sum{{outcome="{outcome}"}} {float(_number(series[outcome]["sum"]))!r}',
+                  f'ava_live_inference_seconds_count{{outcome="{outcome}"}} {count}']
+    return lines
+
+
 def _pipeline_lines(snapshot, age_seconds):
     """Prometheus lines for the latest live-pipeline snapshot; no call IDs ever."""
     counts = snapshot['counts']
@@ -158,6 +182,7 @@ def _pipeline_lines(snapshot, age_seconds):
         lines += [f'# HELP {name} {text}', f'# TYPE {name} counter', f'{name} {_number(counts[key])}']
     for name, key, text in PIPELINE_GAUGES:
         lines += [f'# HELP {name} {text}', f'# TYPE {name} gauge', f'{name} {_number(snapshot[key])}']
+    lines += _inference_histogram(snapshot['inference_seconds'])
     lines += ['# HELP ava_live_pipeline_snapshot_age_seconds Seconds since the live loop last '
               'published its snapshot (grows when the loop stalls).',
               '# TYPE ava_live_pipeline_snapshot_age_seconds gauge',

@@ -195,6 +195,56 @@ class AccountingTests(unittest.TestCase):
         self.assertEqual(make()[0].metrics_snapshot()['max_effective_stride_s'], 0.0)
 
 
+class InferenceTimingTests(unittest.TestCase):
+    """Claude-authored, 14 Nov 2026: FR-O6 live detector-call histogram."""
+
+    def make_timed(self, durations):
+        """Timer returning (0.0, d) pairs, so each measured duration is exactly d
+        (review: offsets like 1000 + d round below d and hid an off-by-one)."""
+        from services.scorer.pipeline import LivePipeline
+        reads = iter([value for d in durations for value in (0.0, d)])
+        pipe, live, detector, sub = make()
+        timed = LivePipeline(live, pipe.batcher, detector, pipe.config, timer=lambda: next(reads))
+        return timed, live, detector
+
+    def run_batches(self, pipe, live, detector, fails):
+        live.start('c')
+        for i, fail in enumerate(fails):
+            detector.fail = fail
+            pipe.offer('c', 'caller', i, window(0.5), 2.0 * i)
+            pipe.schedule(2.0 * i)
+            pipe.step(2.0 * i + 0.1)
+
+    def test_buckets_are_cumulative_inclusive_and_split_by_outcome(self):
+        from services.scorer.pipeline import INFERENCE_BUCKETS_S
+        durations = [0.005, 0.0051, 0.3, 45.0, 0.05]
+        pipe, live, detector = self.make_timed(durations)
+        self.run_batches(pipe, live, detector, [None, None, None, None, 'raise'])
+        hist = pipe.metrics_snapshot()['inference_seconds']
+        self.assertEqual(hist['bounds'], list(INFERENCE_BUCKETS_S))
+        ok, failed = hist['series']['ok'], hist['series']['failed']
+        expected = [sum(d <= b for d in durations[:4]) for b in INFERENCE_BUCKETS_S]
+        self.assertEqual(ok['buckets'], expected)
+        self.assertEqual(ok['buckets'][0], 1, 'the 0.005 bound is inclusive')
+        self.assertEqual((ok['count'], round(ok['sum'], 9)), (4, round(sum(durations[:4]), 9)))
+        self.assertEqual((failed['count'], failed['buckets'][3]), (1, 1))  # 0.05 <= 0.05
+        self.assertEqual(pipe.counts['timer_failures'], 0)
+
+    def test_broken_or_backwards_timer_is_counted_and_never_stops_scoring(self):
+        for timer in (lambda: (_ for _ in ()).throw(OSError('no clock')), lambda: float('nan'),
+                      iter([5.0, 4.0]).__next__, lambda: True, lambda: 10 ** 400):
+            pipe, live, detector, sub = make()
+            pipe._timer = timer
+            live.start('c')
+            pipe.offer('c', 'caller', 0, window(0.5), 0.0)
+            pipe.schedule(0.0)
+            self.assertEqual(pipe.step(0.1), 1)
+            self.assertEqual(pipe.counts['timer_failures'], 1)
+            self.assertEqual(pipe.metrics_snapshot()['inference_seconds']['series']['ok']['count'], 0)
+        with self.assertRaises(ValueError):
+            type(pipe)(live, pipe.batcher, detector, pipe.config, timer=3)
+
+
 class StatsBoxTests(unittest.TestCase):
     def test_publish_read_age_and_isolation(self):
         clock = Clock()
@@ -292,8 +342,14 @@ class ApiTests(unittest.TestCase):
         self.assertEqual((samples['ava_live_directions'], samples['ava_live_directions_degraded']), (1.0, 1.0))
         self.assertEqual(samples['ava_live_pipeline_snapshot_age_seconds'], 1.5)
         self.assertEqual(samples['ava_live_pipeline_snapshot_valid'], 1.0)
-        self.assertEqual((declared['ava_live_windows_resolved_total'], declared['ava_live_windows_waiting']),
-                         ('counter', 'gauge'))
+        self.assertEqual((declared['ava_live_windows_resolved_total'], declared['ava_live_windows_waiting'],
+                          declared['ava_live_inference_seconds']), ('counter', 'gauge', 'histogram'))
+        hist = snap['inference_seconds']['series']['ok']
+        rendered = [v for k, v in samples.items() if k.startswith('ava_live_inference_seconds_bucket{outcome="ok"')]
+        self.assertEqual(rendered, hist['buckets'] + [hist['count']])
+        self.assertEqual(rendered, sorted(rendered))
+        self.assertEqual(samples['ava_live_inference_seconds_count{outcome="ok"}'], c['batches'])
+        self.assertGreater(c['batches'], 0)
 
     def test_malformed_snapshot_does_not_break_metrics(self):
         stats = PipelineStats()
@@ -301,7 +357,19 @@ class ApiTests(unittest.TestCase):
         pipe = make()[0]
         infinite = pipe.metrics_snapshot()
         infinite['counts']['scored'] = float('inf')
-        for bad in ({'counts': {}}, {'counts': {'accepted': -1}}, infinite):
+        bad_hist = []
+        for mutate in (lambda h: h['bounds'].reverse(), lambda h: h['series'].pop('failed'),
+                       lambda h: h['series']['ok']['buckets'].append(0),
+                       lambda h: h['series']['ok'].update(buckets=[1] + [0] * (len(h['bounds']) - 1), count=1),
+                       lambda h: h['series']['ok'].update(count=-1), lambda h: h['bounds'].__setitem__(0, 'x'),
+                       lambda h: h['series']['ok'].update(buckets=[2] * len(h['bounds']), count=1),
+                       lambda h: h['series']['ok'].update(sum=float('nan')),
+                       lambda h: h['bounds'].__setitem__(0, True),
+                       lambda h: h['bounds'].__setitem__(1, h['bounds'][0])):
+            snapshot = pipe.metrics_snapshot()
+            mutate(snapshot['inference_seconds'])
+            bad_hist.append(snapshot)
+        for bad in ({'counts': {}}, {'counts': {'accepted': -1}}, infinite, *bad_hist):
             stats.publish(bad)
             response = client.get('/metrics')
             self.assertEqual(response.status_code, 200)

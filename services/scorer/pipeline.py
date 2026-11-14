@@ -37,7 +37,10 @@ reject a `submit` after a window was taken). An in-flight window is not "behind"
 stride grows once one window is in flight and another is already waiting. Not
 thread-safe: one owner.
 """
+import copy
 import itertools
+import math
+import numbers
 import threading
 import time
 
@@ -50,10 +53,22 @@ from .degraded import StrideController, _seconds
 from .pending import PendingWindows
 
 
+# Live detector-call duration buckets (seconds, inclusive upper bounds) for FR-O6.
+INFERENCE_BUCKETS_S = (0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1.0, 2.0, 5.0, 10.0, 30.0)
+INFERENCE_OUTCOMES = ('ok', 'failed')
+
+
 class LivePipeline:
-    def __init__(self, live, batcher, detector, config, *, max_pending=4):
+    def __init__(self, live, batcher, detector, config, *, max_pending=4, timer=time.perf_counter):
+        """`timer` is a monotonic wall-time source used only to measure detector calls
+        (FR-O6); scheduling still uses the caller's explicit `now`."""
         if type(max_pending) is not int or max_pending < 1:
             raise ValueError('max_pending must be an integer >= 1')
+        if not callable(timer):
+            raise ValueError('timer must be callable')
+        self._timer = timer
+        self._inference = {outcome: {'buckets': [0] * len(INFERENCE_BUCKETS_S), 'sum': 0.0, 'count': 0}
+                           for outcome in INFERENCE_OUTCOMES}
         StrideController(config)  # validate the degraded-mode settings now, not at first offer
         self.live, self.batcher, self.detector, self.config = live, batcher, detector, config
         self.max_pending = max_pending
@@ -67,7 +82,8 @@ class LivePipeline:
                        'skipped_ended': 0, 'scored': 0, 'batches': 0, 'detector_failures': 0,
                        'windows_lost_to_detector': 0, 'result_errors': 0, 'file_batches_not_run': 0,
                        'accepted': 0, 'stride_skipped': 0, 'result_not_applied': 0,
-                       'unmonitored_entered': 0, 'metrics_publish_failures': 0, 'status_publish_failures': 0}
+                       'unmonitored_entered': 0, 'metrics_publish_failures': 0, 'status_publish_failures': 0,
+                       'timer_failures': 0}
 
     def check_clock(self, now):
         """Raise ValueError if `now` is invalid or earlier than the last one; no change."""
@@ -174,15 +190,18 @@ class LivePipeline:
         if not items:
             return 0
         self.counts['batches'] += 1
+        started = self._read_timer()
         try:
             logits = self.detector(np.stack([item[3] for item in items]))
             scores = [p_synthetic([float(v) for v in row]) for row in logits]
             if len(scores) != len(items):
                 raise ValueError('detector returned a different number of rows')
         except Exception:  # AVA fault: lose this batch's scores, never the calls
+            self._observe_inference(started, 'failed')
             self.counts['detector_failures'] += 1
             self.counts['windows_lost_to_detector'] += len(items)
             return 0
+        self._observe_inference(started, 'ok')
         applied = 0
         for ((call_id, direction), pending, index, _), score in zip(items, scores):
             status = pending.controller.status()
@@ -199,6 +218,28 @@ class LivePipeline:
             else:
                 self.counts['result_not_applied'] += 1
         return applied
+
+    def _read_timer(self):
+        try:
+            value = self._timer()
+            ok = isinstance(value, numbers.Real) and not isinstance(value, bool) and math.isfinite(value)
+            return float(value) if ok else None
+        except Exception:  # includes OverflowError from a huge int
+            return None
+
+    def _observe_inference(self, started, outcome):
+        """Record one detector call (including output conversion) in the FR-O6 histogram;
+        a broken or backwards timer is counted and never affects scoring."""
+        ended = self._read_timer()
+        if started is None or ended is None or ended < started:
+            self.counts['timer_failures'] += 1
+            return
+        seconds, series = ended - started, self._inference[outcome]
+        for i, bound in enumerate(INFERENCE_BUCKETS_S):
+            if seconds <= bound:
+                series['buckets'][i] += 1
+        series['sum'] += seconds
+        series['count'] += 1
 
     # --- lifecycle -----------------------------------------------------------------------
     def end_call(self, call_id, reason, *, speech_seconds):
@@ -239,7 +280,11 @@ class LivePipeline:
                 'in_batcher': self.batcher.pending()['live'],
                 'degraded': sum(s['degraded'] for s in statuses),
                 'unmonitored': sum(s['unmonitored'] for s in statuses),
-                'max_effective_stride_s': max((s['effective_stride_s'] for s in statuses), default=0.0)}
+                'max_effective_stride_s': max((s['effective_stride_s'] for s in statuses), default=0.0),
+                'inference_seconds': {'bounds': list(INFERENCE_BUCKETS_S),
+                                      'series': {outcome: {'buckets': list(s['buckets']), 'sum': s['sum'],
+                                                           'count': s['count']}
+                                                 for outcome, s in self._inference.items()}}}
 
     def publish_metrics(self, stats):
         """Hand the current aggregate to a `PipelineStats` read by other threads. Call it
@@ -263,14 +308,14 @@ class PipelineStats:
     def publish(self, snapshot):
         if not isinstance(snapshot, dict) or not isinstance(snapshot.get('counts'), dict):
             raise ValueError('snapshot must come from LivePipeline.metrics_snapshot()')
-        copy = {**snapshot, 'counts': dict(snapshot['counts'])}
+        held = copy.deepcopy(snapshot)  # small: counts, gauges and one histogram
         at = self._clock()
         with self._lock:
-            self._latest, self._at = copy, at
+            self._latest, self._at = held, at
 
     def read(self):
         with self._lock:
             latest, at = self._latest, self._at
         if latest is None:
             return None, None
-        return {**latest, 'counts': dict(latest['counts'])}, max(0.0, self._clock() - at)
+        return copy.deepcopy(latest), max(0.0, self._clock() - at)
