@@ -92,6 +92,12 @@ items needing that data are listed at the end and stay out of the queue.
   VoIP path. 11 Nov: noise wired through `augment.py` (noise file named by PCM hash,
   source ID and licence; clipping refusals keep the drawn SNR for bias audits).
 - [ ] 3.QA Sample-level parity, malformed formats and immutable-original checks.
+  Progress (14 Nov, catch-up): `docs/qa/phase-3-qa.md` independent conditional pass as
+  infrastructure for the implemented scope; L1-L6 fixed (one plain-PCM fmt rule in
+  `data/prepare/wav_format.py` on every entry point plus a verifier mirror, truncated
+  header routing, nested JSON, non-empty quarantine errors, copies start unreviewed),
+  14 Claude-authored tests; re-review pass. Box stays open while 3.1-3.4 are partial;
+  M1 (§2.2 8 kHz batch rule and normalization unit) awaits a PRD/architecture decision.
 
 ## 4 — Streaming decisions (FR-I4–I8)
 - [x] 4.1 Configuration validation and call-scoped reload behavior.
@@ -141,9 +147,11 @@ items needing that data are listed at the end and stay out of the queue.
   FR-O5 opt-in snippet retention on the live path. 14 Nov: `services/retention/
   snippets.py` (policy fixed at call start, 30 s ring per direction, one sealed file
   per alert ID, TTL and purge-when-off cleanup, failures contained) with Claude-authored
-  tests. **Blocked part:** AES-256-GCM needs a crypto dependency (not cached); the
-  store refuses non-AES sealers. Remaining: crypto + key management, wiring to tap
-  audio and `alert.raised`, config setting, scheduled cleanup.
+  tests. 14 Nov (catch-up, after the owner's install decision): AES-256-GCM on pinned
+  `cryptography==50.0.2` (`requirements-retention.txt`), key file outside the repo,
+  `open_snippet` authentication, fail-closed TTL headers; 11 Claude-authored tests incl.
+  NIST GCM known answers; review fixed. Remaining: key provisioning/rotation (operator
+  decision), wiring to tap audio and `alert.raised`, config setting, scheduled cleanup.
 - [ ] 5.QA Real service integration, disconnects, failures and state recovery.
   Progress (14 Nov): in-process live-path integration test
   (`tests/unit/test_live_path_integration.py`: pipeline -> LiveCalls -> hub -> API

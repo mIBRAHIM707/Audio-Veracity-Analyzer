@@ -8,6 +8,10 @@ no-commit instruction for that branch only. Collection tasks below remain tracke
 real prepared root once a noise corpus and the concealment choice are confirmed.
 14 Nov: the API now serves the FR-A3 call list and the FR-A4 WebSocket from an
 in-process event hub (backlog 5.2 partial); no participant data involved.
+14 Nov (catch-up): data-relevant change — augmented copies now start
+`review_status: unreviewed` (parent statuses kept as `parent_*`), so any augmented
+root made before this needs a re-run of `augment.py`; only plain PCM (format tag 1)
+WAVs are accepted on every intake path (`data/prepare/README.md`).
 
 Updated 4 October 2026. This is the active sequence; evidence lives in
 `current-state.md` and `handoffs/`. Check marks mean the stated bounded task passed

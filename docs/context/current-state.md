@@ -209,6 +209,22 @@ and about 50,000 original clips, excluding codec copies.
   WebSocket, metrics) with a fake detector: alert lifecycle, capacity refusal event,
   end reasons, late result after `monitor_lost`, detector outage. No telephony,
   Redis/PostgreSQL or restart recovery. Unit suite 607 OK (2 skips).
+- **Owner decision (Tughral, 14 Nov 13:22, commit b4db2b7):** scheduled sessions may
+  install the free/open-source software the backlog needs (pinned, licence recorded,
+  stored outside Git); earlier missing-package blockers are superseded. Installs needing
+  admin rights, reboots or interactive prompts are recorded for a human.
+- **Backlog 3.QA progress (14 Nov catch-up): phase-3 audio-path QA.**
+  `docs/qa/phase-3-qa.md` (independent conditional pass as infrastructure; file-mode
+  sample parity proven). Fixed: one plain-PCM fmt rule (`data/prepare/wav_format.py`)
+  for preparation, augmentation, the analysis service and the verifier; inflated
+  header sizes refused before duration routing; nested JSON as ValueError; empty
+  quarantine errors; augmented copies start `unreviewed`. 14 Claude-authored tests.
+  Open: §2.2 8 kHz batch rule and normalization unit (M1, PRD decision).
+- **Backlog 5.3 progress (14 Nov catch-up): AES-256-GCM for FR-O5 snippets.**
+  `AesGcmSealer` on pinned `cryptography==50.0.2` (`requirements-retention.txt`), key file
+  outside the repository, `open_snippet` authenticates header/alert binding; 11
+  Claude-authored tests incl. NIST GCM known answers; review fixed. Unit suite with
+  audio, API and retention deps 632 OK (3 skips). Key provisioning/rotation open.
 - **Backlog 5.3 progress (14 Nov): FR-O5 snippet retention without encryption.**
   `services/retention/snippets.py` implements the retention rules (default off,
   policy fixed at call start, 30 s ring per scored direction, exactly one sealed file
