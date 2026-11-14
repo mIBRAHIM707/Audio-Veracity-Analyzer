@@ -70,6 +70,12 @@ items needing that data are listed at the end and stay out of the queue.
   **Blocked 9 Nov:** no VAD package or Silero weights are installed; adding them is a
   dependency/model download outside the runner window rules. Needs a human to pin
   and provision them locally (or approve an energy-based interim VAD).
+  14 Nov (catch-up): blocker superseded by the owner's install decision. Done:
+  `services/scorer/speech_windows.py` VAD-gated speech-only windows with the file-mode
+  plan, partial/scorable rule, no-speech timing, VAD fault drop+reset; 11
+  Claude-authored tests with fake VADs; review fixed. Remaining: Silero ONNX adapter
+  (onnxruntime + model file), connection to `LivePipeline.offer`, PRD rule for 1.5-2.5 s
+  tails (file mode scores them; live marks them not scorable).
 - [ ] 3.3 G.711/GSM and AMR-NB file codec pipeline; loss/jitter and source lineage.
   Progress (9 Nov): `data/prepare/codecs.py` G.711 mu/A-law + 8 kHz roundtrip with
   lineage; 10 Claude-authored tests (exhaustive audioop oracle). Seeded 0-5 % packet

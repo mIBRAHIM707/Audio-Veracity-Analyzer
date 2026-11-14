@@ -220,6 +220,12 @@ and about 50,000 original clips, excluding codec copies.
   header sizes refused before duration routing; nested JSON as ValueError; empty
   quarantine errors; augmented copies start `unreviewed`. 14 Claude-authored tests.
   Open: §2.2 8 kHz batch rule and normalization unit (M1, PRD decision).
+- **Backlog 3.2 progress (14 Nov catch-up): FR-I3 speech windows (fake VAD).**
+  `services/scorer/speech_windows.py` excludes non-speech frames (time still advances),
+  windows the speech-only stream exactly like file mode, marks partial windows below
+  2.5 s of speech not scorable, reports no-speech time; a VAD fault drops that audio
+  and resets the VAD. 11 Claude-authored tests; review fixed. No Silero model yet.
+  Unit suite with audio, API and retention deps 643 OK (3 skips).
 - **Backlog 5.3 progress (14 Nov catch-up): AES-256-GCM for FR-O5 snippets.**
   `AesGcmSealer` on pinned `cryptography==50.0.2` (`requirements-retention.txt`), key file
   outside the repository, `open_snippet` authenticates header/alert binding; 11
