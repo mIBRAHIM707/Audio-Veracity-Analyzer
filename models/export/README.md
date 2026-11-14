@@ -63,7 +63,12 @@ loads the hash-verified local checkpoint through `models/smoke/antideepfake.py` 
 download), truncates to `--kept-layers`, adds a seeded untrained SLS head (no
 AVA-trained head exists yet), exports FP32 into a new directory outside the
 repository, runs parity on 100 seeded noise windows and, with `--int8`, makes the
-dynamic INT8 model and reports its drift. `report.json` records provenance, hashes,
+dynamic INT8 model and reports its drift; with `--int8-static` it makes the static
+INT8 model calibrated on `--calibration-windows` seeded noise windows (a seed disjoint
+from the parity windows; noise calibration is for timing and numerics only, not a
+deployable calibration set: a file named `*-int8-static.onnx` from this runner is for
+timing only, and its drift figures, measured on noise from the calibration
+distribution, are optimistic and must not enter any accuracy or FR-M7 statement). `report.json` records provenance, hashes,
 parity, timings, versions and limitations; an `INCOMPLETE` marker stays in the
 directory if the run fails (consume a report only without it). It checks graph numerics only, with no
 accuracy or latency claim; the loader is injectable and tested with a tiny backbone.

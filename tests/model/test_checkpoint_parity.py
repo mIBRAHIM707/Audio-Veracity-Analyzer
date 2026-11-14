@@ -133,6 +133,57 @@ class CheckpointParityTests(unittest.TestCase):
         self.assertTrue((out / 'report.json').exists())
         self.assertFalse((out / 'INCOMPLETE').exists())
 
+    def test_static_int8_option(self):
+        out = self.dir / 'static'
+        report = cp.run('r', out, kept_layers=2, threads=1, load=_load, base=TINY, int8_static=True,
+                        calibration_windows=10)
+        static = report['int8_static']
+        self.assertGreater(static['export']['quantized_nodes'], 0)
+        self.assertEqual(static['export']['calibration_windows'], 10)
+        self.assertEqual(static['calibration_seed'], report['windows']['seed'] + 1)  # not the parity seed
+        self.assertTrue(static['drift']['finite'])
+        self.assertNotIn('int8_dynamic', report)
+        self.assertEqual(sorted(p.name for p in out.iterdir()),
+                         ['ava-l2-fp32.onnx', 'ava-l2-int8-static.onnx', 'report.json'])
+        for count in (9, True):
+            with self.subTest(calibration_windows=count):
+                with self.assertRaises(ValueError):
+                    cp.run('r', self.dir / f'bad{count}', kept_layers=2, threads=1, load=_load, base=TINY,
+                           int8_static=True, calibration_windows=count)
+                self.assertFalse((self.dir / f'bad{count}').exists())
+
+    def test_static_failure_keeps_fp32_evidence_and_exit_code(self):
+        from unittest import mock
+        from models.export import onnx_export as ox
+
+        def fails(*args, **kwargs):
+            raise RuntimeError('calibration failed')
+
+        out = self.dir / 'staticfail'
+        with mock.patch.object(ox, 'quantize_int8_static', fails):
+            report = cp.run('r', out, kept_layers=2, threads=1, load=_load, base=TINY, int8_static=True,
+                            calibration_windows=10)
+        self.assertTrue(report['parity']['passed'])
+        self.assertEqual(report['int8_static'], {'error': 'RuntimeError: calibration failed'})
+        self.assertFalse((out / 'INCOMPLETE').exists())
+
+    def test_main_exit_code_two_on_int8_failure(self):
+        from unittest import mock
+        real_run = cp.run
+
+        def run_tiny(*args, **kwargs):
+            kwargs.update(load=_load, base=TINY, threads=1)
+            return real_run(*args, **kwargs)
+
+        def fails(*args, **kwargs):
+            raise RuntimeError('calibration failed')
+
+        from models.export import onnx_export as ox
+        with mock.patch.object(cp, 'run', run_tiny), mock.patch.object(ox, 'quantize_int8_static', fails):
+            code = cp.main(['--model-root', 'r', '--output-dir', str(self.dir / 'm'), '--kept-layers', '2',
+                            '--int8-static', '--calibration-windows', '10'])
+        self.assertEqual(code, 2)
+
     def test_thread_setting_restored(self):
         before = torch.get_num_threads()
         cp.run('r', self.dir / 't', kept_layers=1, threads=1 if before != 1 else 2, load=_load, base=TINY)

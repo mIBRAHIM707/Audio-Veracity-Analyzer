@@ -47,7 +47,7 @@ def load_verified(model_root):
 
 
 def run(model_root, output_dir, *, kept_layers, threads=4, seed=0, windows=ox.PARITY_MIN_WINDOWS,
-        batch_size=8, int8=False, load=load_verified, base=None):
+        batch_size=8, int8=False, int8_static=False, calibration_windows=20, load=load_verified, base=None):
     """Export and check parity; returns the report (also written as report.json)."""
     import torch
     from models.ava.backbone import BACKBONE_CONFIG, backbone_config
@@ -59,6 +59,10 @@ def run(model_root, output_dir, *, kept_layers, threads=4, seed=0, windows=ox.PA
         raise ValueError(f'windows must be an integer from {ox.PARITY_MIN_WINDOWS} to {ox.PARITY_MAX_WINDOWS}')
     if type(batch_size) is not int or not 1 <= batch_size <= ox.PARITY_MAX_BATCH:
         raise ValueError(f'batch_size must be an integer from 1 to {ox.PARITY_MAX_BATCH}')
+    if (type(calibration_windows) is not int
+            or not ox.CALIBRATION_MIN_WINDOWS <= calibration_windows <= ox.CALIBRATION_MAX_WINDOWS):
+        raise ValueError(f'calibration_windows must be an integer from {ox.CALIBRATION_MIN_WINDOWS} '
+                         f'to {ox.CALIBRATION_MAX_WINDOWS}')
     base = BACKBONE_CONFIG if base is None else base
     backbone_config(kept_layers, base)  # refuse a bad layer count before touching disk
     output_dir = Path(output_dir).resolve()
@@ -71,14 +75,16 @@ def run(model_root, output_dir, *, kept_layers, threads=4, seed=0, windows=ox.PA
     previous_threads = torch.get_num_threads()
     torch.set_num_threads(threads)
     try:
-        report = _run(model_root, output_dir, kept_layers, threads, seed, windows, batch_size, int8, load, base)
+        report = _run(model_root, output_dir, kept_layers, threads, seed, windows, batch_size, int8,
+                      int8_static, calibration_windows, load, base)
     finally:
         torch.set_num_threads(previous_threads)
     marker.unlink()
     return report
 
 
-def _run(model_root, output_dir, kept_layers, threads, seed, windows, batch_size, int8, load, base):
+def _run(model_root, output_dir, kept_layers, threads, seed, windows, batch_size, int8,
+         int8_static, calibration_windows, load, base):
     import torch
     from models.ava.backbone import truncate_backbone
     from models.ava.model import AvaDetector
@@ -118,6 +124,20 @@ def _run(model_root, output_dir, kept_layers, threads, seed, windows, batch_size
             del candidate
         except Exception as error:  # keep the FP32 evidence; the INT8 failure is recorded
             report['int8_dynamic'] = {'error': f'{type(error).__name__}: {error}'}
+    if int8_static:
+        # Calibration noise uses its own seed, disjoint from the parity windows.
+        calibration_seed = seed + 2
+        try:
+            quantized = ox.quantize_int8_static(record['path'], output_dir / f'ava-l{kept_layers}-int8-static.onnx',
+                                                noise_windows(calibration_windows, calibration_seed),
+                                                source_sha256=record['sha256'])
+            candidate = ox.open_session(quantized['path'], threads=threads, expected_sha256=quantized['sha256'])
+            report['int8_static'] = {'export': quantized, 'calibration_seed': calibration_seed,
+                                     'calibration_kind': 'seeded synthetic noise (timing/numerics only)',
+                                     'drift': ox.compare_sessions(session, candidate, data, batch_size=1)}
+            del candidate
+        except Exception as error:
+            report['int8_static'] = {'error': f'{type(error).__name__}: {error}'}
     del session
     report = _json_safe(report)
     with (output_dir / 'report.json').open('x', encoding='utf-8') as stream:
@@ -144,11 +164,16 @@ def main(argv=None):
     parser.add_argument('--threads', type=int, default=4)
     parser.add_argument('--seed', type=int, default=0)
     parser.add_argument('--int8', action='store_true')
+    parser.add_argument('--int8-static', action='store_true')
+    parser.add_argument('--calibration-windows', type=int, default=20)
     args = parser.parse_args(argv)
     report = run(args.model_root, args.output_dir, kept_layers=args.kept_layers, threads=args.threads,
-                 seed=args.seed, int8=args.int8)
+                 seed=args.seed, int8=args.int8, int8_static=args.int8_static,
+                 calibration_windows=args.calibration_windows)
     parity = report['parity']
-    int8_error = report.get('int8_dynamic', {}).get('error')
+    errors = {name: report[name]['error'] for name in ('int8_dynamic', 'int8_static')
+              if 'error' in report.get(name, {})}
+    int8_error = errors or None
     print(json.dumps({'passed': parity['passed'], 'max_abs_logit_diff': parity.get('max_abs_logit_diff'),
                       'export_sha256': report['export']['sha256'], 'int8_error': int8_error,
                       'report': str(Path(args.output_dir).resolve() / 'report.json')}))
