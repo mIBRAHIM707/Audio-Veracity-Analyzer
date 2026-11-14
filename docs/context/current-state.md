@@ -110,8 +110,11 @@ and about 50,000 original clips, excluding codec copies.
   `data/prepare/ffmpeg_codecs.py` through pinned ffmpeg 9.0.2 (winget user install,
   GPL-3.0, Windows hash pinned): known-answer frame/mode checks, measured AMR frame
   rule and 40-sample delay compensation, lineage with exact arguments; 19
-  Claude-authored tests (7 need the local ffmpeg; CI skips them). Not yet in
-  `augment.py`; no GSM/AMR frame loss.
+  Claude-authored tests (7 need the local ffmpeg; CI skips them). Same day: wired into
+  `augment.py` (and the training window loader), seeded frame loss (AMR NO_DATA,
+  GSM repeat_then_silence) and jitter from the G.711 plans, concealed once, with
+  G.711-compatible record names. Remaining: per-clip codec mixing across copies,
+  Opus/G.729, RFC 4867 RTP payloads (6.x).
 - **Backlog 3.1 in progress (9 Nov): offline/serving conditioning parity.**
   `tests/unit/test_conditioning_parity.py` (Claude-authored) runs one WAV through
   `prepare_audio.py --condition` and the analysis service: identical canonical PCM

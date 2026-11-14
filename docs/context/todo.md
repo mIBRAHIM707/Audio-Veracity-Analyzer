@@ -14,6 +14,9 @@ root made before this needs a re-run of `augment.py`; only plain PCM (format tag
 WAVs are accepted on every intake path (`data/prepare/README.md`).
 14 Nov (catch-up 2): backlog 2.3 done — a local upload page (`dashboard/`) for
 single PCM16 WAV analysis; useful for the 2.QA public-pilot check, no data change.
+2.QA done on public CSALT clips with the real checkpoint (local only). Data-relevant:
+`augment.py` can now make GSM 06.10 and AMR-NB copies (with loss/jitter) through a
+pinned local ffmpeg 9.0.2 (`--ffmpeg`, `--ffmpeg-sha256`); verify needs the same binary.
 
 Updated 4 October 2026. This is the active sequence; evidence lives in
 `current-state.md` and `handoffs/`. Check marks mean the stated bounded task passed
