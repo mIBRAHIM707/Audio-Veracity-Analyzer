@@ -34,12 +34,15 @@ TRANSIENT_RETRY_SECONDS = 120
 MODELS = {"opus", "sonnet", "claude-opus-5-5", "claude-fable-5-1", "claude-sonnet-5"}
 
 
-def session_window(now: datetime) -> tuple[datetime, datetime, datetime]:
+def session_window(now: datetime, hours: int = 2) -> tuple[datetime, datetime, datetime]:
+    """Noon start; `hours` long (owner decision 14 Nov 2026: configurable, 2 to 10); launches stop 15 min early."""
     if now.tzinfo is None:
         raise ValueError("Timezone-aware time required")
-    day = now.astimezone(PKT).date()
-    return tuple(datetime.combine(day, value, PKT) for value in
-                 (time(12), time(13, 45), time(14)))
+    if type(hours) is not int or not 2 <= hours <= 10:
+        raise ValueError("window_hours must be an integer from 2 to 10")
+    start = datetime.combine(now.astimezone(PKT).date(), time(12), PKT)
+    deadline = start + timedelta(hours=hours)
+    return start, deadline - timedelta(minutes=15), deadline
 
 
 def catch_up_window(now: datetime) -> tuple[datetime, datetime, datetime]:
@@ -81,9 +84,13 @@ def load_config(path: Path) -> dict:
     if config.get("remote_url", REMOTE) != REMOTE:
         raise ValueError("Unexpected remote URL")
     count = config.get("max_invocations", 6)
-    if type(count) is not int or not 1 <= count <= 6:
-        raise ValueError("max_invocations must be an integer from 1 to 6")
+    if type(count) is not int or not 1 <= count <= 12:
+        raise ValueError("max_invocations must be an integer from 1 to 12")
     config["max_invocations"] = count
+    hours = config.get("window_hours", 2)
+    if type(hours) is not int or not 2 <= hours <= 10:
+        raise ValueError("window_hours must be an integer from 2 to 10")
+    config["window_hours"] = hours
     config["remote_url"] = REMOTE
     state = Path(config["state_dir"])
     worktree = Path(config["worktree"])
@@ -401,7 +408,7 @@ def main(argv=None) -> int:
         config = load_config(args.config)
         workspace = validate_workspace(config)
         now = datetime.now(PKT)
-        start, soft, deadline = (catch_up_window if args.catch_up else session_window)(now)
+        start, soft, deadline = catch_up_window(now) if args.catch_up else session_window(now, config["window_hours"])
         if args.dry_run:
             print(json.dumps({"dry_run": True, "workspace": workspace,
                               "start": start.isoformat(), "soft_stop": soft.isoformat(),
@@ -431,9 +438,9 @@ def main(argv=None) -> int:
             if ledger.get("failed"):
                 print("Skipped: previous run failed today; inspect the daily ledger")
                 return 0
-            if type(ledger.get("attempts")) is not int or not 0 <= ledger["attempts"] <= 6:
+            if type(ledger.get("attempts")) is not int or not 0 <= ledger["attempts"] <= 12:
                 raise ValueError("Invalid daily ledger; manual inspection required")
-            monotonic_deadline = clock.monotonic() + min((deadline - datetime.now(PKT)).total_seconds(), args.max_seconds or 7200)
+            monotonic_deadline = clock.monotonic() + min((deadline - datetime.now(PKT)).total_seconds(), args.max_seconds or 36_000)
             while ledger["attempts"] < config["max_invocations"]:
                 if (state / "PAUSED").exists() or (state / "COMPLETE").exists():
                     print("Skipped: PAUSED or COMPLETE flag present")

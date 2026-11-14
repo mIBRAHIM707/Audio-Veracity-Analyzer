@@ -37,6 +37,12 @@ Later on 14 November the owner also allowed web research (WebSearch, WebFetch) a
 Docker (`docker` commands; registry login and image push denied). Sessions can now
 read GitHub check results (`gh run list/view`, `gh pr checks`) and must fix a failing
 check before new work; rerunning or editing workflows is denied.
+**Longer daily window (owner decision, 14 November 2026).** Optional config
+`window_hours` (integer, 2 to 10, default 2) sets how long the noon window lasts;
+launches stop 15 minutes before its end and the hard cutoff is the end itself.
+`max_invocations` may now be 1 to 12. The scheduled task's own time limit is
+PT11H, a backstop only. This host is set to 6 hours (12:00 to 18:00) and 10 sessions.
+Where the text below says 13:45 or 14:00, read the configured window's cutoffs.
 Sessions also enable Claude Code's PowerShell tool, and every Bash allow/deny rule is
 mirrored onto it, because this host's Git Bash is missing `usr\bin\bash.exe`.
 

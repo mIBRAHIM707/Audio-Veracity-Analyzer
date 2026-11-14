@@ -114,6 +114,35 @@ class SchedulerTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             runner.session_window(datetime(2026, 11, 6, 12))
 
+    # Claude-authored, 14 Nov 2026: owner asked for a longer daily window.
+    def test_window_hours_extends_the_noon_window_and_is_bounded(self):
+        now = datetime(2026, 11, 15, 12, tzinfo=runner.PKT)
+        start, soft, end = runner.session_window(now, 6)
+        self.assertEqual(start, now)
+        self.assertEqual(soft, datetime(2026, 11, 15, 17, 45, tzinfo=runner.PKT))
+        self.assertEqual(end, datetime(2026, 11, 15, 18, tzinfo=runner.PKT))
+        self.assertEqual(runner.session_window(now, 10)[2], datetime(2026, 11, 15, 22, tzinfo=runner.PKT))
+        for bad in (1, 11, 0, -2, 2.5, True, "6"):
+            with self.subTest(bad=bad), self.assertRaises(ValueError):
+                runner.session_window(now, bad)
+
+    def test_configured_window_hours_launches_after_two_pm_and_caps_at_the_new_deadline(self):
+        self.config["window_hours"] = 6
+        self.save_config()
+        FixedDateTime.value = datetime(2026, 11, 6, 15, 0, tzinfo=runner.PKT)
+        result, launch = self.run_main()
+        self.assertEqual(result, 0)
+        self.assertGreater(launch.call_count, 0)
+        for call in launch.call_args_list:
+            self.assertGreater(call.args[3], 7200)
+            self.assertLessEqual(call.args[3], 3 * 3600 + 0.000001)
+        for hour, minute in [(17, 45), (18, 0)]:
+            with self.subTest(hour=hour, minute=minute):
+                FixedDateTime.value = datetime(2026, 11, 7, hour, minute, tzinfo=runner.PKT)
+                result, launch = self.run_main()
+                self.assertEqual(result, 0)
+                launch.assert_not_called()
+
     # Claude-authored, 9 Nov 2026: manual catch-up window.
     def test_catch_up_window_is_two_hours_from_now_and_refuses_midnight_crossing(self):
         now = datetime(2026, 11, 9, 15, 8, tzinfo=runner.PKT)
@@ -400,7 +429,8 @@ class SchedulerTests(unittest.TestCase):
     def test_config_rejects_unsafe_or_malformed_values(self):
         base = self.config.copy()
         for field, value in [("branch", "main"), ("branch", "master"), ("max_invocations", True),
-                             ("max_invocations", 0), ("max_invocations", 7), ("max_invocations", 1.5),
+                             ("max_invocations", 0), ("max_invocations", 13), ("max_invocations", 1.5),
+                             ("window_hours", 1), ("window_hours", 11), ("window_hours", 2.5), ("window_hours", True),
                              ("worktree", "relative"), ("claude_path", ""), ("model", "gpt-6-astra"),
                              ("remote_url", "https://example.invalid/repo"), ("state_dir", str(self.work)),
                              ("state_dir", str(self.root / "alternate-state")),

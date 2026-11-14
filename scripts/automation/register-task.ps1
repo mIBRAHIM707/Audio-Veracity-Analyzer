@@ -28,7 +28,9 @@ if (Get-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue) {
 }
 # UTC timestamp fixes the schedule to 07:00 UTC = noon Pakistan, independent of host timezone.
 # StartWhenAvailable lets a late wake still start; the runner itself refuses to launch
-# outside 12:00-13:45 PKT and kills the session at 14:00, so late starts stay in-window.
+# outside its window and kills the session at its deadline, so late starts stay in-window.
+# The window starts at noon and lasts config `window_hours` (2 to 10, default 2). The task's
+# own limit (PT11H) is only a backstop above the longest allowed window.
 $utcNow = [DateTime]::UtcNow
 $start = $utcNow.Date.AddHours(7)
 if ($start -le $utcNow) { $start = $start.AddDays(1) }
@@ -39,10 +41,10 @@ $arguments = '"' + $runner + '" --config "' + $resolvedConfig + '"'
 $xml = @"
 <?xml version="1.0" encoding="UTF-16"?>
 <Task version="1.4" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">
-  <RegistrationInfo><Description>AVA daily development, noon–2 PM Pakistan; dedicated PR, never merge.</Description></RegistrationInfo>
+  <RegistrationInfo><Description>AVA daily development, from noon Pakistan for the configured window; dedicated PR, never merge.</Description></RegistrationInfo>
   <Triggers><CalendarTrigger><StartBoundary>$boundary</StartBoundary><Enabled>true</Enabled><ScheduleByDay><DaysInterval>1</DaysInterval></ScheduleByDay></CalendarTrigger></Triggers>
   <Principals><Principal id="Author"><UserId>$(& $escape $user)</UserId><LogonType>InteractiveToken</LogonType><RunLevel>LeastPrivilege</RunLevel></Principal></Principals>
-  <Settings><MultipleInstancesPolicy>IgnoreNew</MultipleInstancesPolicy><DisallowStartIfOnBatteries>false</DisallowStartIfOnBatteries><StopIfGoingOnBatteries>false</StopIfGoingOnBatteries><AllowHardTerminate>true</AllowHardTerminate><StartWhenAvailable>true</StartWhenAvailable><RunOnlyIfNetworkAvailable>true</RunOnlyIfNetworkAvailable><IdleSettings><StopOnIdleEnd>false</StopOnIdleEnd><RestartOnIdle>false</RestartOnIdle></IdleSettings><AllowStartOnDemand>true</AllowStartOnDemand><Enabled>true</Enabled><Hidden>true</Hidden><RunOnlyIfIdle>false</RunOnlyIfIdle><WakeToRun>true</WakeToRun><ExecutionTimeLimit>PT2H</ExecutionTimeLimit><Priority>7</Priority></Settings>
+  <Settings><MultipleInstancesPolicy>IgnoreNew</MultipleInstancesPolicy><DisallowStartIfOnBatteries>false</DisallowStartIfOnBatteries><StopIfGoingOnBatteries>false</StopIfGoingOnBatteries><AllowHardTerminate>true</AllowHardTerminate><StartWhenAvailable>true</StartWhenAvailable><RunOnlyIfNetworkAvailable>true</RunOnlyIfNetworkAvailable><IdleSettings><StopOnIdleEnd>false</StopOnIdleEnd><RestartOnIdle>false</RestartOnIdle></IdleSettings><AllowStartOnDemand>true</AllowStartOnDemand><Enabled>true</Enabled><Hidden>true</Hidden><RunOnlyIfIdle>false</RunOnlyIfIdle><WakeToRun>true</WakeToRun><ExecutionTimeLimit>PT11H</ExecutionTimeLimit><Priority>7</Priority></Settings>
   <Actions Context="Author"><Exec><Command>$(& $escape $config.python_path)</Command><Arguments>$(& $escape $arguments)</Arguments><WorkingDirectory>$(& $escape $config.worktree)</WorkingDirectory></Exec></Actions>
 </Task>
 "@
