@@ -67,6 +67,32 @@ Interpretation choices: window count stands in for inference time (all windows a
 `capacity_windows_per_s` must be measured (8.QA) at the file batch size used while live,
 so there is no default. A running file batch is not preempted; 8.QA measures that
 delay. Config names: `collect_s` = §7.3 `batch_wait_ms` / 1000; the capacity, pending
-limits and `max_file_while_live` have no §7.3 key yet (proposed). Not done: ONNX Runtime thread settings,
-warm-up inference and `/readyz` (need the exported model, backlog 10), and wiring
-into a real inference loop.
+limits and `max_file_while_live` have no §7.3 key yet (proposed). Not done: warm-up
+inference and `/readyz` for the live ONNX path, and a service process that owns the
+live loop.
+
+## ONNX window detector (backlog 8.1/10.1; PRD FR-M7, FR-I9)
+
+`onnx_detector.py` `OnnxBatchDetector(session, per_window=<required>, max_batch=64)` adapts
+an injected onnxruntime session of the exported window model (`models/export/`) to the
+`LivePipeline` detector contract: `float32[B, 64000]` in, `float64[B, 2]` logits
+([synthetic, genuine]) out. It checks the I/O contract at construction and validates
+every batch (dtype, shape, finite samples, batch bound) and every output (shape,
+finite), because the graph's own input checks were traced as constants. The caller
+creates the session (CPU provider, bounded threads, pinned hash). `per_window` has no
+default, so the batching mode is always an explicit choice: `True` runs one window per
+session call and is required for dynamic INT8, whose activation scales span the whole
+batch (otherwise a call's score depends on another call's audio); FP32 and static INT8
+are batch-independent and may run whole batches. Tested with a fake session (6 unit
+tests) and through the real `LivePipeline` with tiny FP32 and INT8 exports (3 model
+tests: batched FP32 scores equal each window alone within 1e-6; INT8 per-window scores
+equal exactly while whole-batch INT8 moves a score by more than 1e-6; the copied
+contract and batch bound equal the export module's).
+
+**Capacity question for the PRD/architecture (14 Nov).** Per-window dynamic INT8 gives
+up the micro-batching ADR-3 relies on for FR-I9's 8 calls. On the development laptop
+the 8-layer INT8 graph takes about 0.43 s per window at batch 1 (`models/export/
+README.md`); 8 calls at a 2 s hop need about 3.5 s of compute per 2 s on one 4-thread
+worker, over budget on that machine (not box A1, untrained head, so not a verdict).
+Static INT8 (batch-independent) or batched FP32 may be the route to FR-I9; this needs
+measurement on box A1 and a decision.
