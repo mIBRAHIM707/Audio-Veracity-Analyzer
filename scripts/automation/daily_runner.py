@@ -199,6 +199,12 @@ ALLOWED_TOOLS = (
     "Bash(git branch --show-current)", "Bash(git ls-remote:*)",
     "Bash(git push origin HEAD:refs/heads/feat/4-daily-development)",
     "Bash(uv run:*)", "Bash(npm run test:*)", "Bash(npx playwright test:*)",
+    # Owner decision, 14 Nov 2026: sessions may install the software the backlog needs.
+    "Bash(uv pip install:*)", "Bash(uv pip list:*)", "Bash(uv pip show:*)", "Bash(uv add:*)",
+    "Bash(uv sync:*)", "Bash(uv lock:*)", "Bash(uv venv:*)", "Bash(uv tool install:*)",
+    "Bash(npm install:*)", "Bash(npm ci:*)", "Bash(npm run:*)", "Bash(npx playwright install:*)",
+    "Bash(winget install:*)", "Bash(winget list:*)", "Bash(winget search:*)", "Bash(winget show:*)",
+    "Bash(git clone:*)", "Bash(git check-ignore:*)",
     "Bash(gh pr view:*)", "Bash(gh pr list:*)", "Bash(gh pr edit:*)",
     "Bash(gh issue view:*)", "Bash(gh issue list:*)", "Bash(gh issue create:*)",
 )

@@ -9,13 +9,31 @@ feat/4-daily-development; maintain its dedicated PR #27. NEVER merge, enable
 auto-merge, push main, force push or rewrite history.
 
 Your shell access is an allowlist (git on this branch, uv run, npm/Playwright tests,
-gh pr/issue view, list, edit and issue create). A command outside it is denied
+gh pr/issue view, list, edit and issue create, and the install commands below). A command outside it is denied
 without a prompt. Do not try to work around a denial; record it as a blocker in the
 daily report and move to the next ready task.
 Use the PowerShell tool for shell commands; the Bash tool cannot start on this host
 (Git Bash is missing `usr\bin\bash.exe`). The same allowlist applies to both. Run
 one allowed command per call from the worktree directory, without `cd`, `;`, pipes
 or redirection, so each call matches an allowlist rule.
+
+**Installing software (owner decision, Tughral, 14 November 2026).** You may install
+the software the backlog needs; a missing package is no longer a blocker by itself.
+This covers Python packages (`uv pip install`, `uv add`, `uv sync`, `uv run --with`),
+npm packages (`npm install`, `npm ci`, `npx playwright install`), user-level tools
+(`winget install`), upstream source (`git clone` into `D:/AVA-Data/vendor`, never
+into this repository), and the model weights or open corpora a task names (Silero
+VAD, XLS-R, noise and room-impulse sets), stored under `D:/AVA-Data`, never in Git.
+Rules: free and open-source only, nothing paid and no new accounts; check and record
+each licence; pin exact versions in the matching `requirements-*.txt` or lockfile
+and commit that file; record what was installed, its version, size and hash in the
+daily report; check free disk space before any download over 1 GB; serving must
+still run with no runtime download (PRD). If an install needs administrator rights,
+a reboot or an interactive prompt (Docker Desktop, WSL), do not wait on it: record
+the exact command for a human and move on. Earlier blocker notes about missing
+onnx/onnxruntime, cryptography, frontend packages, VAD, codecs, a PostgreSQL
+driver and Redis are superseded; start with those.
+
 This supersedes historical no-commit/no-push notes only for this dedicated worktree
 and approved scope. No other checkout, pending user edit, or participant record is
 yours to change. Runtime instructions appended below give today's cutoff.
@@ -31,10 +49,11 @@ yours to change. Runtime instructions appended below give today's cutoff.
    reset/stash/rebase blindly. Do not change worktrees or merge other branches.
 3. Pick the first ready unchecked task. Respect dependencies; skip a blocked task
    only after recording the exact blocker. Do not repeatedly retry account limits,
-   missing Docker, licensing decisions, permissions or inaccessible external data.
+   installs that need administrator rights, licensing decisions, permissions or inaccessible external data.
 4. Use an existing issue if its scope fits; otherwise create a bounded issue tied
-   to the PRD. No messages to people or requests for paid resources. Do not download
-   large new corpora/checkpoints or run full model training during this window.
+   to the PRD. No messages to people or requests for paid resources. Download only
+   what a backlog task names (see the install rules above); do not run full model
+   training during this window.
 
 ## Build and verify
 

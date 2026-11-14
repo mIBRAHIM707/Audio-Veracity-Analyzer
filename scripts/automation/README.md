@@ -27,6 +27,12 @@ a session that ends on an API error up to three times after a two-minute wait
 without failing the day, and holds a system-awake request while it runs. Optional
 config `gh_user` passes that account's `gh` token to the session as `GH_TOKEN`, so
 the globally active `gh` account cannot break PR edits; no token is stored.
+**Installs allowed (owner decision, 14 November 2026).** The allowlist now includes
+`uv pip install/add/sync/lock/venv`, `npm install/ci/run`, `npx playwright install`,
+`winget install` and `git clone`. The prompt sets the rules: open-source only,
+pinned versions committed, licences and hashes recorded, weights and corpora under
+`D:/AVA-Data`, nothing that needs administrator rights. Merge, force push, reset,
+clean and web tools stay denied.
 Sessions also enable Claude Code's PowerShell tool, and every Bash allow/deny rule is
 mirrored onto it, because this host's Git Bash is missing `usr\bin\bash.exe`.
 

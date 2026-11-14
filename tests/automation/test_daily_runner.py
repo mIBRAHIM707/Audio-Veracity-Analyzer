@@ -367,6 +367,14 @@ class SchedulerTests(unittest.TestCase):
         self.assertEqual(len([t for t in allowed if t.startswith("Bash(")]),
                          len([t for t in allowed if t.startswith("PowerShell(")]))
         self.assertEqual(runner.CHILD_ENV, {"CLAUDE_CODE_USE_POWERSHELL_TOOL": "1"})
+        # Claude-authored (14 Nov 2026): owner allowed installs; nothing else widened.
+        for rule in ("uv pip install:*", "npm install:*", "npm ci:*", "winget install:*", "git clone:*"):
+            self.assertIn(f"PowerShell({rule})", allowed)
+        for shell in ("Bash", "PowerShell"):
+            for rule in ("gh pr merge:*", "git push --force:*", "git push -f:*", "git reset --hard:*", "git clean:*"):
+                self.assertIn(f"{shell}({rule})", denied)
+        self.assertFalse(any("uninstall" in tool or "sudo" in tool or "runas" in tool for tool in allowed))
+        self.assertNotIn("WebFetch", allowed)
 
     def test_final_message_extracted_from_stream_json_or_absent(self):
         log, out = self.root / "s.jsonl", self.root / "s.md"
