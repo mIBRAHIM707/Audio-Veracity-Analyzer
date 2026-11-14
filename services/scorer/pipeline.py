@@ -63,6 +63,13 @@ class LivePipeline:
                        'skipped_ended': 0, 'scored': 0, 'batches': 0, 'detector_failures': 0,
                        'windows_lost_to_detector': 0, 'result_errors': 0, 'file_batches_not_run': 0}
 
+    def check_clock(self, now):
+        """Raise ValueError if `now` is invalid or earlier than the last one; no change."""
+        now = _seconds(now, 'now')
+        if self._last_now is not None and now < self._last_now:
+            raise ValueError('now went backwards; use a monotonic clock')
+        return now
+
     def _clock(self, now):
         now = _seconds(now, 'now')
         if self._last_now is not None and now < self._last_now:

@@ -93,6 +93,14 @@ class LiveCalls:
         with self._lock:
             return call_id in self._calls
 
+    def scored_directions(self, call_id):
+        """Directions `end` needs speech seconds for, or None for an unknown call."""
+        entry = self._entry(call_id)
+        if entry is None:
+            return None
+        with entry.lock:
+            return entry.scorer.scored_directions()
+
     def human_agent_answered(self, call_id):
         entry = self._entry(call_id)
         if entry is None:

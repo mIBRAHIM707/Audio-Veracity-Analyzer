@@ -234,10 +234,17 @@ only the last part-frame. The real VAD is `services/inference/silero_vad.SileroV
 (ONNX on CPU, `requirements-vad.txt`, model silero-vad 6.2.3 `silero_vad.onnx`, MIT,
 SHA-256 pinned, provisioned locally at e.g.
 `D:/AVA-Data/models/silero-vad/6.2.3/`; one instance per direction; parity with the
-reference wrapper in `tests/model/test_silero_vad_onnx.py`). Not done: connecting
-windows to `LivePipeline.offer` (drop non-scorable windows, carry `partial` and
-times), configurable window/hop, peak normalization, and a Linux resolution check of
-`requirements-vad.txt` (`uv pip compile` was not permitted in the 14 Nov session).
+reference wrapper in `tests/model/test_silero_vad_onnx.py`).
+`speech_feed.SpeechFeed(pipeline, vad_factory)` connects them: audio per call
+direction -> scorable windows offered to `LivePipeline` (stride skips counted), call-
+level `no_speech` published once per quiet spell (all fed directions quiet >= 4 s of
+audio), `finish` offers tails (drain before `end_call`, which cancels waiting
+windows), `end_call` passes VAD speech seconds for exactly the scored directions,
+`sweep`/`speech_seconds_for` for calls ended by `end_all`; clock, late-audio and VAD
+factory faults are contained. Not done: the tap feeding it (6.x), `partial`/times in
+published events, configurable window/hop, peak normalization, a numeric
+seconds-since-speech field, and a Linux resolution check of `requirements-vad.txt`
+(`uv pip compile` was not permitted in the 14 Nov session).
 Spec questions: file mode scores a lone 1.5-2.5 s partial window while this marks it
 not scorable; the meaning of "2.5 s is speech" when windows hold speech only.
 
