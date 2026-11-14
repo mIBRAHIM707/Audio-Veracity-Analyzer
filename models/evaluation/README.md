@@ -7,10 +7,13 @@ synthetic, FRR = synthetic passed as genuine (PRD glossary).
 - `error_rates`, `eer` (linear interpolation at the FAR/FRR crossing),
   `far_at_frr(target_frr=0.05)` (highest threshold with FRR <= 5 %, FR-M5);
 - `min_dcf(..., c_miss=, c_fa=, pi_spoof=)`: ASVspoof form with bona fide as target,
-  so the ASVspoof "miss" is AVA's FAR. **The cost parameters are required:** the
-  ASVspoof 5 DF-track values (recalled as 1, 10 and 0.05, normalizer 0.5) were not
-  confirmed from the evaluation plan in this session (no web access). Confirm them,
-  cite the source in FR-M5, then add them as named defaults;
+  so the ASVspoof "miss" is AVA's FAR. The cost parameters are required arguments;
+  `asvspoof5_track1_costs()` gives the ASVspoof 5 Track 1 values c_miss=1, c_fa=10,
+  pi_spoof=0.05 (normalizer 0.5, so DCF = 1.9 FAR + FRR, the plan's beta form),
+  confirmed 14 Nov 2026 from the ASVspoof 5 Evaluation Plan v0.6, Table 1
+  (`ASVSPOOF5_TRACK1_SOURCE`, cited in FR-M5; pass it as `costs_status=`). ASVspoof 5
+  has no "DF track": Track 1 is stand-alone deepfake detection. actDCF (Bayes threshold
+  on log-likelihood ratios) is not implemented;
 - `bootstrap_ci(metric, genuine, synthetic, seed=)`: percentile interval, each class
   resampled independently at clip level (speaker-clustered resampling is a proposed
   refinement, since clips from one speaker are correlated);

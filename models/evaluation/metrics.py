@@ -9,9 +9,12 @@ minDCF follows the ASVspoof form with bona fide as the target class: a "miss" is
 bona fide (genuine) clip rejected, which is AVA's FAR; a "false alarm" is a spoof
 accepted, which is AVA's FRR. DCF(t) = c_miss (1 - pi_spoof) FAR(t) + c_fa pi_spoof
 FRR(t), normalized by min(c_miss (1 - pi_spoof), c_fa pi_spoof). The cost parameters
-are required arguments: the ASVspoof 5 DF-track values (recalled as c_miss=1, c_fa=10,
-pi_spoof=0.05) could not be confirmed from the evaluation plan in this session and
-must be checked and recorded in FR-M5 before any report uses them.
+are required arguments. `asvspoof5_track1_costs()` returns the ASVspoof 5 Track 1
+(stand-alone deepfake detection) values, confirmed 14 Nov 2026 from the evaluation plan
+(`ASVSPOOF5_TRACK1_SOURCE`): c_miss=1, c_fa=10, pi_spoof=0.05. With them the normalizer
+is c_fa pi_spoof = 0.5 and DCF = beta FAR + FRR with beta = 1.9, the plan's form
+(beta * P_miss + P_fa, P_miss = bona fide rejected). minDCF only: actDCF needs
+log-likelihood-ratio scores and is not implemented.
 
 Interpretation choices: EER by linear interpolation where FAR and FRR cross on the
 empirical curve; FAR at FRR = 5 % at the highest threshold whose FRR <= 5 %; bootstrap
@@ -72,6 +75,19 @@ def far_at_frr(genuine, synthetic, target_frr=0.05):
     thresholds, far, frr = error_rates(genuine, synthetic)
     k = int(np.flatnonzero(frr <= target_frr + 1e-12)[-1])  # index 0 always qualifies (FRR=0)
     return float(far[k]), float(thresholds[k])
+
+
+ASVSPOOF5_TRACK1_SOURCE = (
+    'ASVspoof 5 Evaluation Plan v0.6 (28 June 2024), Table 1, Track 1 min DCF: '
+    'pi_spf=0.05, C_miss=1, C_fa=10; '
+    'https://www.asvspoof.org/file/ASVspoof5___Evaluation_Plan_Phase2.pdf (accessed 2026-11-14); '
+    'beta=1.90 form in Wang et al., ASVspoof 5, arXiv:2408.08739 eq. 1-2')
+
+
+def asvspoof5_track1_costs():
+    """A new dict of the ASVspoof 5 Track 1 minDCF costs (PRD FR-M5); pass it as
+    `costs=` and record `ASVSPOOF5_TRACK1_SOURCE` as the report's costs status."""
+    return {'c_miss': 1, 'c_fa': 10, 'pi_spoof': 0.05}
 
 
 def min_dcf(genuine, synthetic, *, c_miss, c_fa, pi_spoof):

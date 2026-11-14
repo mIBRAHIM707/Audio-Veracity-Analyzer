@@ -171,7 +171,7 @@ and about 50,000 original clips, excluding codec copies.
   that defines "behind" (a waiting window at acceptance; interpretation for the PRD);
   `services/scorer/ordered.py` serialized in-order per-call boundary (phase-4 QA M1/L3);
   `models/evaluation/metrics.py` EER, FAR at FRR 5 %, minDCF (costs required:
-  ASVspoof 5 constants unverified), bootstrap, ECE, temperature, FR-M9 evidence curve,
+  ASVspoof 5 Track 1 constants confirmed 14 Nov, see below), bootstrap, ECE, temperature, FR-M9 evidence curve,
   FR-M5 subset table, reliability bins and FR-M10 per-dialect FAR. Unit suite 472 OK
   (9 skips) on 10 Nov; daily report `docs/context/daily-runs/2026-11-10.md`. Blocked:
   PostgreSQL/Redis need a driver/Redis decision (PostgreSQL 18 binaries present, the
@@ -301,7 +301,10 @@ and about 50,000 original clips, excluding codec copies.
   ECE/reliability with a required temperature status, optional FR-M10 dialect FAR,
   and writes new JSON outside the repository; windows now carry codec and provenance.
   11 Claude-authored tests, review fixed. FR-M5 (e) code-switched and (g) phone-call
-  subsets lack manifest fields; minDCF costs still unconfirmed.
+  subsets lack manifest fields. 14 Nov: minDCF costs confirmed from the ASVspoof 5
+  Evaluation Plan v0.6 Table 1 (Track 1: C_miss 1, C_fa 10, pi_spf 0.05) and exposed
+  as `asvspoof5_track1_costs()` / `ASVSPOOF5_TRACK1_SOURCE`; PRD FR-M5 and
+  architecture §4.5 corrected from "DF-track" to Track 1.
 - **Phase 4 QA (10 Nov): conditional pass as infrastructure** (`docs/qa/phase-4-qa.md`).
   The scorer objects are single-owner and not thread-safe (documented); backlog 5 must
   serialize per call, reject reordered/duplicate results and copy event data on

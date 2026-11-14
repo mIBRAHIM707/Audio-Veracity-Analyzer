@@ -224,8 +224,10 @@ items needing that data are listed at the end and stay out of the queue.
   pipeline window/queue/dropped-window metrics (`LivePipeline.metrics_snapshot` with a
   tested conservation invariant, thread-safe `PipelineStats`, `ava_live_*` families,
   snapshot age/validity); 12 Claude-authored tests, two review rounds fixed (incl. a
-  lost window on a batcher clock error and reused call IDs after `end_all`). Remaining
-  FR-O6: telephony metrics, live inference latency histograms, JSON logs, Grafana.
+  lost window on a batcher clock error and reused call IDs after `end_all`). 14 Nov
+  (catch-up 4, commit 1839139): live inference latency histogram
+  `ava_live_inference_seconds{outcome}` with timer-failure counter; review fixed.
+  Remaining FR-O6: telephony metrics, JSON logs, Grafana.
 - [ ] 7.3 P1 history/search/local authentication/audit and feedback after P0.
 - [ ] 7.QA Astra-designed Playwright suite, offline assets, failures/reconnects.
 
@@ -280,9 +282,12 @@ items needing that data are listed at the end and stay out of the queue.
   scorer EMA parity; FR-M5 subset table, FR-M6 reliability bins and FR-M10 dialect FAR
   (30 tests total). 12 Nov: `models/evaluation/report.py` scores loaded windows and
   builds the FR-M5/M6/M10 report with recorded costs/temperature status; 11
-  Claude-authored tests, review fixed. Remaining: running it on real scores; PRD
-  decisions on speaker-clustered intervals and EER method; ASVspoof 5 cost constants. Needs a human: confirm
-  ASVspoof 5 cost constants (no web access); speaker-clustered intervals and EER method.
+  Claude-authored tests, review fixed. 14 Nov (catch-up 4): ASVspoof 5 Track 1 costs
+  (c_miss 1, c_fa 10, pi_spoof 0.05) confirmed from Evaluation Plan v0.6 Table 1 and
+  added as `asvspoof5_track1_costs()` with a cited source string; FR-M5 and
+  architecture §4.5 "DF-track" corrected to Track 1; 5 Claude-authored tests, review
+  fixed. Remaining: running it on real scores; actDCF (needs LLR scores). Needs a
+  human/PRD: speaker-clustered intervals and EER method.
 - [ ] 9.QA Known-answer metrics, insufficient-data cases and training smoke evidence.
 
 ## 10 — Export/deployment (FR-M7, architecture deployment)

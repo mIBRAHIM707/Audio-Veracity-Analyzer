@@ -10,8 +10,9 @@ the FR-M5 subset table, FR-M6 ECE and reliability bins, and, when a deployed thr
 and dialect list are given, FR-M10 dialect FAR on genuine windows. ``write_report``
 publishes a new JSON file outside the repository.
 
-The minDCF costs are required and recorded with a status string, because the
-ASVspoof 5 constants are unconfirmed (see README). Every report carries the window
+The minDCF costs are required and recorded with a status string saying where they come
+from; for FR-M5 pass ``metrics.asvspoof5_track1_costs()`` with
+``metrics.ASVSPOOF5_TRACK1_SOURCE`` (see README). Every report carries the window
 summary (report hashes, exclusions) and limitations; no figure here is a model result
 unless real AVA scores were used.
 """

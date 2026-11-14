@@ -17,7 +17,7 @@ from models.evaluation.metrics import (bootstrap_ci, dialect_far, dialect_report
 # FAR 1, 2/3, 1/3, 1/3, 1/3, 0, 0, 0 and FRR 0, 0, 0, 1/4, 1/2, 1/2, 3/4, 1.
 GENUINE = [0.1, 0.2, 0.6]
 SYNTHETIC = [0.4, 0.5, 0.7, 0.8]
-COSTS = dict(c_miss=1, c_fa=10, pi_spoof=0.05)  # assumed ASVspoof 5 values, test-only
+COSTS = dict(c_miss=1, c_fa=10, pi_spoof=0.05)  # ASVspoof 5 Track 1 values (see test_eval_asvspoof5_costs)
 
 
 class CurveTests(unittest.TestCase):
