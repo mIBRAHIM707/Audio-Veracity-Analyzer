@@ -20,11 +20,27 @@ off: no raw audio is buffered or stored.
   older than 60 s. The root must be outside the repository. Feed and store errors are
   counted, never raised into the call path.
 
-**Blocker:** AES-256-GCM at rest needs a crypto library (`cryptography` is not in the
-offline cache and adding it is a dependency decision). Only an `AesGcmSealer` instance
-is accepted and that class cannot be constructed until then, so retention cannot be
-enabled in production; tests use an explicitly insecure XOR sealer through the
-private `_insecure_test_sealer` keyword. Key management is also undecided.
+**Encryption (14 Nov 2026).** `AesGcmSealer(key)` is AES-256-GCM from the pinned
+`cryptography==50.0.2` (`requirements-retention.txt`; Apache-2.0 OR BSD-3-Clause,
+installed under the owner's 14 Nov install decision): a random 96-bit nonce per
+snippet stored before the ciphertext and 16-byte tag. `AesGcmSealer.from_key_file(path)`
+loads exactly 32 raw bytes from a regular file outside the repository. Only an exact
+`AesGcmSealer` is accepted by the store (no subclasses, no declared imitation);
+without the package the constructor raises, so retention cannot start.
+`open_snippet(root, alert_id, sealer)` reads a snippet back: any change to audio,
+metadata, header/TTL timestamp or nonce, a wrong key, or a file copied under another
+alert's name fails authentication. Store-logic tests still use an explicitly insecure
+XOR sealer through the private `_insecure_test_sealer` keyword.
+
+Open: key provisioning, storage protection and rotation (an operator decision; a
+rotated key makes older snippets unreadable, and unreadable snippets are only purged
+by TTL or switch-off). On POSIX the key file must not be group/world readable; on
+Windows file ACLs are not checked. File names are a plain SHA-256 of the alert ID, so
+if alert IDs were guessable a directory listing would reveal which alerts have
+snippets (today's IDs are random; a keyed name is the fix if that changes). The pins
+in `requirements-retention.txt` are exact versions without hashes.
+TTL cleanup treats a header whose creation time is not a finite number at most 300 s
+in the future as unreadable and deletes it; it never raises.
 
 Known limits: the root needs a file system with hard links (NTFS/ext4; on FAT or
 some network mounts every write fails and is counted); TTL cleanup reads the
@@ -44,5 +60,5 @@ files are unlinked, not overwritten; on Windows a file being scanned can briefly
 appear as `<NAME>.tmp` during deletion, removed by the next cleanup).
 
 ```text
-uv run --no-project --python 3.11 --with-requirements requirements-api.txt python -m unittest tests.unit.test_snippet_retention -v
+uv run --no-project --python 3.11 --with-requirements requirements-api.txt --with-requirements requirements-retention.txt python -m unittest tests.unit.test_snippet_retention tests.unit.test_snippet_aes_gcm -v
 ```

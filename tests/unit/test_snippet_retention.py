@@ -108,8 +108,14 @@ class StoreTests(TempRoot):
             algorithm = AES_GCM
         with self.assertRaisesRegex(ValueError, AES_GCM):
             SnippetStore(self.root, DeclaredAes(), clock=self.clock)  # a declaration is not enough
-        with self.assertRaisesRegex(RuntimeError, 'not available'):
-            AesGcmSealer()  # blocked until a crypto dependency is provisioned
+        # 14 Nov: AesGcmSealer is now real (test_snippet_aes_gcm.py); a key is required.
+        try:
+            import cryptography  # noqa: F401
+            expected = ValueError  # wrong key size
+        except ImportError:
+            expected = RuntimeError  # package missing: retention cannot start
+        with self.assertRaises(expected):
+            AesGcmSealer(b'short')
 
         class Imposter(AesGcmSealer):
             def __init__(self):
