@@ -11,7 +11,9 @@ Git) and never overwrites. ``open_session`` builds a CPU-only onnxruntime sessio
 optionally pinned by SHA-256, and ``check_session`` verifies the I/O contract.
 ``parity`` compares the session with the PyTorch model on the same float32 windows.
 ``choose_quantization`` is the pure FR-M7 decision rule over measured EERs; it does not
-measure anything itself. INT8 quantization is not implemented yet.
+measure anything itself. ``quantize_int8_dynamic`` makes the FR-M7 dynamic INT8 model
+from a pinned FP32 export and ``compare_sessions`` reports its output drift; static
+INT8 (needs calibration windows) is not implemented.
 """
 import hashlib
 import math
@@ -57,6 +59,30 @@ def export_onnx(model, path, *, opset=OPSET, seed=0):
     import torch
     if type(opset) is not int or opset != OPSET:
         raise ValueError(f'opset must be {OPSET} (FR-M7)')
+    path, partial = _target(path)
+    example = torch.randn(2, WINDOW_SAMPLES, generator=torch.Generator().manual_seed(seed))
+    axes = {name: {0: BATCH_AXIS} for name in (INPUT_NAME, *OUTPUT_NAMES)}
+    was_training = model.training
+    model.eval()
+    try:
+        with torch.no_grad():
+            torch.onnx.export(model, (example,), str(partial), input_names=[INPUT_NAME],
+                              output_names=list(OUTPUT_NAMES), dynamic_axes=axes,
+                              opset_version=opset, do_constant_folding=True, dynamo=False)
+        written = _opset(onnx.load(str(partial), load_external_data=False))
+        if written != opset:
+            raise ValueError(f'Exported graph declares opset {written}, expected {opset}')
+        _publish(partial, path)
+    finally:
+        model.train(was_training)
+        if partial.exists():
+            partial.unlink()
+    return {'path': str(path), 'sha256': _sha256(path), 'bytes': path.stat().st_size,
+            'opset': written, 'torch_version': torch.__version__, 'onnx_version': onnx.__version__}
+
+
+def _target(path):
+    """Validated new output path outside the repository and its ``.partial`` sibling."""
     path = Path(path).resolve()
     if path.is_relative_to(_REPO):
         raise ValueError('ONNX models hold weights and must be written outside the repository')
@@ -68,31 +94,76 @@ def export_onnx(model, path, *, opset=OPSET, seed=0):
     partial = path.with_name(path.name + '.partial')
     if partial.exists():
         raise ValueError(f'A partial export is in the way: {partial.name}')
-    example = torch.randn(2, WINDOW_SAMPLES, generator=torch.Generator().manual_seed(seed))
-    axes = {name: {0: BATCH_AXIS} for name in (INPUT_NAME, *OUTPUT_NAMES)}
-    was_training = model.training
-    model.eval()
+    return path, partial
+
+
+def _publish(partial, path):
+    # A hard link fails atomically if the target exists (POSIX and NTFS); a rename
+    # would silently replace it on POSIX. The caller removes the partial.
     try:
-        with torch.no_grad():
-            torch.onnx.export(model, (example,), str(partial), input_names=[INPUT_NAME],
-                              output_names=list(OUTPUT_NAMES), dynamic_axes=axes,
-                              opset_version=opset, do_constant_folding=True, dynamo=False)
+        os.link(partial, path)
+    except FileExistsError:
+        raise ValueError('Export path already exists; models are never overwritten') from None
+
+
+def _opset(graph):
+    return {item.domain: item.version for item in graph.opset_import}.get('')
+
+
+# Architecture §4.3 step 4: dynamic INT8 of MatMul and Linear (Gemm) ops only; the
+# convolutional waveform front end stays FP32.
+QUANTIZE_OP_TYPES = ('MatMul', 'Gemm')
+# Node types onnxruntime emits for a quantized MatMul/Gemm/Conv (weights in INT8).
+QUANTIZED_OP_TYPES = frozenset({'MatMulInteger', 'ConvInteger', 'DynamicQuantizeMatMul',
+                                'QLinearMatMul', 'QLinearConv'})
+ACTIVATION_QUANTIZER = 'DynamicQuantizeLinear'  # converts activations; not a quantized op
+
+
+def quantize_int8_dynamic(source, path, *, source_sha256):
+    """INT8 dynamic quantization (FR-M7 first step) of a pinned FP32 export.
+
+    Only ``QUANTIZE_OP_TYPES`` (MatMul, Gemm) are quantized, architecture §4.3 step 4;
+    signed INT8 weights per tensor; activations become uint8 through
+    DynamicQuantizeLinear with a scale taken over the whole tensor (batch included, so
+    outputs depend on batch partners; see README). The result must keep the I/O
+    contract (checked through a CPU session) and contain quantized nodes. Returns path,
+    SHA-256, size, opset, source SHA-256, quantized op types, quantized node and
+    activation-quantizer counts and the onnxruntime version. Same no-overwrite and
+    no-partial rules as ``export_onnx``. Whether INT8 is shipped is decided by
+    ``choose_quantization`` on measured EERs.
+    """
+    import onnx
+    import onnxruntime as ort
+    from onnxruntime.quantization import QuantType, quantize_dynamic
+    source = Path(source)
+    if not source.is_file():
+        raise ValueError('FP32 source model not found')
+    if not isinstance(source_sha256, str) or _sha256(source) != source_sha256:
+        raise ValueError('FP32 source SHA-256 does not match the pinned value')
+    path, partial = _target(path)
+    try:
+        quantize_dynamic(str(source), str(partial), op_types_to_quantize=list(QUANTIZE_OP_TYPES),
+                         per_channel=False, reduce_range=False, weight_type=QuantType.QInt8)
         graph = onnx.load(str(partial), load_external_data=False)
-        written = {item.domain: item.version for item in graph.opset_import}.get('', None)
-        if written != opset:
-            raise ValueError(f'Exported graph declares opset {written}, expected {opset}')
-        # A hard link fails atomically if the target exists (POSIX and NTFS); a rename
-        # would silently replace it on POSIX.
-        try:
-            os.link(partial, path)
-        except FileExistsError:
-            raise ValueError('Export path already exists; models are never overwritten') from None
+        quantized = sum(1 for node in graph.graph.node if node.op_type in QUANTIZED_OP_TYPES)
+        activations = sum(1 for node in graph.graph.node if node.op_type == ACTIVATION_QUANTIZER)
+        if quantized == 0:
+            raise ValueError('Quantization changed no MatMul/Gemm node')
+        session = open_session(partial)
+        problems = check_session(session)
+        del session  # release the file before it is linked or removed (Windows)
+        if problems:
+            raise ValueError(f'Quantized model breaks the I/O contract: {problems}')
+        written = _opset(graph)
+        _publish(partial, path)
     finally:
-        model.train(was_training)
         if partial.exists():
             partial.unlink()
     return {'path': str(path), 'sha256': _sha256(path), 'bytes': path.stat().st_size,
-            'opset': written, 'torch_version': torch.__version__, 'onnx_version': onnx.__version__}
+            'opset': written, 'source_sha256': source_sha256, 'weight_type': 'QInt8',
+            'per_channel': False, 'op_types_to_quantize': list(QUANTIZE_OP_TYPES),
+            'quantized_nodes': quantized, 'activation_quantizers': activations,
+            'onnxruntime_version': ort.__version__}
 
 
 def open_session(path, *, threads=1, expected_sha256=None):
@@ -203,6 +274,48 @@ def parity(model, session, windows, *, batch_size=8, tolerance=PARITY_MAX_ABS_LO
             'class_disagreements': int(np.sum(np.argmax(tl, axis=1) != np.argmax(ol, axis=1))),
             'tolerance': float(tolerance), 'finite': finite, 'problems': [],
             'passed': finite and logit_diff < tolerance}
+
+
+def _run_session(session, array, batch_size):
+    logits, embeddings = [], []
+    for start in range(0, array.shape[0], batch_size):
+        out_logits, out_emb = session.run(list(OUTPUT_NAMES), {INPUT_NAME: array[start:start + batch_size]})
+        logits.append(np.asarray(out_logits, dtype=np.float64))
+        embeddings.append(np.asarray(out_emb, dtype=np.float64))
+    return np.concatenate(logits), np.concatenate(embeddings)
+
+
+def compare_sessions(reference, candidate, windows, *, batch_size=8, min_windows=1):
+    """Output drift of ``candidate`` (e.g. INT8) against ``reference`` (FP32 ONNX).
+
+    Informational: FR-M7 accepts or rejects INT8 by dev EER (``choose_quantization``),
+    not by logit distance, so there is no pass flag. Returns windows, maximum and mean
+    absolute logit difference, maximum embedding difference, class disagreements,
+    ``finite`` and contract ``problems`` (outputs are not computed when there are any).
+    """
+    if type(batch_size) is not int or not 1 <= batch_size <= PARITY_MAX_BATCH:
+        raise ValueError(f'batch_size must be an integer from 1 to {PARITY_MAX_BATCH}')
+    if type(min_windows) is not int or min_windows < 1:
+        raise ValueError('min_windows must be a positive integer')
+    array = _windows(windows, min_windows)
+    problems = ([f'reference: {p}' for p in check_session(reference)]
+                + [f'candidate: {p}' for p in check_session(candidate)])
+    if problems:
+        return {'windows': int(array.shape[0]), 'problems': problems}
+    rl, re_ = _run_session(reference, array, batch_size)
+    cl, ce = _run_session(candidate, array, batch_size)
+    if rl.shape != cl.shape or re_.shape != ce.shape:
+        return {'windows': int(array.shape[0]),
+                'problems': [f'output shapes differ: logits {rl.shape} vs {cl.shape}, '
+                             f'embedding {re_.shape} vs {ce.shape}']}
+    finite = bool(np.isfinite(rl).all() and np.isfinite(cl).all() and np.isfinite(re_).all()
+                  and np.isfinite(ce).all())
+    diff = np.abs(rl - cl)
+    return {'windows': int(array.shape[0]), 'batch_size': batch_size, 'finite': finite, 'problems': [],
+            'max_abs_logit_diff': float(diff.max()) if finite else math.inf,
+            'mean_abs_logit_diff': float(diff.mean()) if finite else math.inf,
+            'max_abs_embedding_diff': float(np.abs(re_ - ce).max()) if finite else math.inf,
+            'class_disagreements': int(np.sum(np.argmax(rl, axis=1) != np.argmax(cl, axis=1)))}
 
 
 def _eer(value, name):

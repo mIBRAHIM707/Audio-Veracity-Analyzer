@@ -201,5 +201,147 @@ class ExportParityTests(unittest.TestCase):
                     ox.open_session(self.record['path'], threads=threads)
 
 
+class QuantizeTests(unittest.TestCase):
+    """INT8 dynamic quantization of the tiny export (Claude-authored, 14 Nov 2026)."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls._tmp = tempfile.TemporaryDirectory()
+        cls.dir = Path(cls._tmp.name)
+        cls.fp32 = ox.export_onnx(_model(0), cls.dir / 'fp32.onnx')
+        cls.int8 = ox.quantize_int8_dynamic(cls.fp32['path'], cls.dir / 'int8.onnx',
+                                            source_sha256=cls.fp32['sha256'])
+        cls.fp32_session = ox.open_session(cls.fp32['path'])
+        cls.int8_session = ox.open_session(cls.int8['path'], expected_sha256=cls.int8['sha256'])
+
+    @classmethod
+    def tearDownClass(cls):
+        del cls.fp32_session, cls.int8_session
+        cls._tmp.cleanup()
+
+    def test_record_graph_and_contract(self):
+        import onnx
+        graph = onnx.load(self.int8['path'])
+        types = [node.op_type for node in graph.graph.node]
+        counted = sum(1 for op in types if op in ox.QUANTIZED_OP_TYPES)
+        self.assertGreater(counted, 0)
+        self.assertEqual(self.int8['quantized_nodes'], counted)
+        self.assertEqual(self.int8['activation_quantizers'], types.count('DynamicQuantizeLinear'))
+        # Architecture §4.3 step 4: MatMul/Linear only; the conv front end stays FP32.
+        self.assertNotIn('ConvInteger', types)
+        self.assertIn('Conv', types)
+        self.assertEqual(self.int8['op_types_to_quantize'], ['MatMul', 'Gemm'])
+        self.assertEqual(self.int8['source_sha256'], self.fp32['sha256'])
+        self.assertNotEqual(self.int8['sha256'], self.fp32['sha256'])
+        self.assertEqual(self.int8['sha256'], ox._sha256(self.int8['path']))
+        self.assertEqual(self.int8['opset'], ox._opset(graph))
+        self.assertEqual(ox._sha256(self.fp32['path']), self.fp32['sha256'])  # source untouched
+        self.assertEqual(ox.check_session(self.int8_session), [])
+        # No partial and no quantizer side files (e.g. -inferred/-opt) left behind.
+        self.assertEqual(sorted(p.name for p in self.dir.iterdir()), ['fp32.onnx', 'int8.onnx'])
+
+    def test_drift_is_measured_not_judged(self):
+        same = ox.compare_sessions(self.fp32_session, self.fp32_session, _windows(20))
+        self.assertEqual((same['max_abs_logit_diff'], same['class_disagreements']), (0.0, 0))
+        drift = ox.compare_sessions(self.fp32_session, self.int8_session, _windows(20), batch_size=1)
+        self.assertTrue(drift['finite'])
+        self.assertEqual(drift['problems'], [])
+        self.assertGreater(drift['max_abs_logit_diff'], 0.0)  # INT8 really changes the numbers
+        self.assertLessEqual(drift['mean_abs_logit_diff'], drift['max_abs_logit_diff'])
+        self.assertNotIn('passed', drift)
+
+    def test_int8_output_depends_on_batch_partners(self):
+        # DynamicQuantizeLinear takes one scale over the whole activation tensor, batch
+        # included, so a window's INT8 score moves with the other windows in its batch
+        # (measured 14 Nov with onnxruntime 1.32.0 on this seed-0 tiny model: about 1e-3
+        # to 3e-3 logits; FP32 about 3e-8; MMS-300M may differ). With the cross-call
+        # micro-batching of architecture §2.3 / ADR-3 one call's score would depend on
+        # another's audio. Characterization test of a recorded design question.
+        windows = _windows(8)
+        quiet_partners = windows.copy()
+        quiet_partners[1:] = 0
+        for session, bound, check in ((self.fp32_session, 1e-5, self.assertLess),
+                                      (self.int8_session, 1e-5, self.assertGreater)):
+            alone = session.run(None, {'waveform': windows[:1]})[0]
+            for batch in (windows, quiet_partners):
+                with self.subTest(session=session is self.int8_session, quiet=batch is quiet_partners):
+                    batched = session.run(None, {'waveform': batch})[0][:1]
+                    check(float(np.abs(alone - batched).max()), bound)
+
+    def test_compare_refusals_and_contract(self):
+        class Renamed:
+            def __init__(self, session):
+                self._session = session
+
+            def get_inputs(self):
+                spec = self._session.get_inputs()[0]
+                return [type('Spec', (), {'name': 'audio', 'shape': spec.shape, 'type': spec.type})()]
+
+            def get_outputs(self):
+                return self._session.get_outputs()
+
+        result = ox.compare_sessions(self.fp32_session, Renamed(self.int8_session), _windows(2))
+        self.assertTrue(result['problems'][0].startswith('candidate:'))
+        self.assertNotIn('max_abs_logit_diff', result)
+        for kwargs in ({'batch_size': 0}, {'batch_size': 65}, {'min_windows': 0}, {'min_windows': 3}):
+            with self.subTest(kwargs=kwargs):
+                with self.assertRaises(ValueError):
+                    ox.compare_sessions(self.fp32_session, self.int8_session, _windows(2), **kwargs)
+
+    def test_quantize_refusals_leave_nothing(self):
+        cases = {'wrong hash': (self.fp32['path'], self.dir / 'a.onnx', '0' * 64),
+                 'no hash': (self.fp32['path'], self.dir / 'b.onnx', None),
+                 'missing source': (self.dir / 'missing.onnx', self.dir / 'c.onnx', self.fp32['sha256']),
+                 'existing target': (self.fp32['path'], self.int8['path'], self.fp32['sha256'])}
+        before = sorted(p.name for p in self.dir.iterdir())
+        for label, (source, target, digest) in cases.items():
+            with self.subTest(label):
+                with self.assertRaises(ValueError):
+                    ox.quantize_int8_dynamic(source, target, source_sha256=digest)
+        self.assertEqual(sorted(p.name for p in self.dir.iterdir()), before)
+
+    def test_quantizer_failure_and_no_op_leave_nothing(self):
+        import shutil
+        from onnxruntime import quantization
+
+        def writes_then_fails(source, target, **kwargs):
+            Path(target).write_bytes(b'half')
+            raise RuntimeError('quantizer failed')
+
+        def copies_unchanged(source, target, **kwargs):
+            shutil.copyfile(source, target)
+
+        before = sorted(p.name for p in self.dir.iterdir())
+        with mock.patch.object(quantization, 'quantize_dynamic', writes_then_fails):
+            with self.assertRaises(RuntimeError):
+                ox.quantize_int8_dynamic(self.fp32['path'], self.dir / 'fail.onnx',
+                                         source_sha256=self.fp32['sha256'])
+        with mock.patch.object(quantization, 'quantize_dynamic', copies_unchanged):
+            with self.assertRaisesRegex(ValueError, 'no MatMul/Gemm'):
+                ox.quantize_int8_dynamic(self.fp32['path'], self.dir / 'noop.onnx',
+                                         source_sha256=self.fp32['sha256'])
+        self.assertEqual(sorted(p.name for p in self.dir.iterdir()), before)
+
+    def test_contract_breaking_quantization_leaves_nothing(self):
+        import onnx
+        from onnxruntime import quantization
+        real = quantization.quantize_dynamic
+
+        def renames_input(source, target, **kwargs):
+            real(source, target, **kwargs)
+            model = onnx.load(target)
+            for node in model.graph.node:
+                node.input[:] = ['audio' if name == 'waveform' else name for name in node.input]
+            model.graph.input[0].name = 'audio'
+            onnx.save(model, target)
+
+        before = sorted(p.name for p in self.dir.iterdir())
+        with mock.patch.object(quantization, 'quantize_dynamic', renames_input):
+            with self.assertRaisesRegex(ValueError, 'I/O contract'):
+                ox.quantize_int8_dynamic(self.fp32['path'], self.dir / 'renamed.onnx',
+                                         source_sha256=self.fp32['sha256'])
+        self.assertEqual(sorted(p.name for p in self.dir.iterdir()), before)
+
+
 if __name__ == '__main__':
     unittest.main()

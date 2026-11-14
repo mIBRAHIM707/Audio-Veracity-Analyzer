@@ -117,8 +117,11 @@ and about 50,000 original clips, excluding codec copies.
   `models/export/onnx_export.py`: FP32 opset-17 export with a dynamic batch (opset read
   back, outside-repo, no-overwrite), CPU-only session with hash pin, I/O contract check,
   parity harness (>= 100 windows, strict < 1e-3) and the pure INT8 -> static -> FP32
-  rule; `requirements-export.txt` pins onnx 1.23.2. Tiny random model only; INT8,
-  real-checkpoint export/parity and dev EER remain. 7.2: live inference latency
+  rule; `requirements-export.txt` pins onnx 1.23.2. Dynamic INT8 of MatMul/Gemm
+  (`quantize_int8_dynamic`) with a drift report. Finding: dynamic INT8 output depends
+  on batch partners (cross-call micro-batching question; INT8 EER must state its
+  batching). Tiny random model only; static INT8, real-checkpoint export/parity and dev
+  EER remain. 7.2: live inference latency
   histogram added to `/metrics` (1839139).
 - **Backlog 3.3 advanced (14 Nov): GSM 06.10 and AMR-NB codecs.**
   `data/prepare/ffmpeg_codecs.py` through pinned ffmpeg 9.0.2 (winget user install,

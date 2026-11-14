@@ -297,8 +297,13 @@ items needing that data are listed at the end and stay out of the queue.
   publish), CPU-only session with hash pin, I/O contract check, FR-M7 parity harness
   (>= 100 windows, strict < 1e-3), pure FR-M7 INT8 -> static -> FP32 decision rule;
   `requirements-export.txt` (onnx 1.23.2); 9 Claude-authored unit + 14 model tests on a
-  tiny random detector; review fixed. Remaining: INT8 dynamic/static quantization,
-  real-checkpoint export and parity on dev windows, dev-EER measurement.
+  tiny random detector; review fixed. Then dynamic INT8 of MatMul/Gemm only
+  (`quantize_int8_dynamic`, hash-pinned source, refuses no-op/contract-breaking
+  output) and `compare_sessions` drift report; 7 more Claude-authored model tests,
+  review fixed. Finding: dynamic INT8 output
+  depends on batch partners (FR-I9 cross-call batching question for the PRD).
+  Remaining: static INT8 (calibration windows), real-checkpoint export and parity on
+  dev windows, dev-EER measurement.
 - [ ] 10.2 Model-card generator, container/Compose and deployment manifests.
 - [ ] 10.QA Reproducible startup, CPU parity where measurable, rollback/readiness.
 

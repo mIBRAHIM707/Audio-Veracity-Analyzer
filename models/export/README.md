@@ -18,6 +18,29 @@
   at least 100 windows (FR-M7); `passed` only when every output is finite and the
   maximum absolute logit difference is strictly below 1e-3. Also reports the embedding
   difference and class disagreements.
+- `quantize_int8_dynamic(source, path, source_sha256=)`: onnxruntime dynamic INT8 of
+  MatMul and Gemm only (architecture §4.3 step 4; the convolutional front end stays
+  FP32, checked by a test), signed INT8 weights per tensor, activations as uint8 via
+  `DynamicQuantizeLinear`; from a hash-pinned FP32 export; refuses a result with no
+  quantized MatMul/Gemm node or a broken I/O contract; same no-overwrite/no-partial
+  rules. Records source hash, op types, quantized node and activation-quantizer
+  counts and the onnxruntime version.
+- `compare_sessions(reference, candidate, windows)`: INT8-vs-FP32 output drift (max and
+  mean logit difference, embedding difference, class disagreements). Informational:
+  FR-M7 judges INT8 by dev EER, so there is no pass flag.
+- **Finding (14 Nov, tiny model): dynamic INT8 output depends on batch partners.**
+  `DynamicQuantizeLinear` takes one scale over the whole activation tensor, batch
+  included; a window's logits moved by about 1e-3 to 3e-3 when other windows shared
+  its batch (FP32: about 3e-8; onnxruntime 1.32.0, seed-0 tiny model, so MMS-300M may
+  differ). Architecture §2.3 / ADR-3 micro-batch windows from different calls (the
+  route to FR-I9's capacity), so with dynamic INT8 one call's score would depend on
+  another call's audio, and file and live mode could score the same window
+  differently. Options for the PRD/architecture: run INT8 at batch 1, prefer static
+  INT8 (fixed scales), or accept and bound the drift. Pinned by a characterization
+  test. Consequence for FR-M7: an INT8 dev EER depends on how evaluation windows were
+  batched, so it must be measured under a stated batching policy (batch 1, or the
+  serving micro-batch policy) recorded next to the EER before `choose_quantization`
+  uses it.
 - `choose_quantization(fp32_eer, int8_dynamic_eer, int8_static_eer=None)`: the FR-M7
   rule (dynamic INT8 if it loses at most 0.3 EER points, else static INT8, else FP32
   with a latency re-benchmark). Pure; EERs are measured elsewhere
@@ -25,15 +48,16 @@
 
 Limits: the model's Python input checks (shape, finite samples) are traced as
 constants, so the ONNX graph does not refuse NaN or wrong shapes by itself; serving
-must validate windows before `session.run`. Other known limits: `open_session` hashes
-the file and onnxruntime then reopens it by path (a swap in between is not detected);
+must validate windows before `session.run`. Other known limits: `open_session` and
+`quantize_int8_dynamic` hash a file and onnxruntime then reopens it by path (a swap in
+between is not detected);
 EERs are fractions from 0 to 1, so a percentage below 1 (0.8 meaning 0.8 %) would be
 misread; a graph of 2 GB or more makes torch write external-data files named after the
 `.partial` file, which this export does not handle (MMS-300M FP32 is about 1.2 GB);
 parity holds at most 2,000 windows and batches of at most 64 per call.
 
-INT8 quantization, the real-checkpoint export and the dev-EER measurement are not done
-yet. Evidence so far is a tiny random model on synthetic noise (infrastructure only):
+Static INT8 (needs calibration windows), the real-checkpoint export and the dev-EER
+measurement are not done yet. Evidence so far is a tiny random model on synthetic noise (infrastructure only):
 FR-M7 parity stays unmet until it is measured on the real truncated MMS-300M graph with
 real dev windows.
 
