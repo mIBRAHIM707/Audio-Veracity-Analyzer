@@ -19,6 +19,14 @@ From 11 November each catch-up has its own ledger and log names
 spending the scheduled day's attempts. A session that stops early on purpose creates
 `STOP-<ledger name>`; the runner also stops relaunching after any attempt that
 ends within five minutes.
+**Network and login failures (14 November 2026).** On 11 November a session lost
+the network; on 13 November the task fired in standby and the login refresh failed,
+which failed the whole day in four seconds. The runner now waits for
+`api.anthropic.com` to resolve before every launch (until the launch cutoff), retries
+a session that ends on an API error up to three times after a two-minute wait
+without failing the day, and holds a system-awake request while it runs. Optional
+config `gh_user` passes that account's `gh` token to the session as `GH_TOKEN`, so
+the globally active `gh` account cannot break PR edits; no token is stored.
 Sessions also enable Claude Code's PowerShell tool, and every Bash allow/deny rule is
 mirrored onto it, because this host's Git Bash is missing `usr\bin\bash.exe`.
 

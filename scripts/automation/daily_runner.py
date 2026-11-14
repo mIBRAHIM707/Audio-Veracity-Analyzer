@@ -9,13 +9,17 @@ exit, including unexpected runner termination. No shell-built commands are used.
 from __future__ import annotations
 
 import argparse
+import contextlib
 import ctypes
 from ctypes import wintypes
 from datetime import datetime, time, timedelta, timezone
 import json
 import os
 from pathlib import Path
+import re
+import shutil
 import signal
+import socket
 import subprocess
 import sys
 import time as clock
@@ -24,6 +28,9 @@ PKT = timezone(timedelta(hours=5), "Asia/Karachi")
 REMOTE = "https://github.com/mIBRAHIM707/Audio-Veracity-Analyzer.git"
 BRANCH = "feat/4-daily-development"
 MIN_PRODUCTIVE_SECONDS = 300  # 10 Nov 2026: four idle relaunches in a row each wrote only a report.
+API_HOST = "api.anthropic.com"
+MAX_TRANSIENT_FAILURES = 3   # Network/login failures retried per session before the day is failed.
+TRANSIENT_RETRY_SECONDS = 120
 MODELS = {"opus", "sonnet", "claude-opus-5-5", "claude-fable-5-1", "claude-sonnet-5"}
 
 
@@ -61,6 +68,9 @@ def load_config(path: Path) -> dict:
     if model not in MODELS:
         raise ValueError(f"model must be one of {sorted(MODELS)}")
     config["model"] = model
+    gh_user = config.get("gh_user")
+    if gh_user is not None and (not isinstance(gh_user, str) or not re.fullmatch(r"[A-Za-z0-9-]{1,39}", gh_user)):
+        raise ValueError("gh_user must be a GitHub login")
     for name in ("claude_path", "python_path"):
         if not Path(config[name]).is_file():
             raise ValueError(f"Missing executable: {name}")
@@ -237,6 +247,69 @@ def write_final_message(log_path: Path, output_path: Path) -> bool:
     return True
 
 
+def transient_failure(log_path: Path) -> bool:
+    """True when the session ended on an API/network/login error, not on its own work (13 Nov 2026)."""
+    final = None
+    try:
+        with log_path.open(encoding="utf-8", errors="replace") as stream:
+            for line in stream:
+                try:
+                    event = json.loads(line)
+                except ValueError:
+                    continue
+                if isinstance(event, dict) and event.get("type") == "result":
+                    final = event
+    except OSError:
+        return False
+    return isinstance(final, dict) and final.get("terminal_reason") == "api_error"
+
+
+def network_ready(host: str = API_HOST) -> bool:
+    try:
+        socket.getaddrinfo(host, 443)
+        return True
+    except OSError:
+        return False
+
+
+def wait_for_network(until: datetime, stop_path: Path, poll: float = 15.0) -> bool:
+    """Block until the API host resolves; False at the launch cutoff or on PAUSED."""
+    while datetime.now(PKT) < until and not stop_path.exists():
+        if network_ready():
+            return True
+        clock.sleep(poll)
+    return False
+
+
+def keep_awake(enabled: bool) -> None:
+    """Stop idle standby from freezing a running session (Modern Standby host)."""
+    if os.name == "nt":
+        ctypes.windll.kernel32.SetThreadExecutionState(0x80000001 if enabled else 0x80000000)
+
+
+@contextlib.contextmanager
+def staying_awake():
+    keep_awake(True)
+    try:
+        yield
+    finally:
+        keep_awake(False)
+
+
+def github_env(config: dict) -> dict:
+    """Token for the configured gh account, so the global active account cannot break PR edits."""
+    user, gh = config.get("gh_user"), shutil.which("gh")
+    if not user or not gh:
+        return {}
+    try:
+        done = subprocess.run([gh, "auth", "token", "--user", user], capture_output=True,
+                              text=True, timeout=20, creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0)
+    except (OSError, subprocess.SubprocessError):
+        return {}
+    token = done.stdout.strip()
+    return {"GH_TOKEN": token} if done.returncode == 0 and token else {}
+
+
 def resume_child(proc):
     """Resume only after job assignment; suspended start closes descendant race."""
     if os.name == "nt":
@@ -251,7 +324,7 @@ def resume_child(proc):
 def run_child(command: list[str], prompt: str, log_path: Path, timeout: float,
               stop_path: Path | None = None,
               wall_deadline: datetime | None = None,
-              cwd: str | None = None) -> int:
+              cwd: str | None = None, extra_env: dict | None = None) -> int:
     if timeout <= 0:
         return 124
     deadline = clock.monotonic() + timeout
@@ -263,7 +336,7 @@ def run_child(command: list[str], prompt: str, log_path: Path, timeout: float,
         with log_path.open("xb") as output:
             proc = subprocess.Popen(command, stdin=subprocess.PIPE, stdout=output,
                                     stderr=subprocess.STDOUT, cwd=cwd,
-                                    env={**os.environ, **CHILD_ENV},
+                                    env={**os.environ, **CHILD_ENV, **(extra_env or {})},
                                     creationflags=(subprocess.CREATE_NO_WINDOW | 0x4) if os.name == "nt" else 0,
                                     start_new_session=os.name != "nt")
             # CREATE_SUSPENDED prevents even startup hooks spawning outside the job.
@@ -329,7 +402,7 @@ def main(argv=None) -> int:
             return 0
         state = Path(config["state_dir"])
         state.mkdir(parents=True, exist_ok=True)
-        with FileLock(state / "runner.lock"):
+        with FileLock(state / "runner.lock"), staying_awake():
             day = now.date().isoformat()
             label = day
             if args.catch_up:  # Each make-up session has its own ledger; the scheduled day is untouched.
@@ -362,6 +435,10 @@ def main(argv=None) -> int:
                 remaining = min((deadline - current).total_seconds(), monotonic_deadline - clock.monotonic())
                 if current >= soft or remaining <= 0:
                     break
+                if not wait_for_network(soft, state / "PAUSED"):  # Wake from standby: network may lag.
+                    ledger["stop_reason"] = "no network before the launch cutoff"
+                    atomic_json(ledger_path, ledger)
+                    break
                 workspace = validate_workspace(config)
                 current = datetime.now(PKT)
                 remaining = min((deadline - current).total_seconds(), monotonic_deadline - clock.monotonic())
@@ -389,16 +466,23 @@ def main(argv=None) -> int:
                     launched = clock.monotonic()
                     code = run_child(build_command(config), prompt,
                                      state / f"{stem}.jsonl", remaining, state / "PAUSED", deadline,
-                                     cwd=config["worktree"])
+                                     cwd=config["worktree"], extra_env=github_env(config))
                     write_final_message(state / f"{stem}.jsonl", state / f"{stem}.md")
                 except (OSError, ValueError, RuntimeError, subprocess.SubprocessError) as exc:
                     ledger.update({"last_exit": 1, "last_finished": datetime.now(PKT).isoformat(),
                                    "failed": True, "error": str(exc)})
                     atomic_json(ledger_path, ledger)
                     raise
+                retry = (code not in (0, 124, 125) and transient_failure(state / f"{stem}.jsonl")
+                         and ledger.get("transient_failures", 0) < MAX_TRANSIENT_FAILURES)
+                if retry:  # Network/login error: unfinished work stays in the worktree for the relaunch.
+                    ledger["transient_failures"] = ledger.get("transient_failures", 0) + 1
                 ledger.update({"last_exit": code, "last_finished": datetime.now(PKT).isoformat(),
-                               "failed": code != 0})
+                               "failed": code != 0 and not retry})
                 atomic_json(ledger_path, ledger)
+                if retry:
+                    clock.sleep(TRANSIENT_RETRY_SECONDS)
+                    continue
                 if code:
                     return code
                 if clock.monotonic() - launched < MIN_PRODUCTIVE_SECONDS:

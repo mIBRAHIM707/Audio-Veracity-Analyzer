@@ -74,10 +74,15 @@ class SchedulerTests(unittest.TestCase):
     def save_config(self):
         self.config_path.write_text(json.dumps(self.config), encoding="utf-8")
 
-    def run_main(self, *args, child=None, min_seconds=0):
+    def run_main(self, *args, child=None, min_seconds=0, network=True):
         workspace = {"head": "fictional-revision", "status": "?? sentinel.txt", "prompt": str(self.prompt)}
         with patch.object(runner, "datetime", FixedDateTime), \
                 patch.object(runner, "MIN_PRODUCTIVE_SECONDS", min_seconds), \
+                patch.object(runner, "TRANSIENT_RETRY_SECONDS", 0), \
+                patch.object(runner, "network_ready", return_value=network), \
+                patch.object(runner, "wait_for_network", side_effect=lambda *a, **k: network), \
+                patch.object(runner, "github_env", return_value={}), \
+                patch.object(runner, "keep_awake"), \
                 patch.object(runner, "validate_workspace", return_value=workspace), \
                 patch.object(runner, "run_child", side_effect=child or (lambda *a, **k: 0)) as launch, \
                 redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()):
@@ -167,6 +172,83 @@ class SchedulerTests(unittest.TestCase):
         self.assertEqual(result, 0)
         self.assertEqual(launch.call_count, 1)
         self.assertIn("agent stopped", self.ledger()["stop_reason"])
+
+    # Claude-authored, 14 Nov 2026: network/login failures (11 and 13 Nov) must not fail the day.
+    @staticmethod
+    def api_error_child(outcomes):
+        def child(command, prompt, log_path, *rest, **kwargs):
+            code = outcomes.pop(0)
+            reason = "api_error" if code else "completed"
+            log_path.write_text('not json\n' + json.dumps({"type": "result", "result": "x",
+                                                           "terminal_reason": reason}) + "\n", encoding="utf-8")
+            return code
+        return child
+
+    def test_api_error_is_retried_and_day_not_failed(self):
+        result, launch = self.run_main(child=self.api_error_child([1, 0]))
+        self.assertEqual(result, 0)
+        self.assertEqual(launch.call_count, 2)
+        self.assertFalse(self.ledger()["failed"])
+        self.assertEqual(self.ledger()["transient_failures"], 1)
+
+    def test_persistent_api_error_fails_day_after_bounded_retries(self):
+        self.config["max_invocations"] = 6
+        self.save_config()
+        result, launch = self.run_main(child=self.api_error_child([1] * 6))
+        self.assertEqual(result, 1)
+        self.assertEqual(launch.call_count, runner.MAX_TRANSIENT_FAILURES + 1)
+        self.assertTrue(self.ledger()["failed"])
+        result, launch = self.run_main()
+        launch.assert_not_called()
+
+    def test_api_error_retries_never_exceed_invocation_cap(self):
+        result, launch = self.run_main(child=self.api_error_child([1, 1, 1]))
+        self.assertEqual(launch.call_count, 2)
+        self.assertEqual(self.ledger()["attempts"], 2)
+
+    def test_transient_failure_reads_only_last_result_and_tolerates_bad_logs(self):
+        log = self.root / "log.jsonl"
+        self.assertFalse(runner.transient_failure(log))
+        log.write_text('{"type":"result","terminal_reason":"api_error"}\n{"type":"result","terminal_reason":"completed"}\n')
+        self.assertFalse(runner.transient_failure(log))
+        log.write_text('garbage\n[1]\n{"type":"result","terminal_reason":"api_error"}\n')
+        self.assertTrue(runner.transient_failure(log))
+
+    def test_no_network_before_cutoff_launches_nothing_and_does_not_fail_day(self):
+        result, launch = self.run_main(network=False)
+        self.assertEqual(result, 0)
+        launch.assert_not_called()
+        self.assertFalse(self.ledger().get("failed", False))
+        self.assertEqual(self.ledger()["attempts"], 0)
+        self.assertIn("no network", self.ledger()["stop_reason"])
+        result, launch = self.run_main()
+        self.assertEqual(launch.call_count, 2)
+
+    def test_wait_for_network_stops_at_cutoff_and_on_pause(self):
+        pause = self.root / "PAUSED"
+        with patch.object(runner, "network_ready", return_value=False), \
+                patch.object(runner.clock, "sleep") as sleep:
+            self.assertFalse(runner.wait_for_network(datetime.now(runner.PKT) - timedelta(seconds=1), pause))
+            sleep.assert_not_called()
+            pause.write_text("x")
+            self.assertFalse(runner.wait_for_network(datetime.now(runner.PKT) + timedelta(hours=1), pause))
+        pause.unlink()
+        with patch.object(runner, "network_ready", return_value=True):
+            self.assertTrue(runner.wait_for_network(datetime.now(runner.PKT) + timedelta(hours=1), pause))
+
+    def test_gh_user_is_validated_and_token_never_stored_in_config(self):
+        for bad in ("a b", "x;rm", "", 5, "a" * 40):
+            with self.subTest(bad=bad):
+                self.config["gh_user"] = bad
+                self.save_config()
+                with self.assertRaises(ValueError):
+                    runner.load_config(self.config_path)
+        self.config["gh_user"] = "fictional-user"
+        self.save_config()
+        config = runner.load_config(self.config_path)
+        with patch.object(runner.shutil, "which", return_value=None):
+            self.assertEqual(runner.github_env(config), {})
+        self.assertNotIn("GH_TOKEN", json.dumps(config))
 
     def test_no_launch_before_noon_or_at_soft_or_hard_cutoff(self):
         for hour, minute, second, microsecond in [(11, 59, 59, 999999), (13, 45, 0, 0),
