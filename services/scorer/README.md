@@ -218,6 +218,24 @@ batch handed out is counted, not run); no threads, no real detector or tap wired
 Spec questions: whether the call card keeps `unmonitored` while scoring continues at
 the capped stride, and a time limit for the detector call.
 
+## Speech windows (backlog 3.2 partial; PRD FR-I3, FR-I4; architecture §2.2 steps 3-4)
+
+`speech_windows.SpeechWindower(vad, threshold=0.5)` per call direction: 16 kHz int16 PCM
+in any chunk sizes (at most 10 s per `feed`) is split into 512-sample frames; frames
+with VAD probability below the threshold are excluded but advance time; the
+speech-only stream is cut with the file-mode plan (`plan_windows`: 4 s every 2 s, and
+at `finish()` a partial window when at least 1.5 s of speech is uncovered). Windows
+carry speech and stream coordinates, `partial`, `scorable` (at least 2.5 s of speech;
+only partial windows can fall below it) and float32 [64000] PCM (int16/32768,
+zero-padded). `no_speech`, `speech_seconds` and `seconds_since_speech` feed the
+`no_speech` state. A VAD fault raises `VadFailure` after dropping that audio as
+non-speech and calling `vad.reset()` (do not retry the audio); at `finish()` it drops
+only the last part-frame. Not done: the Silero ONNX adapter (needs onnxruntime and the
+model file), connecting windows to `LivePipeline.offer` (drop non-scorable windows,
+carry `partial` and times), configurable window/hop, and peak normalization.
+Spec questions: file mode scores a lone 1.5-2.5 s partial window while this marks it
+not scorable; the meaning of "2.5 s is speech" when windows hold speech only.
+
 Not specified by the PRD and therefore not enforced in configuration: ordering between the
 suspicious and alert thresholds (for example `alert_enter >= suspicious_enter`), an
 upper bound on `min_windows`, or whether `agent` may be scored without `caller`.
