@@ -270,8 +270,12 @@ items needing that data are listed at the end and stay out of the queue.
   Asterisk 20.6 call through tap, jitter buffer, real Silero VAD and the pipeline
   (b7f2bd2, fake detector), and through `LiveService` with the real 14 Nov static INT8
   export, untrained head (cee5ffb): 5 windows scored, one `call.ended reason=bye`.
-  Calls unharmed with no, stopped, hung or crashed tap (6.2). Remaining: a detector
-  fault during a lab call, codecs other than mu-law end to end, the trained model.
+  Calls unharmed with no, stopped, hung or crashed tap (6.2). 15 Nov (8387661): a
+  detector that raises on every batch, and one that blocks the service thread from
+  about 5 s into the call, never affect a real lab call (SIPp completes normally, one
+  `call.ended bye`, no reconnect, nothing left in Asterisk); found and fixed `stop()`
+  counted as a disconnect. Remaining: codecs other than mu-law end to end, the trained
+  model.
 
 ## 7 — Dashboard and operations (FR-U, FR-A8)
 - [ ] 7.1 Live board, alerts, timeline and batch job states.
@@ -309,8 +313,12 @@ items needing that data are listed at the end and stay out of the queue.
   applies the temperature, one finite warm-up) and `LiveService` (one thread: tap,
   pipeline, batcher, CallGate = tap admission, reconnect with backoff, faults counted,
   queued ends keep their reason on stop); 6 unit + 1 lab Claude-authored tests, review
-  H1/H2/M1-M3 fixed. Remaining: command-line entry point/config file, `/readyz` and
-  metrics for this process, measured capacity (8.QA), file jobs through the batcher.
+  H1/H2/M1-M3 fixed. 15 Nov (a6f5106): `python -m services.live` command line (password
+  from the environment only, start-up checks of hosts, extensions, config, model, VAD
+  and ARI credentials, JSON start/stop records, exit 2 on refusal, signal stop with a
+  forced second Ctrl+C); 12 unit + 1 lab Claude-authored tests; review M1-M4 and lows
+  fixed. Remaining: store/Redis pumps on their own threads, `/readyz` and metrics for
+  this process, measured capacity (8.QA), file jobs through the batcher.
 - [ ] 8.2 Degraded stride/unmonitored behavior and resource bounds.
   Progress (10 Nov): `services/scorer/degraded.py` stride controller (grow per behind
   report, cap, unmonitored, 30 s recovery), 13 Claude-authored tests, review fixed.
