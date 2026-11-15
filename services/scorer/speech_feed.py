@@ -4,7 +4,8 @@ FR-I3, FR-U1 `no_speech`; architecture §2.2 steps 3-4).
 `SpeechFeed(pipeline, vad_factory)` owns one `SpeechWindower` (and one VAD from
 `vad_factory()`) per active call direction:
 
-- `audio(call_id, direction, pcm, now)`: feeds 16 kHz int16 PCM; scorable windows are
+- `audio(call_id, direction, pcm, now, concealed=None)`: feeds 16 kHz int16 PCM (and an
+  optional per-sample concealment mask for the FR-I2 gate); scorable windows are
   offered to the pipeline with their window index (indexes stay increasing, so a
   skipped non-scorable window leaves a gap the ordered boundary accepts); windows
   that are not scorable are counted, not offered. Audio for a call that is not active
@@ -112,7 +113,8 @@ class SpeechFeed:
             if not window.scorable:
                 self.counts['not_scorable'] += 1
                 continue
-            outcome = self.pipeline.offer(call_id, direction, window.index, window.pcm, now)
+            outcome = self.pipeline.offer(call_id, direction, window.index, window.pcm, now,
+                                          concealed_fraction=window.concealed_fraction)
             if outcome is None:
                 self.counts['offered_inactive'] += 1
                 continue
@@ -123,14 +125,19 @@ class SpeechFeed:
         self.counts['offered'] += offered
         return offered
 
-    def audio(self, call_id, direction, pcm, now):
+    def audio(self, call_id, direction, pcm, now, concealed=None):
         """Feed audio for one direction; returns the number of windows offered.
-        Invalid `direction` or `pcm` raises ValueError and changes nothing."""
+        `concealed` (bool per sample) marks receiver-concealed samples; each window's
+        concealed share travels with it to the scorer's FR-I2 quality gate. Invalid
+        `direction`, `pcm` or `concealed` raises ValueError and changes nothing."""
         if direction not in DIRECTIONS:
             raise ValueError(f'direction must be one of {DIRECTIONS}')
         if not isinstance(pcm, np.ndarray) or pcm.dtype != np.int16 or pcm.ndim != 1 \
                 or len(pcm) > MAX_FEED_SAMPLES:
             raise ValueError(f'pcm must be a 1-D int16 numpy array of at most {MAX_FEED_SAMPLES} samples')
+        if concealed is not None and (not isinstance(concealed, np.ndarray) or concealed.dtype != bool
+                                      or concealed.shape != pcm.shape):
+            raise ValueError('concealed must be a bool array with one flag per sample')
         self.pipeline.check_clock(now)  # before any windower state is used up
         if not self.pipeline.live.is_active(call_id):
             self.counts['audio_inactive'] += 1
@@ -143,7 +150,7 @@ class SpeechFeed:
         if windower is None:
             return 0
         try:
-            windows = windower.feed(pcm)
+            windows = windower.feed(pcm, concealed)
         except VadFailure:
             self.counts['vad_failures'] += 1
             windows = []

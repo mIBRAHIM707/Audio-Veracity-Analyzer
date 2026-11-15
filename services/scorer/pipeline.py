@@ -75,6 +75,7 @@ class LivePipeline:
         self._directions = {}  # (call_id, direction) -> PendingWindows
         self._tokens = {}  # (call_id, direction) -> LiveCalls.token of the call it belongs to
         self._in_flight = set()  # keys with a window in the batcher or in inference
+        self._concealed = {}  # ((call_id, direction), index) -> concealed fraction, nonzero only
         self._unmonitored = set()
         self._cursor = itertools.count()
         self._last_now = None
@@ -100,11 +101,17 @@ class LivePipeline:
         return now
 
     # --- intake --------------------------------------------------------------------------
-    def offer(self, call_id, direction, index, window, now):
+    def offer(self, call_id, direction, index, window, now, *, concealed_fraction=0.0):
         """Offer one built window. Returns the PendingWindows outcome, or None when the
-        call is not active. Invalid input raises ValueError and changes nothing."""
+        call is not active. `concealed_fraction` (0-1, the window's receiver-concealed
+        share) is handed to `LiveCalls.result` with the window's score, where the FR-I2
+        gate keeps a window above `max_concealed_fraction` unscored with quality=low.
+        Invalid input raises ValueError and changes nothing."""
         if direction not in DIRECTIONS:
             raise ValueError(f'direction must be one of {DIRECTIONS}')
+        if isinstance(concealed_fraction, bool) or not isinstance(concealed_fraction, numbers.Real) \
+                or not 0.0 <= concealed_fraction <= 1.0:
+            raise ValueError('concealed_fraction must be a number from 0 to 1')
         window = np.array(window, copy=True)  # the builder may reuse its buffer
         if window.shape != (WINDOW_SAMPLES,) or window.dtype != np.float32 or not np.isfinite(window).all():
             raise ValueError(f'window must be finite float32 of shape ({WINDOW_SAMPLES},)')
@@ -128,8 +135,11 @@ class LivePipeline:
             self._directions[key], self._tokens[key] = pending, token
         self._last_now = now
         self.counts['accepted' if outcome['accepted'] else 'stride_skipped'] += 1
+        if outcome['accepted'] and concealed_fraction > 0:
+            self._concealed[(key, index)] = float(concealed_fraction)
         if outcome['dropped_index'] is not None:
             self.counts['dropped_pending'] += 1
+            self._concealed.pop((key, outcome['dropped_index']), None)
         controller = pending.controller
         if controller.unmonitored and key not in self._unmonitored:
             self._unmonitored.add(key)
@@ -197,6 +207,8 @@ class LivePipeline:
             if len(scores) != len(items):
                 raise ValueError('detector returned a different number of rows')
         except Exception:  # AVA fault: lose this batch's scores, never the calls
+            for item in items:
+                self._concealed.pop((item[0], item[2]), None)
             self._observe_inference(started, 'failed')
             self.counts['detector_failures'] += 1
             self.counts['windows_lost_to_detector'] += len(items)
@@ -205,9 +217,11 @@ class LivePipeline:
         applied = 0
         for ((call_id, direction), pending, index, _), score in zip(items, scores):
             status = pending.controller.status()
+            concealed = self._concealed.pop(((call_id, direction), index), 0.0)
             try:
                 outcome = self.live.result(call_id, direction, index, score, degraded=status['degraded'],
-                                           effective_stride_s=status['effective_stride_s'])
+                                           effective_stride_s=status['effective_stride_s'],
+                                           concealed_fraction=concealed)
                 was_applied = bool(outcome.applied)
             except Exception:  # one bad result must not stop the rest of the batch
                 self.counts['result_errors'] += 1
@@ -257,6 +271,13 @@ class LivePipeline:
             pass
         self._unmonitored.discard(key)
         self._in_flight.discard(key)  # a batched item from it is skipped in step
+        for entry in [e for e in self._concealed if e[0] == key]:
+            del self._concealed[entry]
+
+    def has_work(self, call_id):
+        """True while a window of this call is waiting, batched or in inference."""
+        return any(key[0] == call_id and (len(pending) or key in self._in_flight)
+                   for key, pending in self._directions.items())
 
     def snapshot(self):
         """Per-direction queue and stride state without window data."""

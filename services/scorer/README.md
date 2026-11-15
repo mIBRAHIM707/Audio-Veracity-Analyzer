@@ -118,8 +118,23 @@ Interpretation choices (PRD clarification requested under FR-I2/FR-I5/FR-I8):
 `call.quality`, `call.state` and `call.summary` are internal domain events like
 `state.changed`. Not here: `no_speech` (needs the VAD, backlog 3.2), `unmonitored`
 and the degraded flag (backlog 8.2), the `system.health` media-quality event for
-sustained loss (FR-I2, needs the live jitter buffer, backlog 6), and detecting the
-human answer itself (telephony, backlog 6).
+sustained loss (FR-I2; the tap's `LossMonitor` reports it, publishing it is wiring
+work), and detecting the human answer itself (telephony, backlog 6).
+
+Concealment path (15 Nov 2026, backlog 6.3): `SpeechWindower.feed(pcm, concealed)`
+carries a per-sample concealment flag beside the speech samples; each window reports
+`concealed_fraction` = (concealed speech samples + concealed samples the VAD dropped as
+non-speech between its first and last speech sample) / (speech samples + those dropped
+samples), so a long outage that the receiver zero-fills (and the VAD drops) still
+counts (review finding, 15 Nov; PRD FR-I2 does not say which samples count: question
+recorded). `SpeechFeed.audio(..., concealed=)` passes it on and
+`LivePipeline.offer(..., concealed_fraction=)` keeps it beside the queued window
+(cleared on cancellation, drop and detector failure) and hands it to `LiveCalls.result`
+with the score, so the existing gate above applies. The window is still inferred (the
+ordered boundary needs results in index order); its score is not used. Overlapping
+windows share samples, so one concealed burst can gate two windows; `call.quality` is
+published once when quality turns low. Tests: `tests/unit/test_concealment_gate.py`
+(Claude-authored).
 
 ## Degraded mode (backlog 8.2 partial; PRD FR-I10, FR-I6)
 

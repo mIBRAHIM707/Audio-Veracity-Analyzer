@@ -60,6 +60,9 @@ class SpeechWindow:
     partial: bool
     scorable: bool
     pcm: np.ndarray    # float32 [64000], int16 / 32768, zero-padded when partial
+    # FR-I2: (concealed speech samples + concealed samples dropped as non-speech inside the
+    # window's span) / (speech samples + those dropped samples)
+    concealed_fraction: float = 0.0
 
 
 class SpeechWindower:
@@ -71,6 +74,9 @@ class SpeechWindower:
             raise ValueError('threshold must be a number strictly between 0 and 1')
         self._vad, self.threshold = vad, float(threshold)
         self._carry = np.zeros(0, np.int16)  # samples not yet forming a whole frame
+        self._carry_concealed = np.zeros(0, bool)
+        self._concealed = np.zeros(0, bool)   # concealment flags aligned with _buffer
+        self._quiet_concealed = []            # [stream_start, count] of concealed samples in non-speech frames
         self._stream = 0                      # stream samples consumed into frames
         self._speech_total = 0                # speech samples accumulated so far
         self._base = 0                        # speech index of _buffer[0] (next window start)
@@ -130,22 +136,32 @@ class SpeechWindower:
                     raise VadFailure(f'vad reset failed: {type(error).__name__}') from error
             raise
 
-    def feed(self, pcm):
-        """Add 16 kHz int16 PCM; returns the full windows completed by it, in order."""
+    def feed(self, pcm, concealed=None):
+        """Add 16 kHz int16 PCM; returns the full windows completed by it, in order.
+        `concealed` (optional bool array of the same length) marks samples the receiver
+        made up for lost packets; each window reports the concealed share of its speech
+        samples as `concealed_fraction` (the FR-I2 >10 % gate is applied by the scorer)."""
         if self._finished:
             raise ValueError('the windower is finished')
         if not isinstance(pcm, np.ndarray) or pcm.dtype != np.int16 or pcm.ndim != 1:
             raise ValueError('pcm must be a 1-D int16 numpy array')
         if len(pcm) > MAX_FEED_SAMPLES:
             raise ValueError(f'feed at most {MAX_FEED_SAMPLES} samples per call')
+        if concealed is None:
+            concealed = np.zeros(len(pcm), bool)
+        elif not isinstance(concealed, np.ndarray) or concealed.dtype != bool or concealed.shape != pcm.shape:
+            raise ValueError('concealed must be a bool array with one flag per sample')
         audio = np.concatenate([self._carry, pcm])
+        flags = np.concatenate([self._carry_concealed, concealed])
         count = len(audio) // FRAME_SAMPLES
         frames = audio[:count * FRAME_SAMPLES].reshape(count, FRAME_SAMPLES)
+        frame_flags = flags[:count * FRAME_SAMPLES].reshape(count, FRAME_SAMPLES)
         self._carry = audio[count * FRAME_SAMPLES:].copy()
+        self._carry_concealed = flags[count * FRAME_SAMPLES:].copy()
         speech = self._classify(frames)  # on a fault the whole frames are dropped as non-speech
         windows = []
-        for frame, is_speech in zip(frames, speech):
-            windows.extend(self._commit(frame, is_speech))
+        for frame, frame_concealed, is_speech in zip(frames, frame_flags, speech):
+            windows.extend(self._commit(frame, is_speech, frame_concealed))
         return windows
 
     def finish(self):
@@ -159,9 +175,10 @@ class SpeechWindower:
             padded = np.zeros(FRAME_SAMPLES, np.int16)
             padded[:len(self._carry)] = self._carry
             carry, self._carry = self._carry, np.zeros(0, np.int16)
+            carry_concealed, self._carry_concealed = self._carry_concealed, np.zeros(0, bool)
             try:
                 (is_speech,) = self._classify([padded])  # VAD decision on the padded frame
-                windows.extend(self._commit(carry, is_speech))
+                windows.extend(self._commit(carry, is_speech, carry_concealed))
             except VadFailure:
                 # Counted and dropped by _classify (as a whole frame); correct the count to
                 # the real samples and still emit the tail from the speech already kept.
@@ -173,10 +190,15 @@ class SpeechWindower:
         return windows
 
     # --- internals --------------------------------------------------------------------
-    def _commit(self, frame, is_speech):
+    def _commit(self, frame, is_speech, concealed):
         start = self._stream
         self._stream += len(frame)
         if not is_speech:
+            # A long outage is zero-filled after a few repeats and the VAD drops it as
+            # non-speech; keep its concealed count so a window spanning it still sees it.
+            count = int(np.count_nonzero(concealed))
+            if count:
+                self._quiet_concealed.append([start, count])
             return []
         self._last_speech_end = self._stream
         last = self._segments[-1] if self._segments else None
@@ -185,6 +207,7 @@ class SpeechWindower:
         else:
             self._segments.append([self._speech_total, start, len(frame)])
         self._buffer = np.concatenate([self._buffer, frame])
+        self._concealed = np.concatenate([self._concealed, concealed])
         self._speech_total += len(frame)
         windows = []
         while self._base + WINDOW_SAMPLES <= self._speech_total:
@@ -195,9 +218,13 @@ class SpeechWindower:
 
     def _advance(self, base):
         self._buffer = self._buffer[base - self._base:].copy()
+        self._concealed = self._concealed[base - self._base:].copy()
         self._base = base
         while self._segments and self._segments[0][0] + self._segments[0][2] <= base:
             self._segments.pop(0)
+        if self._segments:  # quiet concealment before the retained speech can no longer count
+            first_stream = self._segments[0][1] + max(0, base - self._segments[0][0])
+            self._quiet_concealed = [run for run in self._quiet_concealed if run[0] >= first_stream]
 
     def _time(self, speech_index, end=False):
         """Stream seconds of a speech sample (or just after it when `end`)."""
@@ -209,9 +236,18 @@ class SpeechWindower:
 
     def _window(self, start, end, *, partial):
         samples = self._buffer[start - self._base:end - self._base]
+        concealed = int(np.count_nonzero(self._concealed[start - self._base:end - self._base]))
+        t_start, t_end = self._time(start), self._time(end, end=True)
+        # Concealed samples dropped as non-speech between the window's first and last
+        # speech sample count too (numerator and denominator): fraction =
+        # (concealed speech + concealed dropped) / (speech + concealed dropped).
+        first, last = round(t_start * RATE), round(t_end * RATE)
+        quiet = sum(count for stream_start, count in self._quiet_concealed if first <= stream_start < last)
+        total = len(samples) + quiet
         pcm = np.zeros(WINDOW_SAMPLES, np.float32)
         pcm[:len(samples)] = samples.astype(np.float32) / 32768
-        window = SpeechWindow(self._next, start, end, self._time(start), self._time(end, end=True),
-                              partial, (end - start) >= MIN_SPEECH_SAMPLES, pcm)
+        window = SpeechWindow(self._next, start, end, t_start, t_end, partial,
+                              (end - start) >= MIN_SPEECH_SAMPLES, pcm,
+                              (concealed + quiet) / total if total else 0.0)
         self._next += 1
         return window
