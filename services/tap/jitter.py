@@ -8,15 +8,19 @@ indexed by the extended (unwrapped) RTP sequence number and must be 20 ms (the
 receiver must refuse other packet times). The first packet anchors the playout clock:
 frame k is due at `anchor + (k - first) * frame_s + depth_s`. `pop_due(now)` returns
 the frames due by `now` (at most `limit` per call), in order, each with the number of
-concealed samples: a received frame has 0; a missing frame repeats the last frame
-played for up to `repeat_limit` consecutive losses, then is digital silence; both
-count as concealed. A packet arriving a little after its frame was played is `late`
-and dropped; a second copy is `duplicate`. Before playout starts, an earlier sequence
-number moves the start back (start-up reordering). The clock is re-anchored
-(`resync`) when a packet is more than 1 s behind the playout point or 3 packets in a
-row are late (the sender paused with contiguous sequence numbers, or reset them), or a
-packet is at least `max_ahead` frames ahead (a sequence jump); frames still waiting
-are played out first. A discontinuity so costs a bounded gap, not the rest of the call. Slow clock drift between sender and receiver is absorbed by moving the
+concealed samples, but **never plays past the highest frame received**: a missing
+frame is concealed only when a later packet has arrived (a real hole), repeating the
+last frame played for up to `repeat_limit` consecutive losses, then digital silence;
+both count as concealed. A stream that stops (end of call, a pause) so produces no
+made-up audio and no loss. When packets resume into a buffer that has played
+everything and the packet is already past its slot, a new talkspurt starts on it (the
+clock re-anchors; nothing dropped). A packet arriving after its frame was played while
+later frames are still buffered is `late` and dropped; a second copy is `duplicate`.
+Right after any anchoring, an earlier sequence number moves the start back
+(reordering at a talkspurt start). The clock is re-anchored (`resync`) when a packet
+is more than 1 s behind the playout point or 3 packets in a row are late, or a packet
+is at least `max_ahead` frames ahead (a sequence jump); `restart()` does the same for
+a new SSRC. Frames still waiting are handed over first (at most 60 s, excess counted). Slow clock drift between sender and receiver is absorbed by moving the
 anchor one frame when the smoothed slack leaves [0.25, 1.75] x depth. `flush()` plays
 everything received so far, concealing the holes.
 
@@ -42,6 +46,7 @@ DRIFT_ALPHA = 0.02  # smoothing of the playout slack (about 50 packets = 1 s)
 # sender paused (contiguous sequence numbers) or reset its sequence, not network delay.
 RESYNC_BEHIND_FRAMES = 50
 RESYNC_LATE_RUN = 3
+MAX_PENDING_FRAMES = 3000  # frames handed over at resyncs/restarts (60 s); excess dropped, counted
 
 
 def _check_time(value):
@@ -65,11 +70,12 @@ class JitterBuffer:
         self._next = None  # next extended sequence to play
         self._highest = None  # highest extended sequence received
         self._slack = None
+        self._played_since_anchor = 0
         self._last_played = SILENCE
         self._run = 0  # consecutive concealed frames
         self.stats = {'received': 0, 'played': 0, 'concealed_frames': 0, 'repeated_frames': 0,
                       'silence_frames': 0, 'late': 0, 'duplicate': 0, 'reordered': 0, 'resyncs': 0,
-                      'drift_adjustments': 0}
+                      'talkspurts': 0, 'restarts': 0, 'drift_adjustments': 0, 'dropped_pending': 0}
 
     def _extend(self, sequence):
         """16-bit RTP sequence -> extended sequence nearest the highest seen so far."""
@@ -94,9 +100,18 @@ class JitterBuffer:
         extended = self._extend(sequence)
         if self._first is None:
             self._anchor(extended, arrival)
+        idle = self._highest is None or self._next > self._highest  # everything received was played
+        if idle and extended >= self._next and self._due(extended) < arrival:
+            # The stream resumes after a pause (no packets, contiguous sequence numbers or a
+            # few lost at its end): start a new talkspurt on this packet. The pause is not
+            # loss and nothing is dropped.
+            self.stats['talkspurts'] += 1
+            self._anchor(extended, arrival)
+            self._late_run = 0
+            return self._store(extended, pcm, arrival, 'accepted')
         if extended < self._next:
             behind = self._next - extended
-            if self.stats['played'] == 0 and behind < self.max_ahead:
+            if self._played_since_anchor == 0 and behind < self.max_ahead:
                 self._first, self._next = extended, extended  # reordered before playout began
             else:
                 self._late_run += 1
@@ -119,16 +134,36 @@ class JitterBuffer:
     def _anchor(self, extended, arrival):
         self._first, self._first_arrival, self._next = extended, arrival, extended
         self._slack = None
+        self._played_since_anchor = 0
+
+    def _due(self, extended):
+        return self._first_arrival + (extended - self._first) * FRAME_S + self.depth_s
+
+    def _hand_over(self):
+        """Play out what is buffered into the pending output (bounded; excess counted)."""
+        frames = self._play_to_highest()
+        room = max(0, MAX_PENDING_FRAMES - len(self._pending_out))
+        self._pending_out.extend(frames[:room])
+        self.stats['dropped_pending'] += len(frames) - min(len(frames), room)
 
     def _resync(self, extended, arrival):
         """Re-anchor on this packet. Frames still waiting are played out first (handed
         to the next `pop_due`), not discarded."""
         self.stats['resyncs'] += 1
-        self._pending_out.extend(self.flush())
+        self._hand_over()
         self._frames.clear()
         self._highest = None
         self._late_run = 0
         self._anchor(extended, arrival)
+
+    def restart(self):
+        """A new stream from the same sender (SSRC change): play out what is buffered
+        and let the next packet anchor afresh (its sequence numbers are unrelated)."""
+        self.stats['restarts'] += 1
+        self._hand_over()
+        self._frames.clear()
+        self._first = self._first_arrival = self._next = self._highest = None
+        self._late_run = 0
 
     def _store(self, extended, pcm, arrival, outcome):
         self._frames[extended] = pcm
@@ -166,19 +201,28 @@ class JitterBuffer:
 
     def pop_due(self, now, limit=500):
         """[(pcm16_bytes, concealed_samples), ...] for frames due by `now`, at most
-        `limit` per call (call again for the rest)."""
+        `limit` per call (call again for the rest). Playout never passes the highest
+        frame received: only holes that a later packet closes are concealed, so a stream
+        that stops (end of call, a pause) produces no made-up audio."""
         _check_time(now)
         out = self._pending_out[:limit]
         del self._pending_out[:limit]
-        last = self._due_index(now)
-        while self._next is not None and self._next <= last and len(out) < limit:
+        if self._next is None:
+            return out
+        last = min(self._due_index(now), self._highest if self._highest is not None else self._next - 1)
+        while self._next <= last and len(out) < limit:
             out.append(self._play())
         return out
 
     def flush(self):
-        """Play every frame up to the highest received one (end of call)."""
+        """Everything still pending, then every frame up to the highest received one
+        (end of call)."""
+        out, self._pending_out = self._pending_out, []
+        return out + self._play_to_highest()
+
+    def _play_to_highest(self):
         out = []
-        while self._highest is not None and self._next <= self._highest:
+        while self._highest is not None and self._next is not None and self._next <= self._highest:
             out.append(self._play())
         return out
 
@@ -186,6 +230,7 @@ class JitterBuffer:
         pcm = self._frames.pop(self._next, None)
         self._next += 1
         self.stats['played'] += 1
+        self._played_since_anchor += 1
         if pcm is not None:
             self._last_played, self._run = pcm, 0
             return pcm, 0

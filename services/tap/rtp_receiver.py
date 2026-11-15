@@ -25,6 +25,7 @@ from data.prepare import codecs as g711
 MAX_DATAGRAM = 1500
 PAYLOADS = {0: 'ulaw', 8: 'alaw'}  # static RTP payload types decoded here (RFC 3551)
 FRAME_BYTES_LIMIT = 960  # 120 ms of G.711, the largest payload accepted
+JITTER_FRAME_BYTES = 160  # 20 ms of G.711
 
 
 class RtpError(ValueError):
@@ -59,7 +60,11 @@ class RtpSession:
     """One tapped call direction. Owned by one thread; `close()` releases the socket."""
 
     def __init__(self, *, payload_type=0, host='0.0.0.0', port=0, max_seconds=10, clock=time.monotonic,
-                 allowed_source=None):
+                 allowed_source=None, jitter=None):
+        """`jitter`: a `jitter.JitterBuffer` (playout in sequence order with concealment;
+        only 20 ms packets accepted, others counted as `other_ptime`), or None for the
+        plain arrival-order mode."""
+        self._jitter = jitter
         if payload_type not in PAYLOADS:
             raise ValueError(f'payload type must be one of {sorted(PAYLOADS)} (G.711)')
         if type(max_seconds) is not int or not 1 <= max_seconds <= 3600:
@@ -80,7 +85,8 @@ class RtpSession:
         self._last_packet = None
         self._opened = clock()
         self.stats = {'packets': 0, 'malformed': 0, 'other_payload': 0, 'other_source': 0, 'gaps': 0,
-                      'missing': 0, 'late_or_duplicate': 0, 'over_limit': 0, 'ssrc_changes': 0}
+                      'missing': 0, 'late_or_duplicate': 0, 'over_limit': 0, 'ssrc_changes': 0,
+                      'other_ptime': 0}
 
     def close(self):
         self._socket.close()
@@ -132,6 +138,19 @@ class RtpSession:
         elif packet['ssrc'] != self.ssrc:  # same sender, new stream (e.g. a bridge change)
             self.stats['ssrc_changes'] += 1
             self.ssrc, self._last_sequence = packet['ssrc'], None
+            if self._jitter is not None:
+                self._jitter.restart()  # unrelated sequence numbers: anchor afresh
+        if self._jitter is not None:
+            if len(packet['payload']) != JITTER_FRAME_BYTES:
+                self.stats['other_ptime'] += 1  # the buffer plays 20 ms frames only
+                return 0
+            outcome = self._jitter.push(packet['sequence'], g711.decode(packet['payload'], self._law), self._clock())
+            if outcome in ('late', 'duplicate'):
+                self.stats['late_or_duplicate'] += 1
+                return 0
+            self._last_packet = self._clock()
+            self.stats['packets'] += 1
+            return 1
         if self._last_sequence is not None:
             step = (packet['sequence'] - self._last_sequence) & 0xFFFF
             if step == 0 or step >= 0x8000:  # duplicate, or behind the newest (late)
@@ -152,8 +171,23 @@ class RtpSession:
         return 1
 
     def take(self):
-        """Decoded 8 kHz PCM16 received since the previous take, in arrival order. The
-        session keeps no audio after handing it over."""
+        """Decoded 8 kHz PCM16 since the previous take (jitter mode: the frames due
+        now, concealed ones included). The session keeps no audio after handing it over."""
+        return b''.join(pcm for pcm, _ in self.take_frames())
+
+    def receiver_stats(self):
+        """The session's counts plus, in jitter mode, the buffer's (prefixed `jitter_`)."""
+        stats = dict(self.stats)
+        if self._jitter is not None:
+            stats.update({f'jitter_{key}': value for key, value in self._jitter.stats.items()})
+        return stats
+
+    def take_frames(self, final=False):
+        """[(pcm16_bytes, concealed_samples), ...]. Jitter mode: frames due now in
+        sequence order (`final=True`: everything received, holes concealed); plain mode:
+        one chunk in arrival order with 0 concealed."""
+        if self._jitter is not None:
+            return self._jitter.flush() if final else self._jitter.pop_due(self._clock())
         chunk = b''.join(self._chunks)
         self._chunks, self._bytes = [], 0
-        return chunk
+        return [(chunk, 0)] if chunk else []

@@ -35,14 +35,20 @@ class Sink:
     def __init__(self):
         self.lock = threading.Lock()
         self.events, self.audio_by_call, self.receiver_stats, self.times = [], {}, {}, {}
+        self.concealed = {}
 
     def started(self, call):
         with self.lock:
             self.events.append(('started', call.call_id, call.caller, call.dialled))
 
-    def audio(self, call_id, pcm):
+    def audio(self, call_id, pcm, concealment):
         with self.lock:
             self.audio_by_call[call_id] = self.audio_by_call.get(call_id, b'') + pcm
+            self.concealed[call_id] = self.concealed.get(call_id, 0) + sum(c for _, c in concealment)
+
+    def quality(self, call_id, change):
+        with self.lock:
+            self.events.append(('quality', call_id, change))
 
     def ended(self, call_id, reason, receiver_stats):
         with self.lock:
@@ -200,9 +206,13 @@ class AriTapTests(unittest.TestCase):
         correlation, ref_start, tap_start, n = overlap(reference, tapped)
         receiver = sink.receiver_stats[call_id]
         self.assertGreater(correlation, 0.95, (correlation, ref_start, tap_start, n, receiver))
+        # The tap runs through the 60 ms jitter buffer (the caller's call holds 1.5 s of
+        # silence after the audio ends before the BYE).
         self.assertGreater(n, 0.85 * len(reference) // 2, (ref_start, tap_start, n))
-        self.assertEqual((receiver['gaps'], receiver['late_or_duplicate'], receiver['malformed'],
-                          receiver['other_source']), (0, 0, 0, 0), receiver)
+        self.assertEqual((receiver['jitter_concealed_frames'], receiver['jitter_late'], receiver['late_or_duplicate'],
+                          receiver['malformed'], receiver['other_source']), (0, 0, 0, 0, 0), receiver)
+        self.assertEqual(sink.concealed.get(call_id), 0, 'no concealment, even after the stream stopped')
+        self.assertFalse([e for e in sink.events if e[0] == 'quality'], 'no false media-quality report')
         difference = samples(reference, ref_start, n).astype(int) != samples(tapped, tap_start, n).astype(int)
         frames = difference[:n - n % 160].reshape(-1, 160).any(axis=1)
         # Measured 15 Nov: the first few 20 ms frames after the answer (snoop/bridge

@@ -44,7 +44,15 @@ owners).
   unowned `ava-tap` bridges and hangs up only their snoop/ExternalMedia channels, then
   taps marked calls that were already answered (read with ARI's channel-variable call).
   One tap process per Asterisk and app name. Malformed events and sink faults are
-  counted, never raised. Sink: `started(call)` (call ID, caller number, dialled extension,
+  counted, never raised. Each call's RTP passes through `jitter.JitterBuffer` (60 ms,
+  20 ms packets only; others counted `other_ptime`; restarted on an SSRC change) and a
+  `LossMonitor`; the sink gets `audio(call_id, pcm16_8k, concealment)` with one
+  `(samples, concealed_samples)` pair per 20 ms frame and, if it has one,
+  `quality(call_id, 'degraded'|'recovered')` once per sustained-loss episode; `ended`
+  carries the receiver and `jitter_` buffer counts.
+- `jitter.py`: the jitter buffer and loss monitor (backlog 6.3; see its docstring). Only
+  holes closed by a later packet are concealed; a stream that stops or pauses produces
+  no made-up audio and no loss (a resumed stream starts a new talkspurt). Sink: `started(call)` (call ID, caller number, dialled extension,
   creation time; `codec` is the tap's format, the call's codec is not in ARI's channel
   object), `audio(call_id, pcm16_8k)`, `ended(call_id, reason, receiver_stats)`,
   `failed(call_id, error)`.
@@ -68,7 +76,9 @@ loss, close, sweep of unowned bridges only, malformed events).
 
 Lab (`tests/lab/test_ari_tap.py`, Docker, opt-in, Claude-authored, 6 tests, all pass
 together with the 6.1 lab tests): Asterisk 20.6 with ARI enabled by a random per-run
-password; ExternalMedia sends RTP to this host.
+password; ExternalMedia sends RTP to this host. The lab cases run through the 60 ms
+jitter buffer: the main case also asserts zero concealed samples and no late packets
+over the whole call (including 1.5 s of silence before the BYE) and no quality report.
 - Extension 701 dials an agent (a SIPp UAS, checked to be answered): exactly one tap,
   on the caller leg, and its audio matches the caller.
 - The tap stops reading events for 8 s mid-call while staying connected: the call
@@ -97,8 +107,8 @@ Infrastructure evidence only; no detector claim.
 ## Not done
 
 Feeding tapped audio into `services/scorer/speech_feed.SpeechFeed` and the live
-pipeline (8 kHz -> 16 kHz streaming, concealment mask through the windower); the jitter
-buffer (`jitter.py`, 6.3) is not wired into `RtpSession` yet; the agent direction
+pipeline (8 kHz -> 16 kHz streaming, concealment mask through the windower for the
+FR-I2 >10 % window gate); the agent direction
 (`spy=out`, FR-I8); a service process with reconnect; audio between answer and tap
 start (about 100 ms) is not tapped; calls bridged to a second endpoint; ARI over TLS
 and an allowed RTP source in deployment; the tap's ARI port is reachable from other

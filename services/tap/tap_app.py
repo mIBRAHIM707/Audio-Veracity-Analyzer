@@ -33,9 +33,15 @@ short timeout. One tap process per Asterisk and ARI app name: `sweep()` removes 
 
 `TapApp.handle(event)` is dispatch on decoded ARI events (malformed events are
 counted, never raised) and is tested with a fake client; `run_once(connection)` reads
-one event and polls the RTP sessions. One thread owns the app. The sink receives
-`started(call)`, `audio(call_id, pcm16_8k)`, `ended(call_id, reason, receiver_stats)`
-and `failed(call_id, error)`; sink faults are counted, never raised.
+one event and polls the RTP sessions. One thread owns the app. Each call's RTP goes
+through a `jitter.JitterBuffer` (60 ms by default; `jitter_depth_s=None` for plain
+arrival order) and a `LossMonitor`. The sink receives `started(call)`,
+`audio(call_id, pcm16_8k, concealment)` (`concealment`: one `(samples,
+concealed_samples)` pair per 20 ms frame in jitter mode, per chunk otherwise),
+optionally `quality(call_id, change)` after that audio (`degraded` / `recovered`:
+sustained loss above 5 %, FR-I2), `ended(call_id, reason, receiver_stats)` (receiver and
+`jitter_` buffer counts) and `failed(call_id, error)`; sink faults are counted, never
+raised.
 """
 from collections import deque
 from dataclasses import dataclass
@@ -43,6 +49,7 @@ import json
 import time
 
 from .ari import AriError
+from .jitter import DEFAULT_DEPTH_S, JitterBuffer, LossMonitor
 from .rtp_receiver import RtpSession
 
 TAP_TAG = 'ava-tap'
@@ -62,6 +69,7 @@ class TappedCall:
     started: str
     codec: str = 'ulaw'  # the tap's ExternalMedia format, not the call's codec
     session: object = None
+    monitor: object = None
     snoop_id: str = None
     media_id: str = None
     bridge_id: str = None
@@ -70,9 +78,10 @@ class TappedCall:
 class TapApp:
     def __init__(self, ari, sink, *, receiver_host, bind_host='0.0.0.0', silence_timeout_s=SILENCE_TIMEOUT_S,
                  max_calls=64, clock=time.monotonic, session_factory=RtpSession, tap_prefixes=('PJSIP/',),
-                 tap_extensions=None, rtp_source=None):
+                 tap_extensions=None, rtp_source=None, jitter_depth_s=DEFAULT_DEPTH_S):
         if type(max_calls) is not int or max_calls < 1:
             raise ValueError('max_calls must be a positive integer')
+        self.jitter_depth_s = jitter_depth_s  # None: arrival order, no concealment
         self.ari, self.sink = ari, sink
         self.receiver_host, self.bind_host, self.rtp_source = receiver_host, bind_host, rtp_source
         self.silence_timeout_s, self.max_calls, self._clock = silence_timeout_s, max_calls, clock
@@ -156,8 +165,10 @@ class TapApp:
         call = TappedCall(channel_id, str(caller.get('number', '')), str(dialplan.get('exten', '')),
                           str(channel.get('creationtime', '')))
         try:
+            jitter = None if self.jitter_depth_s is None else JitterBuffer(depth_s=self.jitter_depth_s)
+            call.monitor = LossMonitor()
             call.session = self._session_factory(payload_type=0, host=self.bind_host, clock=self._clock,
-                                                 allowed_source=self.rtp_source)
+                                                 allowed_source=self.rtp_source, jitter=jitter)
             # Bridge first and each channel into it at once, so whatever a crash leaves
             # behind sits in an `ava-tap` bridge that `sweep()` finds.
             call.bridge_id = self.ari.create_bridge(name=TAP_TAG)['id']
@@ -188,8 +199,8 @@ class TapApp:
             call.session.poll(END_DRAIN_S)  # bounded drain: in-flight packets are delivered
         except OSError:
             pass
-        self._drain(call)
-        receiver = dict(call.session.stats)
+        self._drain(call, final=True)
+        receiver = call.session.receiver_stats()
         self._release(call)
         self.stats['ended'] += 1
         self._emit('ended', call_id, reason, receiver)
@@ -223,10 +234,23 @@ class TapApp:
             if call.session.seconds_since_packet() > self.silence_timeout_s:
                 self._end(call.call_id, 'timeout')
 
-    def _drain(self, call):
-        chunk = call.session.take()
-        if chunk:
-            self._emit('audio', call.call_id, chunk)
+    def _drain(self, call, final=False):
+        """Hand the frames due now (all of them at the end) to the sink with their
+        concealed-sample count, and feed the call's loss monitor; a sustained-loss episode
+        is reported once through the sink's optional `quality(call_id, change)`
+        (`degraded` / `recovered`, FR-I2 `system.health reason=media_quality`)."""
+        frames = [(pcm, concealed) for pcm, concealed in call.session.take_frames(final=final) if pcm]
+        if not frames:
+            return
+        # Per frame: (samples, concealed samples), so a consumer can place concealment
+        # inside its own scoring windows (FR-I2 >10 % rule).
+        self._emit('audio', call.call_id, b''.join(p for p, _ in frames),
+                   tuple((len(p) // 2, c) for p, c in frames))
+        if call.monitor is not None and hasattr(self.sink, 'quality'):
+            for _, concealed in frames:
+                change = call.monitor.add(concealed > 0)
+                if change:
+                    self._emit('quality', call.call_id, change)
 
     def run_once(self, connection, timeout=0.05):
         """Read at most one ARI event (waiting up to `timeout`), then poll the RTP

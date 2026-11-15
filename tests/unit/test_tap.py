@@ -86,7 +86,7 @@ class RtpSessionTests(unittest.TestCase):
         self.assertEqual(self.session.take(), b'', 'audio is handed over once and not kept')
         self.assertEqual(self.session.stats, {'packets': 2, 'malformed': 2, 'other_payload': 1, 'other_source': 1,
                                               'gaps': 1, 'missing': 1, 'late_or_duplicate': 2, 'over_limit': 0,
-                                              'ssrc_changes': 0})
+                                              'ssrc_changes': 0, 'other_ptime': 0})
         self.assertEqual((self.session.ssrc, self.session.source), (7, self.sender.getsockname()))
 
     def test_allowed_source_refuses_every_other_host(self):
@@ -220,8 +220,15 @@ class Sink:
     def started(self, call):
         self.events.append(('started', call.call_id, call.caller, call.dialled))
 
-    def audio(self, call_id, pcm):
+    def audio(self, call_id, pcm, concealment):
+        assert sum(samples for samples, _ in concealment) * 2 == len(pcm)
         self.events.append(('audio', call_id, len(pcm)))
+        self.concealed = getattr(self, 'concealed', 0) + sum(c for _, c in concealment)
+        self.frames = getattr(self, 'frames', []) + list(concealment)
+        self.pcm = getattr(self, 'pcm', b'') + pcm
+
+    def quality(self, call_id, change):
+        self.events.append(('quality', call_id, change))
 
     def ended(self, call_id, reason, receiver_stats):
         assert isinstance(receiver_stats, dict) and 'packets' in receiver_stats
@@ -247,6 +254,7 @@ class TapAppTests(unittest.TestCase):
     def make(self, fail=None, **options):
         self.ari, self.sink, self.now = FakeAri(fail), Sink(), [0.0]
         options.setdefault('clock', lambda: self.now[0])
+        options.setdefault('jitter_depth_s', None)  # arrival-order mode unless a test asks for the buffer
         app = TapApp(self.ari, self.sink, receiver_host='host.docker.internal', bind_host='127.0.0.1', **options)
         self.addCleanup(app.close)
         return app
@@ -387,6 +395,83 @@ class TapAppTests(unittest.TestCase):
             session.poll(0.1)
         self.assertEqual((session.stats['packets'], session.stats['ssrc_changes'], session.stats['gaps'],
                           session.ssrc), (4, 1, 0, 8))
+
+    SOURCE = ('127.0.0.1', 40000)
+
+    def feed(self, app, call_id, packets):
+        """(sequence, code, arrival[, ssrc]) packets straight into the call's session (no
+        socket timing), playing out as time advances."""
+        session = app.calls[call_id].session
+        for seq, code, at, *ssrc in packets:
+            self.now[0] = at
+            app.poll(0.0)
+            if call_id not in app.calls:
+                return
+            session._accept(rtp(seq, bytes([code]) * 160 if code is not None else b'\xff' * 240,
+                                ssrc=ssrc[0] if ssrc else 7), self.SOURCE)
+
+    def test_jitter_mode_reorders_conceals_holes_and_passes_per_frame_concealment(self):
+        app = self.make(jitter_depth_s=0.06)
+        app.handle(answered('c18'))
+        # Frames 0..4: 2 before 1, 3 lost; a 30 ms packet is refused.
+        self.feed(app, 'c18', [(0, 0x10, 0.0), (2, 0x30, 0.001), (1, 0x20, 0.002), (4, 0x50, 0.003),
+                               (5, None, 0.004)])
+        self.now[0] = 0.06 + 4 * 0.02
+        app.poll(0.0)
+        expected = b''.join(g711.decode(bytes([code]) * 160, 'ulaw') for code in (0x10, 0x20, 0x30, 0x30, 0x50))
+        self.assertEqual(self.sink.pcm, expected)  # in order; the hole at 3 repeats frame 2
+        self.assertEqual(self.sink.frames, [(160, 0), (160, 0), (160, 0), (160, 160), (160, 0)])
+        self.assertEqual(app.calls['c18'].session.stats['other_ptime'], 1)
+
+    def test_trailing_silence_and_pauses_are_not_loss(self):
+        # Re-review H1: a 12 s call whose stream stops 1.5 s before the hangup, with a
+        # 300 ms pause in the middle, conceals nothing and reports no quality change.
+        app = self.make(jitter_depth_s=0.06)
+        app.handle(answered('c19'))
+        packets = [(k, 0x40, 0.02 * k) for k in range(300)]
+        packets += [(300 + k, 0x41, 6.3 + 0.02 * k) for k in range(285)]  # resumes after 300 ms
+        self.feed(app, 'c19', packets)
+        for step in range(1, 16):  # 1.5 s of nothing, then the hangup
+            self.now[0] = 6.3 + 0.02 * 285 + 0.1 * step
+            app.poll(0.0)
+        app.handle({'type': 'ChannelDestroyed', 'channel': {'id': 'c19'}})
+        stats = self.sink.receiver_stats['c19']
+        self.assertEqual((self.sink.concealed, stats['jitter_late'], stats['jitter_concealed_frames']), (0, 0, 0))
+        self.assertEqual(len(self.sink.frames), 585, 'every frame delivered once')
+        self.assertEqual(stats['jitter_talkspurts'], 1)
+        self.assertEqual([e for e in self.sink.events if e[0] == 'quality'], [])
+
+    def test_sustained_real_loss_reports_degraded_once(self):
+        app = self.make(jitter_depth_s=0.06)
+        app.handle(answered('c20'))
+        # 12 s with every 10th packet lost (10 % > 5 %).
+        self.feed(app, 'c20', [(k, 0x42, 0.02 * k) for k in range(600) if k % 10 != 5])
+        self.now[0] = 12.2
+        app.poll(0.0)
+        self.assertEqual([e for e in self.sink.events if e[0] == 'quality'], [('quality', 'c20', 'degraded')])
+        self.assertEqual(self.sink.concealed, 60 * 160)  # k = 5, 15, ..., 595: every hole closed
+
+    def test_ssrc_change_restarts_the_buffer(self):
+        # Re-review M1: unrelated sequence numbers of a new stream are not unwrapped
+        # against the old one (no made-up frames, no drops).
+        app = self.make(jitter_depth_s=0.06)
+        app.handle(answered('c21'))
+        packets = [(k, 0x43, 0.02 * k) for k in range(20)]
+        packets += [(40000 + k, 0x44, 0.4 + 0.02 * k, 99) for k in range(20)]
+        self.feed(app, 'c21', packets)
+        self.now[0] = 2.0
+        app.poll(0.0)
+        app.handle({'type': 'ChannelDestroyed', 'channel': {'id': 'c21'}})
+        stats = self.sink.receiver_stats['c21']
+        self.assertEqual((stats['ssrc_changes'], stats['jitter_restarts'], stats['jitter_concealed_frames']), (1, 1, 0))
+        self.assertEqual(len(self.sink.frames), 40)
+
+    def test_jitter_mode_hangup_drain_delivers_buffered_frames(self):
+        app = self.make(jitter_depth_s=0.06)
+        app.handle(answered('c22'))
+        self.feed(app, 'c22', [(k, 0x45, 0.02 * k) for k in range(5)])  # the last ones not yet due
+        app.handle({'type': 'ChannelDestroyed', 'channel': {'id': 'c22'}})
+        self.assertEqual(len(self.sink.frames), 5)
 
     def test_packets_in_flight_at_hangup_are_delivered(self):
         # Review L4: the socket is read once more before the session closes.

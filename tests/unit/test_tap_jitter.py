@@ -48,7 +48,7 @@ class JitterBufferTests(unittest.TestCase):
             buffer.push(seq, frame(seq + 1), arrival)
         played = buffer.pop_due(0.14)  # frame 4 is due at 0.06 + 4 x 0.02
         self.assertEqual(values(played), [1, 2, 3, 4, 5])
-        self.assertEqual(values(buffer.pop_due(0.2)), [5, 5, 5])  # nothing more sent: concealed
+        self.assertEqual(buffer.pop_due(0.2), [])  # nothing more sent: nothing made up
         self.assertEqual(buffer.stats['reordered'], 2)
         self.assertEqual(sum(c for _, c in played), 0)
 
@@ -58,7 +58,8 @@ class JitterBufferTests(unittest.TestCase):
         rng = np.random.default_rng(2)
         codes = rng.integers(0, 256, 40 * FRAME_SAMPLES).astype(np.uint8)
         lost = np.zeros(40, dtype=bool)
-        lost[[3, 7, 8, 9, 10, 11, 20, 39]] = True  # single, a run of 5, single, last
+        lost[[3, 7, 8, 9, 10, 11, 20, 37]] = True  # single, a run of 5, single, single
+        # (holes are concealed once a later frame arrived; the last frame is received)
         expected = g711.decode(g711._conceal(codes, lost, 'ulaw', 'repeat_then_silence').tobytes(), 'ulaw')
         buffer = JitterBuffer()
         for k in range(40):
@@ -76,9 +77,10 @@ class JitterBufferTests(unittest.TestCase):
         self.assertEqual(buffer.push(65535, frame(2), 0.02), 'accepted')
         self.assertEqual(buffer.push(0, frame(3), 0.04), 'accepted')  # wraps
         self.assertEqual(buffer.push(0, frame(3), 0.041), 'duplicate')
-        # Due by 0.2 s: 8 frames; after the 3 received ones, 3 repeats then silence.
-        self.assertEqual(values(buffer.pop_due(0.2)), [1, 2, 3, 3, 3, 3, 0, 0])
-        self.assertEqual(buffer.push(1, frame(4), 0.2), 'late')  # its frame was already played
+        # Due by 0.2 s: 8 frames, but only the 3 received ones are played (nothing later
+        # has arrived, so nothing is made up).
+        self.assertEqual(values(buffer.pop_due(0.2)), [1, 2, 3])
+        self.assertEqual(buffer.push(0, frame(3), 0.2), 'late')  # an extra copy of a played frame
         self.assertEqual(buffer.stats['resyncs'], 0)
 
     def run_stream(self, buffer, packets, until):
@@ -101,8 +103,8 @@ class JitterBufferTests(unittest.TestCase):
         packets += [(50 + k, 1000 + k, 3.0 + 0.02 * k) for k in range(100)]
         played = self.run_stream(buffer, packets, 3.0 + 0.02 * 100 + 0.2)
         resumed = values(played)
-        self.assertEqual(buffer.stats['resyncs'], 1)
-        self.assertEqual(buffer.stats['late'], 0)
+        self.assertEqual((buffer.stats['resyncs'], buffer.stats['talkspurts']), (0, 1))
+        self.assertEqual((buffer.stats['late'], buffer.stats['concealed_frames']), (0, 0), 'a pause is not loss')
         tail = resumed[resumed.index(1000):]
         self.assertEqual(tail[:100], list(range(1000, 1100)), 'every packet after the pause is played')
         self.assertEqual(values(played)[:50], list(range(1, 51)))
@@ -119,12 +121,13 @@ class JitterBufferTests(unittest.TestCase):
 
     def test_one_very_late_packet_is_late_not_a_resync(self):
         buffer = JitterBuffer()
-        for k in range(10):
+        for k in [*range(10), *range(11, 16)]:  # frame 10 missing, later frames buffered
             buffer.push(k, frame(1), 0.02 * k)
-        buffer.pop_due(0.4)
-        self.assertEqual(buffer.push(12, frame(9), 0.4), 'late')  # 100 ms past its slot
-        self.assertEqual(buffer.push(21, frame(2), 0.41), 'accepted')
-        self.assertEqual(buffer.stats['resyncs'], 0)
+        played = buffer.pop_due(0.32)  # due up to frame 13: the hole at 10 is concealed
+        self.assertEqual([c for _, c in played][10], 160)
+        self.assertEqual(buffer.push(10, frame(9), 0.32), 'late')  # 60 ms past its slot
+        self.assertEqual(buffer.push(16, frame(2), 0.33), 'accepted')
+        self.assertEqual((buffer.stats['resyncs'], buffer.stats['late']), (0, 1))
 
     def test_clock_drift_of_100_ppm_either_way_over_20_minutes(self):
         for ppm in (100, -100):
@@ -149,13 +152,15 @@ class JitterBufferTests(unittest.TestCase):
         buffer = JitterBuffer()
         self.assertEqual(buffer.push(101, frame(2), 0.000), 'accepted')
         self.assertEqual(buffer.push(100, frame(1), 0.001), 'accepted')
-        self.assertEqual(values(buffer.pop_due(0.1)), [1, 2, 2])  # 100 due at 0.06, 101 at 0.08
+        self.assertEqual(values(buffer.pop_due(0.1)), [1, 2])  # 100 due at 0.06, 101 at 0.08
 
     def test_pop_due_is_bounded_and_times_are_checked(self):
-        buffer = JitterBuffer()
-        buffer.push(0, frame(1), 0.0)
+        buffer = JitterBuffer(max_ahead=2000)
+        for k in range(1200):  # a burst all at once
+            buffer.push(k, frame(1), 0.0)
         self.assertEqual(len(buffer.pop_due(3600.0, limit=500)), 500)
         self.assertEqual(len(buffer.pop_due(3600.0, limit=500)), 500)
+        self.assertEqual(len(buffer.pop_due(3600.0, limit=500)), 200)
         for bad in (None, float('nan'), float('inf'), True, '1'):
             with self.assertRaises(ValueError):
                 buffer.pop_due(bad)
