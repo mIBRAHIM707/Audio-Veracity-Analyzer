@@ -212,6 +212,28 @@ class RunLoopTests(unittest.TestCase):
         ended = [e.data['reason'] for e in events if e.type == 'call.ended']
         self.assertEqual(ended, ['bye'], (service.sink.counts, service.tap.stats))
 
+    def test_stop_closing_the_stream_is_not_a_disconnect(self):
+        # Found by the 15 Nov detector-fault lab test: `stop()` closes the websocket, the
+        # blocked read then raises, and that was counted as a dropped connection.
+        class ClosedByStop(Exception):
+            pass
+        ClosedByStop.__name__ = 'ConnectionClosedOK'  # what websockets raises after close()
+        for error in (ConnectionError('closed'), ClosedByStop()):
+            with self.subTest(type(error).__name__):
+                connection = Connection([], then_fail=False)
+                service = self.service([connection])
+                stop = threading.Event()
+
+                def read_after_stop(timeout=None, error=error):
+                    if service.ready.is_set():
+                        service.stop(stop)
+                        raise error
+                    raise TimeoutError()
+                connection.recv = read_after_stop
+                service.run(stop, poll_s=0.01)
+                self.assertEqual((service.counts['connects'], service.counts['disconnects'],
+                                  service.counts['loop_errors']), (1, 0, 0))
+
     def test_loop_faults_and_shutdown_faults_are_counted_not_raised(self):
         # Review M1/M2: a programming fault is a loop error, not a disconnect, and a
         # fault while closing taps does not stop the remaining shutdown steps.

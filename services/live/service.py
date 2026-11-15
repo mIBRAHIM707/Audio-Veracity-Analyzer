@@ -146,11 +146,16 @@ class LiveService:
                         while not stop_event.is_set():
                             self.tap.run_once(connection, timeout=poll_s)
                             self._tick()
-                except (ConnectionError, OSError, TimeoutError) as error:  # refused or dropped
-                    self.counts['disconnects'] += 1
+                except (ConnectionError, OSError, TimeoutError):  # refused or dropped
+                    if not stop_event.is_set():  # `stop()` closing the stream is not a drop
+                        self.counts['disconnects'] += 1
                 except Exception as error:  # websockets ConnectionClosed lands here too
                     name = type(error).__name__
-                    self.counts['disconnects' if 'Connection' in name or 'Closed' in name else 'loop_errors'] += 1
+                    if 'Connection' in name or 'Closed' in name:
+                        if not stop_event.is_set():
+                            self.counts['disconnects'] += 1
+                    else:
+                        self.counts['loop_errors'] += 1
                 finally:
                     self._connection = None
                     self.ready.clear()
