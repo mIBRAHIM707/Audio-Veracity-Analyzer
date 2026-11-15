@@ -90,9 +90,16 @@ and about 50,000 original clips, excluding codec copies.
   conditioning. Lab evidence (local Windows/Docker, opt-in tests): mu-law/A-law calls
   sample-identical, tapped audio sample-identical after <= 200 ms, cleanup < 5 s, calls
   unharmed with no/stopped/hung/crashed tap, agent leg not tapped, 14 s of public speech
-  through a real call scored end to end with a FAKE detector. Open questions: the
-  architecture's Stasis wording (§2.1/§7), FR-I2 sample definition and "sustained"
-  window, call-ID reuse, start-data privacy. No detector or accuracy claim.
+  through a real call scored end to end with a FAKE detector. Later the same day: an
+  ordered hub-to-PostgreSQL pump (5.1); a model card builder with an FR-O4 start-up
+  check (10.2); and a live service process (8.1). That process has a start-up gate:
+  card, hash, graph inspection forcing per-window serving for dynamic INT8, calibrated
+  cards refused, and a finite warm-up. It runs one reconnecting loop. In the lab it
+  scored a real Asterisk call with the real 14 Nov static INT8 export: untrained head,
+  5 windows, gate 2.6 s. Open questions: the architecture's Stasis wording (§2.1/§7);
+  FR-I2's sample definition and "sustained" window; call-ID reuse; start-data privacy;
+  admission before tapping; the calibration temperature in serving; and a reload
+  changing hop/stride. No detector or accuracy claim.
 - **Backlog 2.1 complete (9 Nov): bounded analysis service.** `services/inference/`
   analyses one PCM16 WAV with the pinned pretrained AntiDeepfake MMS-300M CPU
   baseline (hash-verified local load, no downloads): shared conditioning to 16 kHz,

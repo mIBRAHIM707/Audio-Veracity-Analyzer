@@ -185,8 +185,12 @@ items needing that data are listed at the end and stay out of the queue.
   per hop (idempotent replays, `after_end` like the registry, implicit starts,
   retryable vs permanent errors); psycopg 3.3.9 in `requirements-store.txt`; 22
   Claude-authored tests (15 on a PostgreSQL 16.16 container); review M1-M4 and lows
-  fixed, re-review pass. Remaining: hub-to-store pump with bounded retry, scorer
-  resume (FR-I11), other architecture tables, Redis session state.
+  fixed, re-review pass. 15 Nov (dc9e8d1): `services/store/pump.py` StorePump, an
+  ordered hub-to-PostgreSQL pump (retryable errors keep order and wait, permanent ones
+  are skipped and counted, a bounded backlog, a faulty head skipped after bounded
+  retries); Claude-authored tests, review fixed. Remaining: running
+  the pump in the live service by default, scorer resume (FR-I11), other architecture
+  tables, Redis session state.
 - [ ] 5.2 Jobs/cancellation/idempotency, calls/alerts API and WebSocket events.
   Progress (10 Nov): `services/scorer/ordered.py` per-call serialized boundary
   (phase-4 QA M1/L3): monotonic per-direction `window_idx`, duplicate/stale results
@@ -247,17 +251,27 @@ items needing that data are listed at the end and stay out of the queue.
   after <= 200 ms start-up; ended < 5 s with nothing left in Asterisk; agent leg not
   tapped; calls unharmed with no tap, a stopped, a hung and a crashed tap). Two
   independent reviews (H1 Stasis dependency, H-A1 agent leg, M1-M5) fixed.
-  Answers the Phase 0 tap spike. Remaining: feed into SpeechFeed/pipeline, agent
-  direction, service process with reconnect; architecture §2.1 text (Stasis) to update.
+  Answers the Phase 0 tap spike. 15 Nov (b7f2bd2): `services/tap/scoring_sink.py` feeds
+  tapped audio into LiveCalls/SpeechFeed/LivePipeline (per-call soxr stream equal to the
+  file path's resampling, concealment mask at 16 kHz, ends after the tail is scored).
+  15 Nov (cee5ffb): `services/live/service.py` service process with ARI reconnect.
+  Remaining: agent direction, architecture §2.1 text (Stasis) to update.
 - [ ] 6.3 Jitter/loss/concealment and malformed RTP/SDP cases; AMR file/replay.
   Progress (15 Nov): `services/tap/jitter.py` JitterBuffer (60 ms, reorder, repeat 3 then
   silence = the training rule for mu-law; re-anchors after a sender pause or sequence
   jump without losing received frames; absorbs +/-100 ppm drift; bounded output) and
   LossMonitor (5 % over 10 s); 14 Claude-authored tests incl. parity with
-  `codecs._conceal`; review H-B1/M-B1/M-B3 fixed (not re-reviewed). Not yet wired into
-  the receiver; the FR-I2 >10 % window gate needs a concealment mask through the
-  windower; AMR replay not started.
+  `codecs._conceal`; review H-B1/M-B1/M-B3 fixed (not re-reviewed). 15 Nov (2f698b7):
+  wired into the tap (conceals only real holes). 15 Nov (120c6e7): concealment mask
+  through the windower to the FR-I2 >10 % window gate (`quality=low`, unscored); 8
+  Claude-authored tests, review fixed. Remaining: malformed RTP/SDP cases, AMR replay.
 - [ ] 6.QA End-to-end public audio through lab; detector failure never drops calls.
+  Progress (15 Nov): lab tests play three public CSALT genuine clips into a real
+  Asterisk 20.6 call through tap, jitter buffer, real Silero VAD and the pipeline
+  (b7f2bd2, fake detector), and through `LiveService` with the real 14 Nov static INT8
+  export, untrained head (cee5ffb): 5 windows scored, one `call.ended reason=bye`.
+  Calls unharmed with no, stopped, hung or crashed tap (6.2). Remaining: a detector
+  fault during a lab call, codecs other than mu-law end to end, the trained model.
 
 ## 7 — Dashboard and operations (FR-U, FR-A8)
 - [ ] 7.1 Live board, alerts, timeline and batch job states.
@@ -289,6 +303,14 @@ items needing that data are listed at the end and stay out of the queue.
   bucket and separate live/file queue limits; 14 Claude-authored tests; review fixed.
   Remaining: ONNX thread settings, warm-up/`/readyz` (need the exported model, 10.x),
   wiring into an inference loop, measured `capacity_windows_per_s` (8.QA).
+  15 Nov (cee5ffb): `services/live/service.py` `load_detector` start-up gate (model card
+  check, session opened from the card's hash with bounded threads, graph inspection
+  forcing per-window serving for dynamic INT8, calibrated cards refused until serving
+  applies the temperature, one finite warm-up) and `LiveService` (one thread: tap,
+  pipeline, batcher, CallGate = tap admission, reconnect with backoff, faults counted,
+  queued ends keep their reason on stop); 6 unit + 1 lab Claude-authored tests, review
+  H1/H2/M1-M3 fixed. Remaining: command-line entry point/config file, `/readyz` and
+  metrics for this process, measured capacity (8.QA), file jobs through the batcher.
 - [ ] 8.2 Degraded stride/unmonitored behavior and resource bounds.
   Progress (10 Nov): `services/scorer/degraded.py` stride controller (grow per behind
   report, cap, unmonitored, 30 s recovery), 13 Claude-authored tests, review fixed.
@@ -368,6 +390,11 @@ items needing that data are listed at the end and stay out of the queue.
   head and parity on real dev windows, INT8 latency and dev-EER measurement (with the
   batching policy and a disjoint calibration set).
 - [ ] 10.2 Model-card generator, container/Compose and deployment manifests.
+  Progress (15 Nov, 789be31): `models/export/model_card.py` card builder (FR-O4 fields,
+  `not_measured` metrics, uncalibrated by default, contract from `onnx_export`), JSON
+  and Markdown writers (no overwrite) and `check_card` start-up check (hash, size, file
+  name, schema, scoring window); Claude-authored tests, review fixed; used by the live
+  service gate. Remaining: container/Compose and deployment manifests.
 - [ ] 10.QA Reproducible startup, CPU parity where measurable, rollback/readiness.
 
 ## 11 — Final software integration
