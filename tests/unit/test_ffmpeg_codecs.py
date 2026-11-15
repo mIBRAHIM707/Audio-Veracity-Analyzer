@@ -41,7 +41,7 @@ class FakeRun:
 
     def __init__(self, version=f'ffmpeg version {fc.PINNED_VERSION}-full_build', codecs=None, results=()):
         self.version, self.results, self.calls = version, list(results), []
-        names = codecs if codecs is not None else ['libgsm', 'libopencore_amrnb']
+        names = codecs if codecs is not None else ['libgsm', 'libopencore_amrnb', 'libopus']
         self.listing = '\n'.join(f' A....D {name}  description' for name in names).encode()
 
     def __call__(self, args, **kwargs):
@@ -262,6 +262,8 @@ class RealFfmpegTests(unittest.TestCase):
             pcm = tone(seconds)
             frames = -(-len(pcm) // 2 // 160)
             for codec, spec in fc.CODECS.items():
+                if spec['format'] == 'ogg':
+                    continue  # Opus framing/length rules: tests/unit/test_ffmpeg_opus.py
                 encoded = self.ffmpeg.encode(pcm, codec)  # _check_stream verified size and mode
                 if spec['format'] == 'gsm':
                     self.assertEqual(len(encoded), 33 * frames)

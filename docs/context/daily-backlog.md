@@ -135,6 +135,13 @@ items needing that data are listed at the end and stay out of the queue.
   Claude-authored tests. Remaining: noise corpora, RIRs, speech-active SNR (needs VAD, 3.2), Opus/G.729
   VoIP path. 11 Nov: noise wired through `augment.py` (noise file named by PCM hash,
   source ID and licence; clipping refusals keep the drawn SNR for bias audits).
+  15 Nov: Opus VoIP path (FR-D6 "Opus at 8 to 16 kbps or G.729"; ffmpeg has no G.729
+  encoder): `opus_8/12/16` in `data/prepare/ffmpeg_codecs.py` (libopus CBR 20 ms VoIP,
+  strict Ogg/OpusHead/TOC checks with page CRCs, 48 kHz decode, measured 4-sample delay,
+  soxr to 8 kHz), seeded loss/jitter as TOC-only packets concealed by libopus PLC,
+  selectable in `augment.py` specs and mixes; 20 Claude-authored tests
+  (`tests/unit/test_ffmpeg_opus.py`), review conditional pass, lows fixed. Remaining:
+  noise corpora, RIRs, speech-active SNR.
 - [ ] 3.QA Sample-level parity, malformed formats and immutable-original checks.
   Progress (14 Nov, catch-up): `docs/qa/phase-3-qa.md` independent conditional pass as
   infrastructure for the implemented scope; L1-L6 fixed (one plain-PCM fmt rule in

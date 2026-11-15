@@ -185,6 +185,44 @@ process. Tests: `tests/unit/test_ffmpeg_codecs.py` (19 Claude-authored; the 7 re
 cases skip when it is absent, as in CI). Fictional tones and seeded noise only:
 plumbing, not quality.
 
+### Opus VoIP path (backlog 3.4, PRD FR-D6; 15 Nov 2026)
+
+`opus_8`, `opus_12`, `opus_16`: libopus (in the same ffmpeg build; BSD-3-Clause) at
+8/12/16 kbps CBR, 20 ms frames, `-application voip`, Ogg Opus (RFC 7845) over the pipe
+with `+bitexact` muxing (without it the Ogg serial number is random). The PRD allows
+Opus or G.729; ffmpeg has a G.729 decoder but no encoder, so G.729 is not offered.
+`roundtrip` appends one 20 ms frame of zeros, decodes at 48 kHz, removes
+`OPUS_DELAY_48K` = 4 samples (measured 15 Nov on band-limited seeded noise at
+8/12/16/64 kbps, two seeds, best alignment in a 0-12 search every time; re-measured by a
+test), brings it to 8 kHz with the shared soxr HQ step and cuts to the input length.
+The stream is checked strictly: page checksums (RFC 3533 CRC, known-answer tested),
+one logical stream, BOS/EOS, OpusHead v1 mono with pre-skip 312 and 8 kHz input,
+OpusTags, packet count `ceil((6n + 312) / 960)` (tested on every partial-frame length),
+CBR packet size, one 20 ms mono frame per packet (code 0, or code 3 with one frame,
+which libopus uses to pad CBR packets).
+
+Loss and jitter use the same per-clip plans and mask rule as G.711 over audio packets
+(the mask covers the pre-skip and padding packets, so a loss there counts in
+`concealed_fraction` without changing the output, as for AMR's flush frame). A lost or
+late packet becomes a TOC-only code-0 packet (same configuration, one zero-length
+frame; TOC layout RFC 6716 §3.1); libopus treats it as lost and runs its own
+packet-loss concealment (measured with ffmpeg 9.0.2, including a lost first packet);
+ffmpeg's Ogg demuxer refuses truly empty packets. Pages are
+rebuilt with the same granule positions and new checksums; records carry
+`applied_via: opus_toc_only_packets`, `concealment: opus_decoder_native_plc`. Measured:
+the 48 kHz decoder output before the first lost packet is bit-identical; after the
+soxr step earlier 8 kHz samples can move by one rounding step (block FFT filtering).
+Augmentation specs take `"codec": "opus_12"` (etc.) with `"concealment": null` and
+`packet_loss`/`jitter` booleans, like AMR-NB. Tests: `tests/unit/test_ffmpeg_opus.py`
+(Claude-authored, 15 Nov 2026; real-ffmpeg cases skip in CI). Not modelled: Opus
+in-band FEC, DTX, VBR, bandwidth switching, and RTP packetization (6.x).
+Units: Opus records add `delay_rate: 48000` and `decode_rate: 48000`, so their
+`delay_compensated_samples` (4) and `decoded_samples_before_alignment` count 48 kHz
+samples; GSM/AMR records keep their earlier keys unchanged (no `delay_rate`) and count
+8 kHz samples. Because `Ffmpeg` checks every codec's encoder and decoder at start-up, an
+ffmpeg build without libopus is now refused even for GSM/AMR-only runs (the pinned
+Gyan build has it).
+
 ## Additive noise at SNR (partial backlog 3.4, PRD FR-D7)
 
 `noise.py` `mix_at_snr(speech, noise, snr_db, seed)` adds same-rate mono PCM16
@@ -257,7 +295,7 @@ those four keys plus an integer `"weight"` (1-1000), with `chain_version`,
 and noise draws, with probability weight / total weight (`augment.derive_channel`). The
 copy row records `chain.codec_choice` (draw, channel index, codec, weight, the chosen
 single-channel spec hash), its file name ends in the chosen codec, and the summary adds
-`codec_counts` and `channel_counts`. A mix that can choose GSM/AMR-NB needs `--ffmpeg`
+`codec_counts` and `channel_counts`. A mix that can choose GSM/AMR-NB/Opus needs `--ffmpeg`
 for every run and verify, even if every clip drew G.711 (no output then depends on the
 tool). A root still holds one copy per parent: several codecs for the same parent need
 several roots (for example other seeds). Channels differing only in a setting that
@@ -268,7 +306,8 @@ Example: `{"chain_version": "ava-telephone-chain-v1", "master_seed": 7, "noise":
 "codec_mix": [{"codec": "g711_ulaw", "concealment": "repeat_then_silence",
 "packet_loss": true, "jitter": true, "weight": 2}, {"codec": "amr_nb_7.4",
 "concealment": null, "packet_loss": true, "jitter": false, "weight": 1}]}`.
-Opus/G.729, RIRs and speech-active SNR remain open.
+Opus channels (`opus_8`/`opus_12`/`opus_16`, 15 Nov) work in single specs and mixes.
+G.729 (no encoder in ffmpeg), RIRs and speech-active SNR remain open.
 
 `tests/unit/test_conditioning_parity.py` checks that this preparation path and the
 analysis service (`services/inference/`) condition the same WAV to identical

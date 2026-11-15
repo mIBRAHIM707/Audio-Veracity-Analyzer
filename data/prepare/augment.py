@@ -22,14 +22,16 @@ Copies start `review_status: unreviewed`; the parent's review and listening stat
 kept as `parent_review_status`/`parent_listening_status` and are not inherited.
 A noise mix that would clip is refused per clip with its drawn SNR recorded, so the
 refusal rate per SNR band can be audited (it can bias the FR-D7 0-20 dB spread).
-The channel may instead be GSM 06.10 or AMR-NB 4.75/7.4/12.2 (`ffmpeg_codecs`, a pinned
-local ffmpeg passed as `ffmpeg`/`--ffmpeg`); both may take seeded frame loss and
-jitter (late frames) concealed once (AMR-NB: decoder-native NO_DATA, concealment null;
+The channel may instead be GSM 06.10, AMR-NB 4.75/7.4/12.2 or the Opus VoIP path at
+8/12/16 kbps (`ffmpeg_codecs`, a pinned local ffmpeg passed as `ffmpeg`/`--ffmpeg`); all
+may take seeded frame loss and jitter (late frames) concealed once (AMR-NB:
+decoder-native NO_DATA; Opus: libopus PLC from TOC-only packets; both concealment null;
 GSM: repeat_then_silence substitution, which the spec must name). A codec-tool failure aborts
 the run before anything is written. A `codec_mix` spec lists 2-8 weighted channels and
 each copy takes one by a seeded per-clip draw (`derive_channel`, recorded as
 `chain.codec_choice`; the summary adds per-codec and per-channel counts), so one augmented
-root spans several codecs. Opus/G.729 and room impulse responses are not implemented.
+root spans several codecs. G.729 (no encoder in ffmpeg; the PRD accepts Opus or G.729)
+and room impulse responses are not implemented.
 """
 import argparse
 import array
@@ -194,9 +196,9 @@ def _single_problems(spec):
     if 'codec' in spec and codec not in G711_CODECS + tuple(FFMPEG_CODECS):
         problems.append(f'codec must be one of {list(G711_CODECS + tuple(FFMPEG_CODECS))}')
     if codec in FFMPEG_CODECS:
-        # GSM/AMR: AMR conceals natively (NO_DATA), so its spec names no concealment; a
-        # GSM chain with loss or jitter must name the rule it gets ('repeat_then_silence',
-        # as G.711 specs must), so the spec hash covers it.
+        # GSM/AMR/Opus: AMR and Opus conceal natively (NO_DATA, PLC), so their specs name
+        # no concealment; a GSM chain with loss or jitter must name the rule it gets
+        # ('repeat_then_silence', as G.711 specs must), so the spec hash covers it.
         for key in ('packet_loss', 'jitter'):
             if type(spec.get(key)) is not bool:
                 problems.append(f'{key} must be true or false')
@@ -277,7 +279,7 @@ def _check_ffmpeg(spec, ffmpeg):
 def augment_clip(clip_pcm, clip_id, spec, noise_pcm=None, ffmpeg=None):
     """Apply the declared chain to one 16 kHz mono PCM16 clip. Returns (16 kHz PCM16
     bytes, record). `noise_pcm` must be 16 kHz mono PCM16 whose SHA-256 the spec names
-    (exactly when the spec asks for noise). GSM/AMR-NB codecs need `ffmpeg` (an
+    (exactly when the spec asks for noise). GSM/AMR-NB/Opus codecs need `ffmpeg` (an
     `ffmpeg_codecs.Ffmpeg`). Raises ValueError on invalid input and CodecToolError when
     the codec tool fails (a systemic fault: callers abort rather than list it per clip).
     A codec_mix spec applies the clip's derive_channel choice; its record names the mix
@@ -578,7 +580,7 @@ def main(argv=None):
     parser.add_argument('--prepared-root', required=True, type=Path)
     parser.add_argument('--spec', required=True, type=Path, help='chain specification JSON')
     parser.add_argument('--noise', type=Path, help='16 kHz mono PCM16 noise WAV named by the spec')
-    parser.add_argument('--ffmpeg', type=Path, help='pinned ffmpeg 9.0.2 for GSM/AMR-NB chains '
+    parser.add_argument('--ffmpeg', type=Path, help='pinned ffmpeg 9.0.2 for GSM/AMR-NB/Opus chains '
                         '(else AVA_FFMPEG)')
     parser.add_argument('--ffmpeg-sha256', help='refuse an ffmpeg executable with another hash')
     group = parser.add_mutually_exclusive_group(required=True)
@@ -588,7 +590,7 @@ def main(argv=None):
     try:
         spec = validate_spec(_load_json(_read_regular(args.spec, 64_000, 'Specification'), 'Specification'))
         if not needs_ffmpeg(spec) and (args.ffmpeg or args.ffmpeg_sha256):
-            raise ValueError('--ffmpeg/--ffmpeg-sha256 apply only to GSM/AMR-NB chains (or mixes that '
+            raise ValueError('--ffmpeg/--ffmpeg-sha256 apply only to GSM/AMR-NB/Opus chains (or mixes that '
                              f'can choose them), not {describe_codec(spec)}')
         ffmpeg = Ffmpeg(args.ffmpeg, expected_sha256=args.ffmpeg_sha256) if needs_ffmpeg(spec) else None
         if args.verify is not None:
