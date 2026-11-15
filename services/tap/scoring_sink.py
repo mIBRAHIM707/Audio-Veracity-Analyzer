@@ -141,6 +141,16 @@ class TapScoringSink:
                 self.counts['end_retries'] += 1
         return applied
 
+    def flush_ends(self):
+        """Complete every queued end now with its own reason (shutdown): windows still
+        waiting are cancelled. Returns the number completed."""
+        completed = 0
+        for call_id, (reason, _) in list(self._ending.items()):
+            del self._ending[call_id]
+            self._end_now(call_id, reason, forced=True)
+            completed += 1
+        return completed
+
     def _end_now(self, call_id, reason, *, forced):
         """End one call; True when done (or nothing left to end)."""
         if forced and self.pipeline.has_work(call_id):
