@@ -1,0 +1,4 @@
+# Passive tap (services/tap, backlog 6.2; architecture §2.1): ARI event WebSocket.
+# websockets (BSD-3-Clause), no further dependencies. Resolved 15 Nov 2026, Python 3.11.
+-r requirements-audio.txt
+websockets==17.4

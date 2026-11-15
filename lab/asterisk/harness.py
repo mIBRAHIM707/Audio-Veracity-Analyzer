@@ -31,8 +31,9 @@ class LabContainer:
         self.io = None
         self.started = False
 
-    def command(self, args, timeout=120, check=True):
-        done = subprocess.run([self.docker, *args], capture_output=True, text=True, timeout=timeout)
+    def command(self, args, timeout=120, check=True, env=None):
+        done = subprocess.run([self.docker, *args], capture_output=True, text=True, timeout=timeout,
+                              env={**os.environ, **env} if env else None)
         if check and done.returncode != 0:
             raise LabError(f'docker {args[0]} failed ({done.returncode}): {done.stdout[-1500:]} {done.stderr[-1500:]}')
         return done
@@ -44,16 +45,18 @@ class LabContainer:
                 '--network', self.network, '-v', f'{self.io}:/lab/io']
         for mapping in self.publish:
             args += ['-p', mapping]
-        for key, value in self.env.items():
-            args += ['-e', f'{key}={value}']
+        for key in self.env:  # name only: the value travels in docker's environment, not its argv
+            args += ['-e', key]
         self.started = True  # from here on stop() must try to remove the container
-        self.command([*args, self.image])
+        self.command([*args, self.image], env=self.env)
         deadline = time.monotonic() + boot_timeout
         while True:
             done = self.command(['exec', self.name, 'asterisk', '-rx', 'core waitfullybooted'], timeout=60,
                                 check=False)
             if done.returncode == 0 and 'fully booted' in done.stdout.lower():
                 return self
+            if 'is not running' in done.stderr or 'No such container' in done.stderr:
+                raise LabError(f'lab container exited during start-up: {done.stderr[-300:]}')
             if time.monotonic() > deadline:
                 raise LabError(f'Asterisk did not boot: {done.stdout[-500:]} {done.stderr[-500:]}')
             time.sleep(1)

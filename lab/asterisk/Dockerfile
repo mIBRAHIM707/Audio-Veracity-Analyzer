@@ -14,7 +14,9 @@ RUN apt-get update \
 RUN mkdir -p /etc/asterisk.dist && mv /etc/asterisk/* /etc/asterisk.dist/
 COPY config/ /etc/asterisk/
 COPY sipp/ /lab/sipp/
-RUN mkdir -p /lab/io && chown asterisk:asterisk /lab/io
+COPY entrypoint.sh /lab/entrypoint.sh
+RUN mkdir -p /lab/io && chown asterisk:asterisk /lab/io && chmod 0755 /lab/entrypoint.sh
 
 # Foreground, console logging to stdout; the test harness owns the container lifetime.
-CMD ["asterisk", "-f", "-U", "asterisk", "-G", "asterisk", "-vvv"]
+# ARI/HTTP only when the run passes AVA_ARI_PASSWORD (see entrypoint.sh).
+CMD ["/lab/entrypoint.sh"]

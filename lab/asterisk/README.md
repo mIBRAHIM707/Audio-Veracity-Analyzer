@@ -73,7 +73,19 @@ than the 200 OK Contact (fine on loopback).
   genuine/synthetic WAV played through a call (the command exists, only synthetic
   signals were run); asserting the negotiated codec from the answer SDP; Docker/WSL
   preflight script; Compose file.
-- 6.2 ARI snoop/ExternalMedia passive tap and lifecycle; 6.3 RTP jitter/loss handling
-  and AMR-NB replay; 6.QA AVA-stopped-mid-call survival (FR-T4).
+- 6.3 RTP jitter/loss handling and AMR-NB replay; 6.QA end to end with AVA.
+
+## ARI tap (6.2, 15 Nov 2026)
+
+`entrypoint.sh` enables the HTTP server and ARI (user `ava`) only when the run passes
+`AVA_ARI_PASSWORD` (letters and digits, at least 16 characters; tests generate one per
+container, passed through the harness's environment rather than its command line), so
+no credential is in the image or in Git. Extension `700` answers and records like 600;
+it has no tap step: the tap spies on it from outside Stasis, so the call never depends
+on the tap. The tap itself and its results are in `services/tap/README.md`; its lab
+tests (`tests/lab/test_ari_tap.py`) publish ARI on 127.0.0.1 only and run on Docker's
+default bridge (ExternalMedia must reach this host), so the anonymous SIP endpoint and
+the password-protected ARI port are reachable from other containers on that bridge
+during those tests (no SIP or RTP port is published).
 - The built image's digest depends on the apt mirror state at build time (the two
   packages are pinned, their dependencies are not).
