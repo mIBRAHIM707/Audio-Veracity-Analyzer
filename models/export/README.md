@@ -109,3 +109,23 @@ FR-M7 parity is accepted only when measured with the trained head on real dev wi
 uv run --no-project --python 3.11 --with-requirements requirements-audio.txt python -m unittest tests.unit.test_onnx_export_rules -v
 uv run --no-project --python 3.11 --extra-index-url https://download.pytorch.org/whl/cpu --with-requirements requirements-model.txt --with-requirements requirements-export.txt python -m unittest tests.model.test_onnx_export -v
 ```
+
+## Model card (backlog 10.2 partial; PRD FR-M12, FR-E5, FR-O4; 15 Nov 2026)
+
+`model_card.py` builds `model_card.json` for one exported ONNX file: version, backbone,
+kept layers, window (4 s, 64,000 samples at 16 kHz), calibration temperature with an
+explicit `calibration_status` (`uncalibrated` -> temperature null), ECE, metrics,
+training data, known failure modes, licence restriction (FR-E5), the PRD §1.4
+limitation text (fixed in the module, checked unchanged), the serving I/O contract and
+the ONNX file's name, size and SHA-256. Values that were not measured must say
+`not_measured`; nothing is filled in by default. `write_card` never overwrites;
+`render_markdown` gives a readable copy. `check_card(card, onnx, scoring_document)` is
+the FR-O4 start-up check (the scoring config is required): both files present, the
+card valid strict JSON (size bound, no duplicate keys, no NaN), the served file name,
+size and SHA-256 equal to the card's, and the scoring config valid against the card's
+window (`services.scorer.config.parse_config`); every problem is listed in one
+`ModelCardError`. The I/O contract takes its names from `onnx_export` (`waveform` ->
+`logits`, `embedding[B, 256]`), so a card cannot describe another graph. A calibrated
+card must carry a measured ECE. Tests `tests/unit/test_model_card.py` (Claude-authored). Not done:
+wiring the check into an inference service start-up, the datasheet, the licence
+register itself (FR-E5), and measured metrics (need the trained model).
