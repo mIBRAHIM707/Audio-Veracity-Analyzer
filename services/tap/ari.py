@@ -31,8 +31,18 @@ class AriError(RuntimeError):
 class AriClient:
     def __init__(self, base_url, user, password, app, *, timeout=TIMEOUT_S):
         parsed = urllib.parse.urlsplit(base_url)
-        if parsed.scheme not in ('http', 'https') or not parsed.netloc:
+        if parsed.scheme not in ('http', 'https') or not parsed.hostname:
             raise ValueError('base_url must be http(s)://host:port')
+        if parsed.username is not None or parsed.password is not None or parsed.query or parsed.fragment \
+                or parsed.path not in ('', '/'):
+            # Credentials in the URL would reach logs and the websocket URL (review M1).
+            raise ValueError('base_url must be http(s)://host:port with no user, path, query or fragment')
+        try:
+            parsed.port
+        except ValueError:
+            raise ValueError('base_url has an invalid port') from None
+        if not user or ':' in user:
+            raise ValueError('user must be non-empty and contain no ":" (Basic authentication)')
         if not app or not app.replace('-', '').replace('_', '').isalnum():
             raise ValueError('app must be a simple name')
         self.base_url, self.app, self._timeout = base_url.rstrip('/'), app, timeout

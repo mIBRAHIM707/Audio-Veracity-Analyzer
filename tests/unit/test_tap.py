@@ -145,6 +145,18 @@ class AriClientTests(unittest.TestCase):
         for bad in (('ftp://x', 'a'), ('http://x:1', 'a/b')):
             with self.assertRaises(ValueError):
                 AriClient(bad[0], 'u', 'p', bad[1])
+        # Claude-authored 15 Nov: credentials or extra parts in the URL, and a user that
+        # breaks Basic authentication, are refused without echoing the password.
+        for url in ('http://ava:pw-in-url@x:1', 'http://ava@x:1', 'http://x:1/ari', 'http://x:1?a=b', 'http://x:1#f',
+                    'http://x:99999', 'http://:1'):
+            with self.subTest(url), self.assertRaises(ValueError) as caught:
+                AriClient(url, 'u', 'p', 'ava-tap')
+            self.assertNotIn('pw-in-url', str(caught.exception))
+        for user in ('', 'a:b'):
+            with self.subTest(user=user), self.assertRaises(ValueError):
+                AriClient('http://x:1', user, 'p', 'ava-tap')
+        self.assertEqual(AriClient('http://x:1/', 'u', 'p', 'ava-tap').events_url(),
+                         'ws://x:1/ari/events?app=ava-tap&subscribeAll=true')
 
     def test_every_bad_reply_is_an_ari_error(self):
         # Review M1: non-JSON bodies and HTTP errors must not escape as other types.

@@ -55,8 +55,57 @@ python -m unittest tests.lab.test_live_service_lab -v` (env file sets
 `AVA_TEST_DOCKER_LAB=1`).
 The scores are real ONNX computations with an untrained head: no detection claim.
 
+## Command line
+
+```text
+python -m services.live --card model_card.json --onnx ava.onnx --vad-model silero_vad.onnx \
+    --ari-url http://127.0.0.1:8088 --ari-user ava --receiver-host <address Asterisk can reach> \
+    [--scoring-config ava.json] [--per-window] [--threads 1] [--max-calls 8] \
+    [--capacity-windows-per-s 4.0] [--tap-extension 700 ...] [--ari-app ava-tap] [--bind-host 0.0.0.0]
+```
+
+Needs the `requirements-tap.txt` and `requirements-export.txt` environments (onnx for the
+graph inspection). The ARI password is read from `AVA_ARI_PASSWORD` (or the variable
+named by `--ari-password-env`); it is never accepted on the command line or in the URL
+(`AriClient` refuses a URL with a user, password, path, query or fragment) and never
+printed. Start-up checks, before any call is tapped: password; receiver host (IPv4
+address or host name, not 0.0.0.0/multicast; IPv6 not supported), bind host (local IPv4,
+one test bind) and tap extensions (1-32 of `0-9A-Za-z*#+_-`); scoring config; model
+card, model and warm-up; Silero VAD hash and load; one authenticated ARI request (HTTP
+401/403 refuses; an unreachable Asterisk does not, the loop keeps reconnecting and the
+start record says `ari_reachable: false`). Each refusal prints one JSON line
+`{"event": "refused", ...}` to stderr and exits 2; usage errors exit 2 through argparse;
+Ctrl+C during start-up exits 130. A running service prints `{"event": "starting", ...}`
+(model version and hash, config fingerprint, limits; readiness itself is the ARI stream)
+and, after Ctrl+C/SIGTERM/Ctrl+Break, `{"event": "stopped", ...}` with the service, tap,
+sink and pipeline counts, exit 0. A second Ctrl+C during a stalled shutdown forces exit
+130 (`"forced": true`).
+
+Evidence (15 Nov, Claude-authored): `tests/unit/test_live_cli.py` (12: wiring, every
+refusal path without a traceback or the password, usage errors, real bind check, Ctrl+C
+during start-up, first and second SIGINT, a real `python -m services.live` process);
+`tests/unit/test_tap.py` URL/user refusals; lab `test_command_line_serves_a_real_call`
+(`main()` with the real factories on a real Asterisk call: `starting`, at least 3 windows
+scored, `call.ended bye`, `stopped`, exit 0, no disconnect, password not printed).
+Independent review: conditional pass; M1 password in the URL, M2 wrong ARI credentials
+started "healthy", M3 Ctrl+C during start-up and a stalled shutdown, M4 unchecked hosts,
+and lows (VAD runtime errors, imports before refusal handling, extension/user/env-name
+validation, start record name, subprocess working directory) all fixed with tests.
+
+## Detector faults on a real call (6.QA)
+
+`tests/lab/test_detector_fault_lab.py` (Claude-authored, 15 Nov): with a detector that
+raises on every batch, a lab call with three public clips completes normally (SIPp exit
+0), one `call.ended reason=bye`, no scored update, every lost window counted, no
+reconnect, nothing left in Asterisk. With a detector that blocks the service thread
+from 5.0 s into the call until after the call ended, the call still ran its scripted
+15.7 s for 13.9 s of audio and completed normally; after release the service ended the
+same call `bye` without a reconnect. This test found that `stop()` closing the stream
+was counted as a disconnect (fixed, unit-tested).
+
 ## Not done
 
-A command-line entry point and configuration file; `/readyz`/metrics exposure of this
-process (the analysis API has its own); store/Redis wiring by default; agent direction;
-capacity measurement on box A1 (8.QA); file-mode jobs through the same batcher.
+A deployment configuration file (beyond the scoring JSON); `/readyz`/metrics exposure
+of this process (the analysis API has its own); store/Redis wiring by default; agent
+direction; capacity measurement on box A1 (8.QA); file-mode jobs through the same
+batcher.

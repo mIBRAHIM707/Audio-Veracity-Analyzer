@@ -101,6 +101,70 @@ class LiveServiceLabTests(unittest.TestCase):
         self.observed = {'load_and_warm_up_s': round(load_seconds, 1), 'scored_windows': len(scored)}
         print(f'\nobserved: {self.observed}')
 
+    def test_command_line_serves_a_real_call(self):
+        """`python -m services.live` main() with the real factories (card, ONNX, Silero,
+        ARI client); run on a worker thread (no signal handlers) and stopped by the event."""
+        import io
+        from services.live import __main__ as cli
+        password = secrets.token_hex(16)
+        lab = LabContainer(IMAGE, network='bridge', publish=['127.0.0.1::8088'], env={'AVA_ARI_PASSWORD': password})
+        self.addCleanup(lab.stop)
+        lab.start()
+        temp = tempfile.TemporaryDirectory()
+        self.addCleanup(temp.cleanup)
+        card = mc.write_card(mc.build_card(
+            ONNX, version='lab-cli-untrained', backbone='AntiDeepfake MMS-300M, truncated', kept_layers=8,
+            metrics={'dev_eer': mc.NOT_MEASURED}, training_data={'status': 'untrained SLS head (seeded)'},
+            failure_modes=['untrained head: scores carry no meaning'],
+            licence_restriction='Research and non-commercial use only.'), Path(temp.name) / 'model_card.json')
+        made, listeners = cli._defaults(), []
+
+        def service_factory(*args, **kwargs):
+            service = made['service'](*args, **kwargs)
+            listeners.append((service, service.hub.subscribe(buffer=4096)))
+            return service
+        factories = {**made, 'service': service_factory}
+        stop, err, result = threading.Event(), io.StringIO(), []
+        argv = ['--card', str(card), '--onnx', str(ONNX), '--vad-model', str(VAD_MODEL), '--threads', '4',
+                '--ari-url', f'http://{lab.port("8088/tcp")}', '--ari-user', 'ava',
+                '--receiver-host', 'host.docker.internal', '--tap-extension', '700']
+        runner = threading.Thread(target=lambda: result.append(cli.main(
+            argv, environ={'AVA_ARI_PASSWORD': password}, factories=factories, stop_event=stop, stderr=err)),
+            daemon=True)
+        runner.start()
+        self.addCleanup(runner.join, 20)
+        self.addCleanup(stop.set)
+        deadline = time.monotonic() + 30
+        while time.monotonic() < deadline and not (listeners and listeners[0][0].ready.is_set()):
+            time.sleep(0.1)
+        self.assertTrue(listeners and listeners[0][0].ready.is_set(), err.getvalue())
+        service, listener = listeners[0]
+
+        clips = json.loads(QA_CONFIG.read_text(encoding='utf-8'))['genuine'][:3]
+        payloads = rtp_pcap.rtp_payloads(b''.join(rtp_pcap.wav_to_pcm8k(path) for path in clips), 'ulaw')
+        rtp_pcap.write_pcap(payloads, 0, lab.path('inject.pcap'))
+        done = lab.command(['exec', lab.name, 'sipp', '127.0.0.1:5060', '-sf', '/lab/sipp/uac_inject.xml',
+                            '-s', '700', '-key', 'caller', f'cli{secrets.token_hex(4)}', '-key', 'pt', '0',
+                            '-key', 'codec', 'PCMU', '-m', '1', '-d', str(len(payloads) * 20 + 1500),
+                            '-i', '127.0.0.1', '-mi', '127.0.0.1', '-min_rtp_port', '16000', '-max_rtp_port', '16100',
+                            '-timeout', '60s', '-timeout_error', '-nostdin'], check=False, timeout=180)
+        self.assertEqual(done.returncode, 0)
+        events, deadline = [], time.monotonic() + 60
+        while time.monotonic() < deadline and not any(e.type == 'call.ended' for e in events):
+            events += listener.drain()[0]
+            time.sleep(0.2)
+        service.stop(stop)
+        runner.join(30)
+        self.assertFalse(runner.is_alive())
+        self.assertEqual(result, [cli.EXIT_OK], err.getvalue())
+        records = [json.loads(line) for line in err.getvalue().splitlines()]
+        self.assertEqual([r['event'] for r in records], ['starting', 'stopped'])
+        self.assertEqual((records[0]['model_version'], records[0]['ari_reachable']), ('lab-cli-untrained', True))
+        self.assertNotIn(password, err.getvalue())
+        self.assertGreaterEqual(len([e for e in events if e.type == 'score.updated' and e.data.get('scored')]), 3)
+        self.assertEqual([e.data['reason'] for e in events if e.type == 'call.ended'], ['bye'])
+        self.assertEqual(records[1]['service']['disconnects'], 0)
+
 
 if __name__ == '__main__':
     unittest.main()
