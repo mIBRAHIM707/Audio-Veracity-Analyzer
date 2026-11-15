@@ -173,9 +173,16 @@ items needing that data are listed at the end and stay out of the queue.
 ## 5 — Backend persistence/events (FR-A, FR-I11)
 - [ ] 5.1 PostgreSQL/Redis data and event contracts, migrations and bounded queues.
   Progress (10 Nov): `services/events/` FR-A4 envelope contract and bounded
-  non-blocking fan-out, 16 Claude-authored tests, review fixed. **Blocked part:**
-  schema/migrations and Redis need a dependency decision: PostgreSQL 18 binaries are
-  installed (architecture names 16) but no Python driver or Redis is pinned/installed.
+  non-blocking fan-out, 16 Claude-authored tests, review fixed. (The 10 Nov driver/
+  Redis blocker is superseded by the 14 Nov install decision and Docker.) 15 Nov:
+  `services/store/` versioned SQL migrations (one transaction, advisory lock, checksum
+  drift refused, LF-normalised, transaction control refused) and `0001_live_records`
+  (`calls`, `window_scores`, `alerts`); `PostgresEventStore` writes each FR-A4 envelope
+  per hop (idempotent replays, `after_end` like the registry, implicit starts,
+  retryable vs permanent errors); psycopg 3.3.9 in `requirements-store.txt`; 22
+  Claude-authored tests (15 on a PostgreSQL 16.16 container); review M1-M4 and lows
+  fixed, re-review pass. Remaining: hub-to-store pump with bounded retry, scorer
+  resume (FR-I11), other architecture tables, Redis session state.
 - [ ] 5.2 Jobs/cancellation/idempotency, calls/alerts API and WebSocket events.
   Progress (10 Nov): `services/scorer/ordered.py` per-call serialized boundary
   (phase-4 QA M1/L3): monotonic per-direction `window_idx`, duplicate/stale results

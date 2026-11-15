@@ -1,0 +1,7 @@
+# PostgreSQL client for services/store (backlog 5.1; architecture §2.7, ADR-7).
+# psycopg 3 (LGPL-3.0-only, used as an unmodified library); the binary package bundles
+# libpq (PostgreSQL licence). Resolved 15 Nov 2026 on Windows, Python 3.11.
+psycopg==3.3.9
+psycopg-binary==3.3.9
+typing-extensions==4.16.0
+tzdata==2026.6
