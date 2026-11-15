@@ -233,7 +233,26 @@ items needing that data are listed at the end and stay out of the queue.
   refused 488); review conditional pass, M1-M4 and lows fixed. Remaining: two endpoints
   with a bridged call, per-endpoint codec forcing, a real WAV call, preflight script.
 - [ ] 6.2 ARI passive tap, lifecycle and RTP G.711/GSM decoder.
+  Progress (15 Nov): `services/tap/` ARI client, per-call RTP receiver (source lock,
+  bounded hand-off) and `TapApp`: calls never enter Stasis (review H1: a Stasis hand-off
+  makes calls wait on the tap); answered PJSIP calls are snooped from outside (verified
+  on Asterisk 20.6), ExternalMedia mu-law to the receiver, `ava-tap` bridges swept after
+  a crash; only the dialplan-marked inbound caller leg is tapped (`AVA_TAP=caller`);
+  `resume()` re-taps after reconnect; lab ARI enabled by a per-run password.
+  Claude-authored: 17 unit tests (CI) and 6 lab tests (tapped audio sample-identical
+  after <= 200 ms start-up; ended < 5 s with nothing left in Asterisk; agent leg not
+  tapped; calls unharmed with no tap, a stopped, a hung and a crashed tap). Two
+  independent reviews (H1 Stasis dependency, H-A1 agent leg, M1-M5) fixed.
+  Answers the Phase 0 tap spike. Remaining: feed into SpeechFeed/pipeline, agent
+  direction, service process with reconnect; architecture §2.1 text (Stasis) to update.
 - [ ] 6.3 Jitter/loss/concealment and malformed RTP/SDP cases; AMR file/replay.
+  Progress (15 Nov): `services/tap/jitter.py` JitterBuffer (60 ms, reorder, repeat 3 then
+  silence = the training rule for mu-law; re-anchors after a sender pause or sequence
+  jump without losing received frames; absorbs +/-100 ppm drift; bounded output) and
+  LossMonitor (5 % over 10 s); 14 Claude-authored tests incl. parity with
+  `codecs._conceal`; review H-B1/M-B1/M-B3 fixed (not re-reviewed). Not yet wired into
+  the receiver; the FR-I2 >10 % window gate needs a concealment mask through the
+  windower; AMR replay not started.
 - [ ] 6.QA End-to-end public audio through lab; detector failure never drops calls.
 
 ## 7 — Dashboard and operations (FR-U, FR-A8)
