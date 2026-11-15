@@ -59,8 +59,23 @@ order rather than time, alert IDs unique across calls (a raise reusing another c
 ID is a `duplicate`), `system.health` and status history not persisted, one writer per
 database for ordering, and what `start_data`/`end_data` may hold (they keep whatever
 `call.started`/`call.ended` carry, indefinitely; caller numbers or SIP headers would
-need a privacy and retention decision). Not done: the hub subscriber/pump that feeds
-the store with bounded retry; scorer resume from persisted state (FR-I11: the flush
+need a privacy and retention decision).
+
+## Pump (`pump.py`, 15 Nov)
+
+`StorePump(subscription, store).pump()` moves an unfiltered hub subscription into the
+store in order: it stores what waits first and takes from the hub only what fits the
+backlog (default 10,000), so the pump never drops; retryable failures (and a
+misconfigured factory) keep the envelope and everything after it; permanent refusals
+are counted and skipped; a head that keeps failing unexpectedly is skipped after 5 tries;
+`consecutive_failures` is the stall signal; nothing is raised. During a long outage
+the hub subscription's buffer is what overflows (`hub_dropped`, oldest first, any type),
+and a lost lifecycle event leaves wrong database state (an open call, an implicit start,
+an unknown alert): subscribe with `fanout.MAX_BUFFER`, pump often, and give `connect()`
+a connect timeout. Run it on its own thread. Tests `tests/unit/test_store_pump.py` (Claude-authored; one
+PostgreSQL case kills the store's connection mid-call and checks the catch-up).
+
+Not done: scorer resume from persisted state (FR-I11: the flush
 exists, resume does not; hysteresis counters and `direction_alert_id` are not stored);
 cleanup of open rows whose `call.ended` was lost; retention of `window_scores`
 (architecture: indefinite). Migration files with `END;` inside a function body are
