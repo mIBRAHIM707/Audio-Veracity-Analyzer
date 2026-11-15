@@ -50,12 +50,25 @@ owners).
   `(samples, concealed_samples)` pair per 20 ms frame and, if it has one,
   `quality(call_id, 'degraded'|'recovered')` once per sustained-loss episode; `ended`
   carries the receiver and `jitter_` buffer counts.
+- `scoring_sink.py`: `TapScoringSink`, the TapApp sink that feeds live scoring: starts
+  the call in `LiveCalls` (from/to/tap format), resamples 8 -> 16 kHz with a per-call
+  `soxr.ResampleStream` (bit-identical to the file path's `canonicalize` of the same
+  8 kHz audio, tested over odd chunk sizes), turns per-frame concealment into a 16 kHz
+  per-sample mask for `SpeechFeed`, publishes `system.health reason=media_quality` on a
+  quality change, and on the tap's end flushes, finishes and ends the call once its
+  windows are scored (`pump()`, run by the tap's own thread; the tail is cancelled
+  after a 10 s grace; failed ends retried then forced; re-taps after a reconnect start a
+  fresh session; faults counted, never raised). Open spec question: a call refused by
+  the `CallGate` is still tapped (its audio is counted unfed); admission should come
+  before tapping (FR-I9, architecture §2.2).
 - `jitter.py`: the jitter buffer and loss monitor (backlog 6.3; see its docstring). Only
   holes closed by a later packet are concealed; a stream that stops or pauses produces
-  no made-up audio and no loss (a resumed stream starts a new talkspurt). Sink: `started(call)` (call ID, caller number, dialled extension,
-  creation time; `codec` is the tap's format, the call's codec is not in ARI's channel
-  object), `audio(call_id, pcm16_8k)`, `ended(call_id, reason, receiver_stats)`,
-  `failed(call_id, error)`.
+  no made-up audio and no loss (a resumed stream starts a new talkspurt).
+
+TapApp sink contract: `started(call)` (call ID, caller number, dialled extension,
+creation time; `codec` is the tap's format, the call's codec is not in ARI's channel
+object), `audio(call_id, pcm16_8k, concealment)`, optional `quality(call_id, change)`,
+`ended(call_id, reason, receiver_stats)`, `failed(call_id, error)`.
 
 `requirements-tap.txt`: websockets 17.4 (BSD-3-Clause).
 
@@ -75,6 +88,7 @@ audio delivered once, in-flight packets at hangup delivered, timeout, ExternalMe
 loss, close, sweep of unowned bridges only, malformed events).
 
 Lab (`tests/lab/test_ari_tap.py`, Docker, opt-in, Claude-authored, 6 tests, all pass
+(the end-to-end test below is separate)
 together with the 6.1 lab tests): Asterisk 20.6 with ARI enabled by a random per-run
 password; ExternalMedia sends RTP to this host. The lab cases run through the 60 ms
 jitter buffer: the main case also asserts zero concealed samples and no late packets
@@ -104,12 +118,21 @@ This answers the Phase 0 tap spike (task 0.9 / FR-T7) for this lab: snoop plus
 ExternalMedia delivers caller RTP, so the FR-T7 fallbacks are not needed here.
 Infrastructure evidence only; no detector claim.
 
+End to end (`tests/lab/test_tap_end_to_end.py`, opt-in, local inputs only): three
+prepared public CSALT genuine clips (about 14 s, named by the gitignored
+`.local/real-model-qa.json`) are played by SIPp as mu-law RTP into extension 700; the
+tap, jitter buffer, `TapScoringSink`, the real pinned Silero VAD, the speech windower,
+`LivePipeline` and `LiveCalls` publish `call.started` (caller token, `700`), several
+scored `score.updated` and one `call.ended reason=bye` with VAD speech seconds above half
+the played duration. The detector is a fake with a fixed score: real speech flows end
+to end and the lifecycle closes; nothing here is detector evidence.
+
 ## Not done
 
-Feeding tapped audio into `services/scorer/speech_feed.SpeechFeed` and the live
-pipeline (8 kHz -> 16 kHz streaming, concealment mask through the windower for the
-FR-I2 >10 % window gate); the agent direction
-(`spy=out`, FR-I8); a service process with reconnect; audio between answer and tap
+The real exported detector in the end-to-end path (a fake is used); the lab has no
+packet loss, so concealment is exercised by unit tests only; admission before tapping
+(see the scoring sink); the agent direction (`spy=out`, FR-I8); a service process with
+reconnect (the sink and `resume()` are ready for it); audio between answer and tap
 start (about 100 ms) is not tapped; calls bridged to a second endpoint; ARI over TLS
 and an allowed RTP source in deployment; the tap's ARI port is reachable from other
 containers on the lab bridge (password-protected).

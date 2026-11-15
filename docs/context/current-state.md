@@ -78,6 +78,21 @@ and about 50,000 original clips, excluding codec copies.
 
 ## Implemented locally
 
+- **15 Nov daily run (Docker now available; details in `daily-runs/2026-11-15.md`).**
+  Opus VoIP codec path with loss/jitter (3.4); speech-active noise SNR bound to the
+  Silero model hash (3.4); PostgreSQL 16 migrations and per-hop event store (5.1,
+  psycopg 3.3.9, tested on a container); Redis pub/sub forwarder/relay (5.1/5.2, redis-py
+  8.1.0); Asterisk 20.6/SIPp 3.7.2 lab image with RTP injection and codec forcing (6.1);
+  passive ARI tap that never holds calls in Stasis (snoops the dialplan-marked caller
+  leg from outside; review H1), per-call RTP receiver and 60 ms jitter buffer that
+  conceals only real holes (6.2/6.3); receiver concealment carried to the FR-I2 window
+  gate; tap-to-scoring sink whose streamed 8->16 kHz output is bit-identical to file-mode
+  conditioning. Lab evidence (local Windows/Docker, opt-in tests): mu-law/A-law calls
+  sample-identical, tapped audio sample-identical after <= 200 ms, cleanup < 5 s, calls
+  unharmed with no/stopped/hung/crashed tap, agent leg not tapped, 14 s of public speech
+  through a real call scored end to end with a FAKE detector. Open questions: the
+  architecture's Stasis wording (§2.1/§7), FR-I2 sample definition and "sustained"
+  window, call-ID reuse, start-data privacy. No detector or accuracy claim.
 - **Backlog 2.1 complete (9 Nov): bounded analysis service.** `services/inference/`
   analyses one PCM16 WAV with the pinned pretrained AntiDeepfake MMS-300M CPU
   baseline (hash-verified local load, no downloads): shared conditioning to 16 kHz,

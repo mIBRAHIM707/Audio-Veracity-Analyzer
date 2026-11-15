@@ -66,8 +66,8 @@ class TapRunner:
     `stop()` shuts it down cleanly (taps released); `kill()` drops the WebSocket and
     abandons the app without any cleanup, like a crashed process."""
 
-    def __init__(self, ari, sink):
-        self.ari = ari
+    def __init__(self, ari, sink, on_tick=None):
+        self.ari, self.on_tick = ari, on_tick  # on_tick: run on this thread after each loop turn
         self.app = TapApp(ari, sink, receiver_host='host.docker.internal', bind_host='0.0.0.0',
                           tap_extensions={'700', '701'})
         self.connection = None
@@ -91,6 +91,8 @@ class TapRunner:
                         frozen, self.freeze_s = self.freeze_s, 0.0
                         time.sleep(frozen)  # connected but not reading: events and RTP pile up
                     self.app.run_once(connection, timeout=0.05)
+                    if self.on_tick is not None:
+                        self.on_tick()
         except Exception as error:  # connection closed by the test, or a real failure
             if not self.stop_event.is_set():
                 self.error = error
