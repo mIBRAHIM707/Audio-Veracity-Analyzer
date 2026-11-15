@@ -197,6 +197,12 @@ items needing that data are listed at the end and stay out of the queue.
   result discard, monitor_lost end_all); 29 Claude-authored tests, reviews fixed.
   Remaining: job cancellation/idempotency (not in the PRD; needs a scope decision),
   Redis pub/sub and durable state (5.1), wiring to the tap/inference loop (6.x/8.1).
+  15 Nov: `services/events/redis_bridge.py` Redis pub/sub forwarder (hub -> channel,
+  faults counted, one attempt per pump when Redis is down) and relay (untrusted
+  messages re-validated, source `ts` kept, seq gaps/restarts counted, resubscribe after
+  errors); `EventHub.publish(ts=)`; redis-py 8.1.0 in `requirements-redis.txt`; 17
+  Claude-authored tests (3 on a Redis 7.4.12 container); review conditional pass, M1 and
+  lows fixed. Remaining: pump threads in the services, `stream.gap` on relay loss.
 - [ ] 5.3 Restart recovery, in-flight handling and default no-audio-retention behavior.
   Progress (12 Nov): default no-raw-audio retention on the analysis API verified by 3
   Claude-authored tests (spooled uploads removed with rollover proven, no audio in

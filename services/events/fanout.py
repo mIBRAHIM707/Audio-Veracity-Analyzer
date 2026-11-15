@@ -98,18 +98,21 @@ class EventHub:
         with self._lock:
             return len(self._subscribers)
 
-    def publish(self, event_type, call_id, data):
+    def publish(self, event_type, call_id, data, *, ts=None):
         """Validate, then deliver; returns the envelope. Raises only EventContractError
         (invalid event) or EventHubError (the hub's clock failed); in both cases nothing
         is delivered and no sequence number is used. Callers on the scoring path should
         catch both: publishing is advisory and must not stop scoring. Validation and JSON
-        encoding run outside the hub lock."""
-        draft = make_envelope(event_type, call_id, data, seq=0, ts=0)
+        encoding run outside the hub lock. `ts` (seconds since the epoch) keeps an
+        event's original time when it is relayed from another process (Redis relay);
+        the hub still assigns its own `seq`. Without it the hub's clock is used."""
+        draft = make_envelope(event_type, call_id, data, seq=0, ts=0 if ts is None else ts)
         with self._lock:
-            try:
-                ts = self._clock()
-            except Exception as error:  # any clock fault is the hub's, not the caller's
-                raise EventHubError(f'event clock failed: {type(error).__name__}') from None
+            if ts is None:
+                try:
+                    ts = self._clock()
+                except Exception as error:  # any clock fault is the hub's, not the caller's
+                    raise EventHubError(f'event clock failed: {type(error).__name__}') from None
             if not _finite_real(ts) or ts < 0:
                 raise EventHubError('event clock returned an unusable timestamp')
             envelope = dataclasses.replace(draft, seq=self._seq + 1, ts=float(ts))
