@@ -224,6 +224,14 @@ items needing that data are listed at the end and stay out of the queue.
 
 ## 6 — Asterisk laboratory (FR-T1–T5/T7, FR-I1/I2)
 - [ ] 6.1 Docker/WSL preflight; Asterisk/SIPp endpoints and WAV injection.
+  Progress (15 Nov): Docker Desktop running. `lab/asterisk/` image (ubuntu:24.04 digest,
+  Asterisk 20.6.0 and SIPp 3.7.2 pinned), PJSIP anonymous endpoint (ulaw/alaw/gsm),
+  record-what-the-caller-sends extension, SIPp single-codec offer scenario,
+  `rtp_pcap.py` (PCM/WAV -> G.711/GSM RTP pcap, CLI), `harness.py` disposable container;
+  `.pcap`/raw telephony extensions blocked by the guard. Claude-authored tests: 5 pure +
+  2 guard (CI) and 4 Docker lab cases (mu-law/A-law sample-identical, GSM > 0.99, G.722
+  refused 488); review conditional pass, M1-M4 and lows fixed. Remaining: two endpoints
+  with a bridged call, per-endpoint codec forcing, a real WAV call, preflight script.
 - [ ] 6.2 ARI passive tap, lifecycle and RTP G.711/GSM decoder.
 - [ ] 6.3 Jitter/loss/concealment and malformed RTP/SDP cases; AMR file/replay.
 - [ ] 6.QA End-to-end public audio through lab; detector failure never drops calls.

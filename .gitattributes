@@ -1,0 +1,4 @@
+# Files used inside Linux containers or hashed byte-for-byte keep LF on every checkout
+# (a Windows checkout with core.autocrlf would otherwise give them CRLF).
+lab/** text eol=lf
+services/store/migrations/*.sql text eol=lf
