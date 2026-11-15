@@ -149,7 +149,7 @@ def _split_leaks(rows, split):
 
 
 def load_windows(prepared_root, split, purpose, *, parent_root=None, noise_path=None,
-                 allow_source_errors=False, max_windows=10_000, ffmpeg=None):
+                 allow_source_errors=False, max_windows=10_000, ffmpeg=None, vad=None):
     """Return ``{'windows': [...], 'summary': {...}}``; each window keeps its row metadata.
 
     ``window['samples']`` is ``array('h')`` of exactly WINDOW_SAMPLES values. An
@@ -181,7 +181,8 @@ def load_windows(prepared_root, split, purpose, *, parent_root=None, noise_path=
         _require_conditioned(parent)
         try:
             # GSM/AMR-NB roots rebuild through the pinned ffmpeg (data/prepare/ffmpeg_codecs.Ffmpeg).
-            problems = augment.verify_augmented(parent_root, root, noise_path, ffmpeg=ffmpeg)
+            # A speech-active noise SNR rebuilds through the named VAD model (`vad`).
+            problems = augment.verify_augmented(parent_root, root, noise_path, ffmpeg=ffmpeg, vad=vad)
         except RecursionError as error:
             raise ValueError('Report nesting is too deep') from error
         if problems:
@@ -199,8 +200,8 @@ def load_windows(prepared_root, split, purpose, *, parent_root=None, noise_path=
         def codec_of(row):
             return augment.row_codec(spec, row)
     else:
-        if parent_root is not None or noise_path is not None or ffmpeg is not None:
-            raise ValueError('parent_root, noise_path and ffmpeg apply only to augmented-copy roots')
+        if parent_root is not None or noise_path is not None or ffmpeg is not None or vad is not None:
+            raise ValueError('parent_root, noise_path, ffmpeg and vad apply only to augmented-copy roots')
         _require_conditioned(report)
         source_errors = _summary_errors(report)
         def codec_of(row):

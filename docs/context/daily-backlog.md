@@ -140,8 +140,12 @@ items needing that data are listed at the end and stay out of the queue.
   strict Ogg/OpusHead/TOC checks with page CRCs, 48 kHz decode, measured 4-sample delay,
   soxr to 8 kHz), seeded loss/jitter as TOC-only packets concealed by libopus PLC,
   selectable in `augment.py` specs and mixes; 20 Claude-authored tests
-  (`tests/unit/test_ffmpeg_opus.py`), review conditional pass, lows fixed. Remaining:
-  noise corpora, RIRs, speech-active SNR.
+  (`tests/unit/test_ffmpeg_opus.py`), review conditional pass, lows fixed. 15 Nov:
+  speech-active SNR (`noise.speech_mask` with the serving VAD frame rule; spec
+  `noise.snr_basis: speech_active` + `vad_sha256`; writer/verifier/loader take the VAD;
+  VAD faults systemic; insufficient-speech refusals tagged and counted; mask rule and
+  per-frame decisions recorded); 13 Claude-authored unit + 1 real-Silero model test;
+  review conditional pass, findings fixed. Remaining: noise corpora, RIRs.
 - [ ] 3.QA Sample-level parity, malformed formats and immutable-original checks.
   Progress (14 Nov, catch-up): `docs/qa/phase-3-qa.md` independent conditional pass as
   infrastructure for the implemented scope; L1-L6 fixed (one plain-PCM fmt rule in

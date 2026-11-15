@@ -52,6 +52,11 @@ class SileroVad:
             raise ValueError(f'Silero model SHA-256 {digest} does not match the pinned model')
         self.model_sha256 = digest
         self._session = session_factory(model, threads)
+        try:  # recorded in augmentation lineage: VAD decisions can differ across runtimes
+            import onnxruntime
+            self.runtime_version = f'onnxruntime {onnxruntime.__version__}'
+        except ImportError:
+            self.runtime_version = None
         names = sorted(i.name for i in self._session.get_inputs())
         if names != ['input', 'sr', 'state']:
             raise ValueError(f'unexpected Silero model inputs {names}')

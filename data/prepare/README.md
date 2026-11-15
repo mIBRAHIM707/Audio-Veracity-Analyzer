@@ -232,8 +232,17 @@ seed, offset, wrap/repeat count, speech/noise/output hashes, gain and clipped-sa
 count. Callers must check clipping. `derive_noise(master_seed, clip_id)` gives
 each clip its own plan (SNR uniform 0-20 dB, offset seed; independent of the
 packet-loss tag) and `mix_planned(speech, noise, plan)` records the derivation,
-master seed and clip ID and refuses altered plans. SNR is whole-clip mean square
-(no VAD yet).
+master seed and clip ID and refuses altered plans. SNR is whole-clip mean square by
+default. Speech-active SNR (15 Nov 2026): `speech_mask(pcm16k, vad)` uses the serving
+windower's frame rule and threshold (512-sample float32 frames int16/32768, probability
+>= 0.5, last part-frame zero-padded; checked frame for frame against `SpeechWindower`),
+but on the clean parent clip with the VAD reset per clip, whereas serving runs on the
+received stream with state carried across the call. It returns the mask and the
+per-frame decisions. `mix_at_snr(..., active_mask=mask, mask_source=...)` takes the
+speech power over the active samples only (at least 0.5 s, else `InsufficientSpeech`;
+noise power still over the whole excerpt). This is mean-square power over Silero speech
+frames, not ITU-T P.56 active speech level. A VAD exception or invalid probability is a
+systemic `VadError`. Records without a mask are unchanged.
 No noise corpus or room impulse responses are included; `augment.py` applies it
 when a chain names a noise file.
 
@@ -307,7 +316,20 @@ Example: `{"chain_version": "ava-telephone-chain-v1", "master_seed": 7, "noise":
 "packet_loss": true, "jitter": true, "weight": 2}, {"codec": "amr_nb_7.4",
 "concealment": null, "packet_loss": true, "jitter": false, "weight": 1}]}`.
 Opus channels (`opus_8`/`opus_12`/`opus_16`, 15 Nov) work in single specs and mixes.
-G.729 (no encoder in ffmpeg), RIRs and speech-active SNR remain open.
+Speech-active SNR (15 Nov): the `noise` object may add `"snr_basis": "speech_active"`
+and `"vad_sha256"` (the VAD model's SHA-256, so the spec hash names the VAD); writer,
+verifier and the training window loader then need that VAD (`vad=`; CLI
+`--vad-model <silero_vad.onnx>`: any ONNX file whose SHA-256 equals the spec's, normally
+the pinned Silero 6.2.3; runtime from `requirements-vad.txt`). A clip with under 0.5 s
+of detected speech becomes an error row tagged `refusal: insufficient_speech` and
+counted in `summary.insufficient_speech_refusals` (check it per label: it can bias the
+data); a VAD fault aborts the run before anything is written (verify reports it). Each
+copy records `mask_source` (VAD hash, `mask_rule: ava-speech-mask-v1`, threshold, frame
+size, minimum, runtime version, per-frame decisions). Rebuilding is runtime-sensitive:
+another CPU or onnxruntime build can flip a frame near 0.5 and the verifier then reports
+drift, so verify on the machine/runtime that wrote the root. The loader re-runs the VAD
+on every clip of such a root (CPU time). Specs without these keys keep the whole-clip
+SNR and their hashes. G.729 (no encoder in ffmpeg) and RIRs remain open.
 
 `tests/unit/test_conditioning_parity.py` checks that this preparation path and the
 analysis service (`services/inference/`) condition the same WAV to identical

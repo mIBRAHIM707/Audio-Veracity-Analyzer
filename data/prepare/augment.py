@@ -49,7 +49,8 @@ if __package__:
     from .codecs import CONCEALMENTS, LAWS, derive_jitter, derive_loss, telephone_roundtrip
     from .conditioning import RATE, canonicalize
     from .ffmpeg_codecs import CODECS as FFMPEG_CODECS, CodecToolError, Ffmpeg, telephone_codec_roundtrip
-    from .noise import derive_noise, mix_planned
+    from .noise import (MASK_RULE, MIN_ACTIVE_SAMPLES, VAD_FRAME_SAMPLES, VAD_THRESHOLD, InsufficientSpeech,
+                        VadError, derive_noise, mix_planned, speech_mask)
     from .prepare_audio import PROVENANCE_FIELDS, measures
     from .wav_format import pcm_format_problem
 else:  # a script-directory 'codecs' import would shadow the standard library module
@@ -101,6 +102,10 @@ CHANNEL_KEYS = {'codec', 'concealment', 'packet_loss', 'jitter'}
 MIX_SPEC_KEYS = {'chain_version', 'master_seed', 'codec_mix', 'noise'}
 MIX_CHANNEL_KEYS = CHANNEL_KEYS | {'weight'}
 NOISE_KEYS = {'sha256', 'label', 'source_id', 'licence_ref'}
+# Optional (15 Nov): "snr_basis": "speech_active" with "vad_sha256" (the VAD model's
+# SHA-256) measures the speech power over VAD speech frames (noise.speech_mask). Absent:
+# whole-clip SNR, as before, so existing specs and their hashes are unchanged.
+NOISE_SPEECH_ACTIVE_KEYS = {'snr_basis', 'vad_sha256'}
 CLIP_PATH = re.compile(r'clips/[A-Za-z0-9_-][A-Za-z0-9_.-]*\.wav')
 MAX_REPORT_BYTES = 64_000_000
 MAX_CLIP_BYTES = 1_000_000
@@ -215,15 +220,27 @@ def _single_problems(spec):
                 problems.append(f'{key} must be true or false')
     noise = spec.get('noise')
     if noise is not None:
-        if not isinstance(noise, dict) or noise.keys() != NOISE_KEYS:
-            problems.append(f'noise must be null or an object with keys {sorted(NOISE_KEYS)}')
+        if not isinstance(noise, dict) or noise.keys() not in (NOISE_KEYS, NOISE_KEYS | NOISE_SPEECH_ACTIVE_KEYS):
+            problems.append(f'noise must be null or an object with keys {sorted(NOISE_KEYS)} '
+                            f'(plus {sorted(NOISE_SPEECH_ACTIVE_KEYS)} for a speech-active SNR)')
         else:
             if not isinstance(noise['sha256'], str) or not re.fullmatch(r'[0-9a-f]{64}', noise['sha256']):
                 problems.append('noise.sha256 must be a lowercase SHA-256 hex digest')
             for key in ('label', 'source_id', 'licence_ref'):
                 if not isinstance(noise[key], str) or not re.fullmatch(r'[A-Za-z0-9_.:-]{1,80}', noise[key]):
                     problems.append(f'noise.{key} must be a short identifier')
+            if 'snr_basis' in noise:
+                if noise['snr_basis'] != 'speech_active':
+                    problems.append('noise.snr_basis must be "speech_active" (omit it for a whole-clip SNR)')
+                if not isinstance(noise['vad_sha256'], str) or not re.fullmatch(r'[0-9a-f]{64}', noise['vad_sha256']):
+                    problems.append('noise.vad_sha256 must be the VAD model SHA-256 (lowercase hex)')
     return problems
+
+
+def needs_vad(spec):
+    """True when the specification asks for a speech-active SNR (a VAD is required)."""
+    noise = spec.get('noise') if isinstance(spec, dict) else None
+    return isinstance(noise, dict) and noise.get('snr_basis') == 'speech_active'
 
 
 def spec_sha256(spec):
@@ -276,7 +293,16 @@ def _check_ffmpeg(spec, ffmpeg):
         raise ValueError(f'codec {describe_codec(spec)} needs an ffmpeg (data/prepare/ffmpeg_codecs.Ffmpeg)')
 
 
-def augment_clip(clip_pcm, clip_id, spec, noise_pcm=None, ffmpeg=None):
+def _check_vad(spec, vad):
+    if not needs_vad(spec):
+        if vad is not None:
+            raise ValueError('a VAD was given but the specification asks for no speech-active SNR')
+        return
+    if vad is None or not callable(vad) or getattr(vad, 'model_sha256', None) != spec['noise']['vad_sha256']:
+        raise ValueError('the speech-active SNR needs the VAD whose model_sha256 the specification names')
+
+
+def augment_clip(clip_pcm, clip_id, spec, noise_pcm=None, ffmpeg=None, vad=None):
     """Apply the declared chain to one 16 kHz mono PCM16 clip. Returns (16 kHz PCM16
     bytes, record). `noise_pcm` must be 16 kHz mono PCM16 whose SHA-256 the spec names
     (exactly when the spec asks for noise). GSM/AMR-NB/Opus codecs need `ffmpeg` (an
@@ -284,26 +310,38 @@ def augment_clip(clip_pcm, clip_id, spec, noise_pcm=None, ffmpeg=None):
     the codec tool fails (a systemic fault: callers abort rather than list it per clip).
     A codec_mix spec applies the clip's derive_channel choice; its record names the mix
     spec hash and adds `codec_choice` (single-spec records are unchanged). A mix that
-    can choose GSM/AMR-NB needs `ffmpeg` even for clips that draw G.711."""
+    can choose GSM/AMR-NB needs `ffmpeg` even for clips that draw G.711. A
+    speech-active noise spec needs `vad` (e.g. `services.inference.silero_vad.SileroVad`)
+    whose `model_sha256` equals `noise.vad_sha256`; a clip with under 0.5 s of detected
+    speech is refused (ValueError, an error row)."""
     validate_spec(spec)
     _check_ffmpeg(spec, ffmpeg)
+    _check_vad(spec, vad)
     if not isinstance(clip_pcm, bytes) or not clip_pcm or len(clip_pcm) % 2:
         raise ValueError('clip must be nonempty mono PCM16 bytes')
     if (spec['noise'] is None) != (noise_pcm is None):
         raise ValueError('noise audio must be given exactly when the specification names noise')
     channel, choice = derive_channel(spec, clip_id)
-    wide, record = _augment_single(clip_pcm, clip_id, channel, noise_pcm, ffmpeg)
+    wide, record = _augment_single(clip_pcm, clip_id, channel, noise_pcm, ffmpeg, vad)
     if choice is None:
         return wide, record
     return wide, {**record, 'chain_spec_sha256': spec_sha256(spec), 'codec_choice': choice}
 
 
-def _augment_single(clip_pcm, clip_id, spec, noise_pcm, ffmpeg):
+def _augment_single(clip_pcm, clip_id, spec, noise_pcm, ffmpeg, vad=None):
     steps, current = [], clip_pcm
     if spec['noise'] is not None:
         if not isinstance(noise_pcm, bytes) or hashlib.sha256(noise_pcm).hexdigest() != spec['noise']['sha256']:
             raise ValueError('noise audio does not match the specification hash')
-        current, record = mix_planned(current, noise_pcm, derive_noise(spec['master_seed'], clip_id))
+        mask = mask_source = None
+        if needs_vad(spec):
+            mask, decisions = speech_mask(current, vad)
+            mask_source = {'vad_sha256': vad.model_sha256, 'mask_rule': MASK_RULE, 'threshold': VAD_THRESHOLD,
+                           'frame_samples': VAD_FRAME_SAMPLES, 'min_active_samples': MIN_ACTIVE_SAMPLES,
+                           'vad_runtime': getattr(vad, 'runtime_version', None),
+                           'frame_decisions_hex': decisions}
+        current, record = mix_planned(current, noise_pcm, derive_noise(spec['master_seed'], clip_id),
+                                      active_mask=mask, mask_source=mask_source)
         if record['clipped_samples']:
             raise NoiseClipped(record['snr_db'], record['clipped_samples'])
         steps.append({'step': 'additive_noise', **{f'noise_{k}': v for k, v in spec['noise'].items()
@@ -420,7 +458,7 @@ def _load_noise(spec, noise_path):
     return raw
 
 
-def _build(prepared_root, report, spec, noise, ffmpeg=None):
+def _build(prepared_root, report, spec, noise, ffmpeg=None, vad=None):
     """Pure-in-effect derivation of every copy: returns (clip rows, error rows, summary,
     {relative path: WAV bytes}). Used by the writer and, unchanged, by the verifier. A
     CodecToolError propagates (nothing has been written yet)."""
@@ -431,10 +469,14 @@ def _build(prepared_root, report, spec, noise, ffmpeg=None):
             if hashlib.sha256(payload).hexdigest() != row['sha256']:
                 raise ValueError('Parent clip hash mismatch')
             out, record = augment_clip(read_pcm16_wav(payload, 'Parent clip'), derivation_id(row),
-                                       spec, noise, ffmpeg)
+                                       spec, noise, ffmpeg, vad)
         except NoiseClipped as failure:
             errors.append({'parent_clip_path': row['path'], 'error': str(failure),
                            'refusal': 'noise_clipping', 'snr_db': failure.snr_db})
+            continue
+        except InsufficientSpeech as failure:  # may correlate with the label: counted below
+            errors.append({'parent_clip_path': row['path'], 'error': str(failure),
+                           'refusal': 'insufficient_speech', 'active_samples': failure.active_samples})
             continue
         except (OSError, ValueError) as failure:
             errors.append({'parent_clip_path': row['path'], 'error': str(failure)})
@@ -455,6 +497,8 @@ def _build(prepared_root, report, spec, noise, ffmpeg=None):
     summary = {'parent_clips': len(report['clips']), 'clips': len(clips), 'errors': len(errors),
                'noise_clipping_refusals': sum(e.get('refusal') == 'noise_clipping' for e in errors),
                'review_flagged_clips': sum(bool(c['review_flags']) for c in clips)}
+    if needs_vad(spec):  # speech-active key only: whole-clip reports stay byte-identical
+        summary['insufficient_speech_refusals'] = sum(e.get('refusal') == 'insufficient_speech' for e in errors)
     if 'codec_mix' in spec:  # mix-only key: single-spec reports stay byte-identical
         counts, channels = {codec: 0 for codec in _channel_codecs(spec)}, [0] * len(spec['codec_mix'])
         for clip in clips:
@@ -464,12 +508,13 @@ def _build(prepared_root, report, spec, noise, ffmpeg=None):
     return clips, errors, summary, files
 
 
-def augment_prepared(prepared_root, output_root, spec, noise_path=None, ffmpeg=None):
+def augment_prepared(prepared_root, output_root, spec, noise_path=None, ffmpeg=None, vad=None):
     """Write augmented copies of every parent clip to a new output root; return the
     summary. Unreadable or refused clips are listed as errors while others proceed; a
     codec-tool failure aborts before anything is written."""
     validate_spec(spec)
     _check_ffmpeg(spec, ffmpeg)
+    _check_vad(spec, vad)
     prepared_root, report, report_sha = _load_parent(prepared_root)
     output_root = Path(output_root).resolve()
     if output_root.exists() or output_root.is_relative_to(prepared_root) or prepared_root.is_relative_to(output_root):
@@ -477,7 +522,7 @@ def augment_prepared(prepared_root, output_root, spec, noise_path=None, ffmpeg=N
     if output_root.is_relative_to(Path(__file__).resolve().parents[2]):
         raise ValueError('Augmented output must be outside the repository')
     noise = _load_noise(spec, noise_path)
-    clips, errors, summary, files = _build(prepared_root, report, spec, noise, ffmpeg)
+    clips, errors, summary, files = _build(prepared_root, report, spec, noise, ffmpeg, vad)
     output_root.parent.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory(prefix='ava-aug-', dir=output_root.parent) as temp:
         staging = Path(temp) / 'result'
@@ -509,7 +554,7 @@ def _samples(raw):
     return samples
 
 
-def verify_augmented(prepared_root, augmented_root, noise_path=None, expected_spec=None, ffmpeg=None):
+def verify_augmented(prepared_root, augmented_root, noise_path=None, expected_spec=None, ffmpeg=None, vad=None):
     """Read-only rebuild check: re-derive every augmented copy from its parent clip and the
     recorded specification and compare bytes and records. Returns a list of problems
     (empty means every listed copy rebuilds identically and nothing is unlisted). This
@@ -537,12 +582,18 @@ def verify_augmented(prepared_root, augmented_root, noise_path=None, expected_sp
         if recorded is not None and recorded != using:
             return problems + [f'copies were made with ffmpeg sha256 {recorded}; verifying with {using}: '
                                'use the recorded binary']
+    try:
+        _check_vad(spec, vad)
+    except ValueError as error:
+        return problems + [str(error)]
     prepared_root, report, report_sha = _load_parent(prepared_root)
     noise = _load_noise(spec, noise_path)
     try:
-        clips, errors, summary, files = _build(prepared_root, report, spec, noise, ffmpeg)
+        clips, errors, summary, files = _build(prepared_root, report, spec, noise, ffmpeg, vad)
     except CodecToolError as error:
         return problems + [f'codec tool failed during rebuild: {error}']
+    except VadError as error:
+        return problems + [f'VAD failed during rebuild: {error}']
     expected = json.loads(json.dumps(_report(report_sha, report, spec, summary, clips, errors)))
     for key in sorted(expected.keys() | result.keys()):
         if key == 'clips':
@@ -583,6 +634,8 @@ def main(argv=None):
     parser.add_argument('--ffmpeg', type=Path, help='pinned ffmpeg 9.0.2 for GSM/AMR-NB/Opus chains '
                         '(else AVA_FFMPEG)')
     parser.add_argument('--ffmpeg-sha256', help='refuse an ffmpeg executable with another hash')
+    parser.add_argument('--vad-model', type=Path, help='local silero_vad.onnx for a speech-active SNR spec '
+                        '(its SHA-256 must equal noise.vad_sha256; needs requirements-vad.txt)')
     group = parser.add_mutually_exclusive_group(required=True)
     group.add_argument('--output-root', type=Path)
     group.add_argument('--verify', type=Path, help='augmented root to rebuild read-only')
@@ -592,15 +645,23 @@ def main(argv=None):
         if not needs_ffmpeg(spec) and (args.ffmpeg or args.ffmpeg_sha256):
             raise ValueError('--ffmpeg/--ffmpeg-sha256 apply only to GSM/AMR-NB/Opus chains (or mixes that '
                              f'can choose them), not {describe_codec(spec)}')
+        if not needs_vad(spec) and args.vad_model:
+            raise ValueError('--vad-model applies only to a speech-active SNR noise specification')
         ffmpeg = Ffmpeg(args.ffmpeg, expected_sha256=args.ffmpeg_sha256) if needs_ffmpeg(spec) else None
+        vad = None
+        if needs_vad(spec):
+            if args.vad_model is None:
+                raise ValueError('the specification asks for a speech-active SNR; give --vad-model')
+            from services.inference.silero_vad import SileroVad
+            vad = SileroVad(args.vad_model, expected_sha256=spec['noise']['vad_sha256'])
         if args.verify is not None:
-            problems = verify_augmented(args.prepared_root, args.verify, args.noise, spec, ffmpeg)
+            problems = verify_augmented(args.prepared_root, args.verify, args.noise, spec, ffmpeg, vad)
             for problem in problems:
                 print(problem, file=sys.stderr)
             print('FAIL' if problems else 'PASS')
             return 1 if problems else 0
-        summary = augment_prepared(args.prepared_root, args.output_root, spec, args.noise, ffmpeg)
-    except (OSError, ValueError, CodecToolError) as error:
+        summary = augment_prepared(args.prepared_root, args.output_root, spec, args.noise, ffmpeg, vad)
+    except (OSError, ValueError, CodecToolError, VadError, ImportError) as error:
         print(f'Augmentation failed: {error}', file=sys.stderr)
         return 1
     print(json.dumps(summary, indent=2))
