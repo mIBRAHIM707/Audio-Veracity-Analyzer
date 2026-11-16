@@ -63,7 +63,22 @@ owners).
   before tapping (FR-I9, architecture §2.2).
 - `jitter.py`: the jitter buffer and loss monitor (backlog 6.3; see its docstring). Only
   holes closed by a later packet are concealed; a stream that stops or pauses produces
-  no made-up audio and no loss (a resumed stream starts a new talkspurt).
+  no made-up audio and no loss (a resumed stream starts a new talkspurt). 16 Nov:
+  concealment during hand-overs (resync, SSRC restart, end-of-call flush) spends a
+  real-time budget (1 s burst, one frame per 20 ms). Received frames are always played,
+  so a backlog after a loop stall is never lost. A sender that keeps jumping its
+  sequence number can no longer make the buffer emit made-up audio far faster than real
+  time (measured on 500 packets with alternating jumps of 249/250 at 50/s: about 124x
+  before, 2.1x after, of which 1x is the received frames). Skipped holes are counted as
+  `jitter_dropped_handover`; they are not reported to the loss monitor or the sink
+  (the timeline closes over them), and whether they count as FR-I2 loss is a PRD
+  question. Output stays bounded by what the sender sends plus time, about 2 x (packets
+  + elapsed frames) + the burst. Hostile-RTP tests are in
+  `tests/unit/test_tap_hostile_rtp.py` (Claude-authored, 16 Nov): seeded parser
+  fuzzing, output bounds, a backlog after a stall, a fast sender, and RTCP/DTMF/garbage
+  on a real UDP socket. Note: tap I/O and inference share the live service's one
+  thread, so a long detector batch delays RTP reads (a latency risk for FR-I2/FR-I10 to
+  measure).
 
 TapApp sink contract: `started(call)` (call ID, caller number, dialled extension,
 creation time; `codec` is the tap's format, the call's codec is not in ARI's channel

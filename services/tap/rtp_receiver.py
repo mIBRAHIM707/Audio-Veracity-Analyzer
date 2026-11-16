@@ -139,7 +139,7 @@ class RtpSession:
             self.stats['ssrc_changes'] += 1
             self.ssrc, self._last_sequence = packet['ssrc'], None
             if self._jitter is not None:
-                self._jitter.restart()  # unrelated sequence numbers: anchor afresh
+                self._jitter.restart(self._clock())  # unrelated sequence numbers: anchor afresh
         if self._jitter is not None:
             if len(packet['payload']) != JITTER_FRAME_BYTES:
                 self.stats['other_ptime'] += 1  # the buffer plays 20 ms frames only

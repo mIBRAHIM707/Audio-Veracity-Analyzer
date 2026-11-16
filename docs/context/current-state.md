@@ -106,6 +106,12 @@ and about 50,000 original clips, excluding codec copies.
   loopback by default (no authentication) and refuses a busy port with exit 2. It
   stops gracefully on SIGTERM or Ctrl+Break with a `stopped` record. Its tests
   need requirements-api.txt, so they skip on the Linux CI job.
+  Tap robustness (6.3): seeded RTP fuzzing found that a sender jumping its sequence
+  number could make the jitter buffer emit about 124x real time in concealed audio
+  (resync hand-overs concealed every hole at once). Concealment in hand-overs now
+  spends a real-time budget, while received frames are always played (2.1x after the
+  fix, of which 1x is the received frames). The real Asterisk lab still passes. Tap I/O and inference share one thread
+  in the live service, a latency risk still to measure.
 - **15 Nov daily run (Docker now available; details in `daily-runs/2026-11-15.md`).**
   Opus VoIP codec path with loss/jitter (3.4); speech-active noise SNR bound to the
   Silero model hash (3.4); PostgreSQL 16 migrations and per-hop event store (5.1,

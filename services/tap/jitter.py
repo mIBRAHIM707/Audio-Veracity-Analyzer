@@ -22,7 +22,15 @@ is more than 1 s behind the playout point or 3 packets in a row are late, or a p
 is at least `max_ahead` frames ahead (a sequence jump); `restart()` does the same for
 a new SSRC. Frames still waiting are handed over first (at most 60 s, excess counted). Slow clock drift between sender and receiver is absorbed by moving the
 anchor one frame when the smoothed slack leaves [0.25, 1.75] x depth. `flush()` plays
-everything received so far, concealing the holes.
+everything received so far, concealing the holes. Concealment in hand-overs (resync,
+restart, flush) spends a real-time budget (16 Nov): at most `HANDOVER_BURST_FRAMES`
+(1 s) at once, refilled one frame per 20 ms; holes beyond it are skipped
+(`dropped_handover`; later holes conceal with silence). Received frames are always
+played. Output is so bounded by what the sender sends plus time: at most about
+2 x (packets accepted + elapsed frames) + the burst (`pop_due` advances with time and
+with one drift step per packet). A sender that keeps jumping its sequence can no longer
+multiply made-up audio. Skipped holes are not reported to `LossMonitor` or the sink
+(the timeline closes over them); whether they count as FR-I2 loss is a PRD question.
 
 This is the training-side G.711 `repeat_then_silence` rule (data/prepare/codecs.py)
 for mu-law, whose silence code decodes to 0; for A-law the training silence code
@@ -47,6 +55,14 @@ DRIFT_ALPHA = 0.02  # smoothing of the playout slack (about 50 packets = 1 s)
 RESYNC_BEHIND_FRAMES = 50
 RESYNC_LATE_RUN = 3
 MAX_PENDING_FRAMES = 3000  # frames handed over at resyncs/restarts (60 s); excess dropped, counted
+# Hand-overs (resync, restart, flush) play every frame up to the highest received, holes
+# concealed, without waiting for their playout time. A sender that keeps jumping its
+# sequence number could so make the buffer emit far more made-up audio than real time
+# (measured 16 Nov: about 124x with alternating jumps of 249/250). Concealing a hole in
+# a hand-over therefore spends a budget that refills at real-time rate (one frame per
+# 20 ms of arrival/now time), at most this many; holes beyond it are skipped and counted
+# (`dropped_handover`). Received frames never spend it and are never skipped.
+HANDOVER_BURST_FRAMES = 50  # 1 s of concealment; a normal hand-over has a hole or two
 
 
 def _check_time(value):
@@ -73,9 +89,20 @@ class JitterBuffer:
         self._played_since_anchor = 0
         self._last_played = SILENCE
         self._run = 0  # consecutive concealed frames
+        self._handover_budget = float(HANDOVER_BURST_FRAMES)
+        self._budget_time = None
         self.stats = {'received': 0, 'played': 0, 'concealed_frames': 0, 'repeated_frames': 0,
                       'silence_frames': 0, 'late': 0, 'duplicate': 0, 'reordered': 0, 'resyncs': 0,
-                      'talkspurts': 0, 'restarts': 0, 'drift_adjustments': 0, 'dropped_pending': 0}
+                      'talkspurts': 0, 'restarts': 0, 'drift_adjustments': 0, 'dropped_pending': 0,
+                      'dropped_handover': 0}
+
+    def _refill(self, now):
+        """Hand-over budget: one frame per 20 ms of (non-decreasing) time, capped."""
+        if self._budget_time is not None and now > self._budget_time:
+            self._handover_budget = min(float(HANDOVER_BURST_FRAMES),
+                                        self._handover_budget + (now - self._budget_time) / FRAME_S)
+        if self._budget_time is None or now > self._budget_time:
+            self._budget_time = now
 
     def _extend(self, sequence):
         """16-bit RTP sequence -> extended sequence nearest the highest seen so far."""
@@ -97,6 +124,7 @@ class JitterBuffer:
             raise ValueError('pcm must be one 20 ms frame of 8 kHz PCM16 (320 bytes); '
                              'other packet times must be refused by the receiver')
         _check_time(arrival)
+        self._refill(arrival)
         extended = self._extend(sequence)
         if self._first is None:
             self._anchor(extended, arrival)
@@ -156,9 +184,12 @@ class JitterBuffer:
         self._late_run = 0
         self._anchor(extended, arrival)
 
-    def restart(self):
+    def restart(self, now):
         """A new stream from the same sender (SSRC change): play out what is buffered
-        and let the next packet anchor afresh (its sequence numbers are unrelated)."""
+        and let the next packet anchor afresh (its sequence numbers are unrelated).
+        `now` (the receiver's clock) refills the hand-over budget first."""
+        _check_time(now)
+        self._refill(now)
         self.stats['restarts'] += 1
         self._hand_over()
         self._frames.clear()
@@ -205,6 +236,7 @@ class JitterBuffer:
         frame received: only holes that a later packet closes are concealed, so a stream
         that stops (end of call, a pause) produces no made-up audio."""
         _check_time(now)
+        self._refill(now)
         out = self._pending_out[:limit]
         del self._pending_out[:limit]
         if self._next is None:
@@ -221,9 +253,21 @@ class JitterBuffer:
         return out + self._play_to_highest()
 
     def _play_to_highest(self):
+        """Hand-over: every frame up to the highest received. Received frames are always
+        played (each is a real packet, played once: no amplification, and a backlog after
+        a loop stall is never lost); only concealment of holes spends the budget."""
         out = []
         while self._highest is not None and self._next is not None and self._next <= self._highest:
-            out.append(self._play())
+            if self._next in self._frames:
+                out.append(self._play())
+            elif self._handover_budget >= 1:
+                self._handover_budget -= 1
+                out.append(self._play())
+            else:  # a hole over the real-time budget: skipped, not made up
+                self._next += 1
+                self.stats['dropped_handover'] += 1
+                # The audio around the splice is unknown: later holes conceal with silence.
+                self._run, self._last_played = self.repeat_limit, SILENCE
         return out
 
     def _play(self):

@@ -289,7 +289,13 @@ items needing that data are listed at the end and stay out of the queue.
   `codecs._conceal`; review H-B1/M-B1/M-B3 fixed (not re-reviewed). 15 Nov (2f698b7):
   wired into the tap (conceals only real holes). 15 Nov (120c6e7): concealment mask
   through the windower to the FR-I2 >10 % window gate (`quality=low`, unscored); 8
-  Claude-authored tests, review fixed. Remaining: malformed RTP/SDP cases, AMR replay.
+  Claude-authored tests, review fixed. 16 Nov: hostile/malformed RTP
+  (`tests/unit/test_tap_hostile_rtp.py`: seeded parser fuzzing, RTCP/DTMF/garbage on a
+  real socket, output bounds). Found and fixed a ~124x concealed-audio amplification
+  through resync hand-overs (a real-time budget for concealment only; received frames
+  always played); review H1 fixed; Asterisk lab 7 OK. Remaining: AMR replay; whether
+  skipped holes count as FR-I2 loss (PRD); malformed SDP is Asterisk's (the tap parses
+  none).
 - [ ] 6.QA End-to-end public audio through lab; detector failure never drops calls.
   Progress (15 Nov): lab tests play three public CSALT genuine clips into a real
   Asterisk 20.6 call through tap, jitter buffer, real Silero VAD and the pipeline
