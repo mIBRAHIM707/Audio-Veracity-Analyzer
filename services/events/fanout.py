@@ -59,6 +59,11 @@ class Subscription:
             dropped, self._dropped_unreported = self._dropped_unreported, 0
             return [self._buffer.popleft() for _ in range(count)], dropped
 
+    def buffered(self):
+        """Envelopes waiting in this subscription now (read under the hub lock)."""
+        with self._hub._lock:
+            return len(self._buffer)
+
     def close(self):
         self._hub._remove(self)
 

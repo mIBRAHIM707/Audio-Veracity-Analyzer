@@ -15,9 +15,10 @@ TapScoringSink and TapApp, all driven by ONE thread in `run(stop_event)`:
 connect the ARI event stream, `resume()` (sweep leftovers, tap answered calls),
 then `run_once` + `pump` until stopped. When the ARI connection drops, every open tap
 ends `monitor_lost`, the sink keeps pumping so those calls end cleanly, and the loop
-reconnects with bounded backoff (1, 2, 4 ... 30 s). Optional `tick_hooks` (e.g. a
-`StorePump.pump` or `RedisForwarder.pump` on their own subscriptions) run after each
-turn, faults counted. `ready` is set once the stream is connected (the detector was
+reconnects with bounded backoff (1, 2, 4 ... 30 s). Optional `tick_hooks` run after
+each turn on this thread, faults counted: cheap non-blocking work only. Database and
+Redis pumps can block on their clients, so they run on their own threads
+(`background.PumpThread`, wired by the command line). `ready` is set once the stream is connected (the detector was
 warmed before construction). Stopping ends every call `monitor_lost` (architecture
 §2.4) and leaves calls themselves untouched (the tap never holds them).
 """

@@ -87,6 +87,10 @@ and about 50,000 original clips, excluding codec copies.
   independent review are recorded in the report. No RIR or noise corpus is provisioned:
   this session's sandbox cannot write to `D:/AVA-Data` (a blocker for a human, with the
   exact command in the report). Handset vs speakerphone labelling is an open PRD question.
+  The live command line can also store every event in PostgreSQL and publish it on Redis,
+  each on its own pump thread (5.1/5.2/8.1). In the lab, a real call's windows reached
+  PostgreSQL while the call was still up. Two decisions are open: refusing to start
+  when the database is unreachable, and the service applying migrations itself.
 - **15 Nov daily run (Docker now available; details in `daily-runs/2026-11-15.md`).**
   Opus VoIP codec path with loss/jitter (3.4); speech-active noise SNR bound to the
   Silero model hash (3.4); PostgreSQL 16 migrations and per-hop event store (5.1,

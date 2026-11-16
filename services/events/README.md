@@ -31,7 +31,8 @@ Open spec question: whether the published `call.ended` should carry the scorer's
 gap-free hub-wide `seq` and copies the envelope to each matching subscriber's bounded
 buffer (default 256, at most 4096). It never blocks: a full buffer drops its oldest
 envelope. `Subscription.drain(limit)` returns `(envelopes, dropped_since_last_drain)`
-read together; a nonzero count means re-read state over REST. Because `seq` is
+read together; a nonzero count means re-read state over REST. `Subscription.buffered()`
+(16 Nov) is the number waiting now (used to report what a stopping pump left). Because `seq` is
 hub-wide, a call-filtered subscriber normally sees gaps; order by `seq`, not `ts`
 (wall clock). `system.health` without a call ID reaches every subscriber; a call-scoped
 one reaches that call's and unfiltered subscribers. Subscribers are limited (default

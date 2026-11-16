@@ -195,9 +195,11 @@ items needing that data are listed at the end and stay out of the queue.
   fixed, re-review pass. 15 Nov (dc9e8d1): `services/store/pump.py` StorePump, an
   ordered hub-to-PostgreSQL pump (retryable errors keep order and wait, permanent ones
   are skipped and counted, a bounded backlog, a faulty head skipped after bounded
-  retries); Claude-authored tests, review fixed. Remaining: running
-  the pump in the live service by default, scorer resume (FR-I11), other architecture
-  tables, Redis session state.
+  retries); Claude-authored tests, review fixed. 16 Nov: the live command line runs
+  the pump (and the Redis forwarder) on its own thread (`services/live/background.py`
+  PumpThread; `--database-url-env`/`--redis-url-env`, migrations applied at start-up,
+  bounded drain on stop); lab: a real call's windows are in PostgreSQL while it runs.
+  Remaining: scorer resume (FR-I11), other architecture tables, Redis session state.
 - [ ] 5.2 Jobs/cancellation/idempotency, calls/alerts API and WebSocket events.
   Progress (10 Nov): `services/scorer/ordered.py` per-call serialized boundary
   (phase-4 QA M1/L3): monotonic per-direction `window_idx`, duplicate/stale results
@@ -217,7 +219,8 @@ items needing that data are listed at the end and stay out of the queue.
   messages re-validated, source `ts` kept, seq gaps/restarts counted, resubscribe after
   errors); `EventHub.publish(ts=)`; redis-py 8.1.0 in `requirements-redis.txt`; 17
   Claude-authored tests (3 on a Redis 7.4.12 container); review conditional pass, M1 and
-  lows fixed. Remaining: pump threads in the services, `stream.gap` on relay loss.
+  lows fixed. 16 Nov: forwarder thread in the live service (see 5.1). Remaining: the
+  relay thread in the API process, `stream.gap` on relay loss.
 - [ ] 5.3 Restart recovery, in-flight handling and default no-audio-retention behavior.
   Progress (12 Nov): default no-raw-audio retention on the analysis API verified by 3
   Claude-authored tests (spooled uploads removed with rollover proven, no audio in
@@ -235,7 +238,10 @@ items needing that data are listed at the end and stay out of the queue.
   Progress (14 Nov): in-process live-path integration test
   (`tests/unit/test_live_path_integration.py`: pipeline -> LiveCalls -> hub -> API
   registry/WebSocket/metrics, capacity refusal, monitor_lost, detector outage).
-  Remaining: real Redis/PostgreSQL services, process restarts and state recovery.
+  16 Nov: `tests/lab/test_live_storage_lab.py` real Asterisk call through the command
+  line with real PostgreSQL 16 and Redis 7: stored windows equal the published ones,
+  flushed while the call runs; the Redis channel carries the same sequence.
+  Remaining: process restarts and state recovery, the API side reading from Redis.
 
 ## 6 — Asterisk laboratory (FR-T1–T5/T7, FR-I1/I2)
 - [ ] 6.1 Docker/WSL preflight; Asterisk/SIPp endpoints and WAV injection.
@@ -324,8 +330,8 @@ items needing that data are listed at the end and stay out of the queue.
   from the environment only, start-up checks of hosts, extensions, config, model, VAD
   and ARI credentials, JSON start/stop records, exit 2 on refusal, signal stop with a
   forced second Ctrl+C); 12 unit + 1 lab Claude-authored tests; review M1-M4 and lows
-  fixed. Remaining: store/Redis pumps on their own threads, `/readyz` and metrics for
-  this process, measured capacity (8.QA), file jobs through the batcher.
+  fixed. 16 Nov: store/Redis pumps on their own threads (see 5.1). Remaining: `/readyz`
+  and metrics for this process, measured capacity (8.QA), file jobs through the batcher.
 - [ ] 8.2 Degraded stride/unmonitored behavior and resource bounds.
   Progress (10 Nov): `services/scorer/degraded.py` stride controller (grow per behind
   report, cap, unmonitored, 30 s recovery), 13 Claude-authored tests, review fixed.

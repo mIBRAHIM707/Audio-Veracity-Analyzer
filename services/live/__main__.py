@@ -19,7 +19,26 @@ back, so a second Ctrl+C forces the exit (130). `starting` (process up, model lo
 not yet `ready`: readiness is the ARI stream, FR-A8) and `stopped` records with the
 counts go to stderr as single JSON lines.
 
-Not here yet: PostgreSQL/Redis hooks, `/readyz` and metrics for this process.
+Storage and fan-out (16 Nov, both optional; PRD FR-I11, FR-A3, FR-A4; architecture
+§2.4): `--database-url-env NAME` names an environment variable holding a PostgreSQL
+connection string (never on the command line, never printed). Start-up connects once
+(5 s connect timeout, 30 s lock timeout) and applies the pending migrations
+(`services/store/migrate.py`); an unreachable database, a refused login, a held
+migration lock or a migration history mismatch refuses the start (exit 2), because
+events written into a missing schema would be refused for good. Whether an
+unreachable database should instead start the service degraded, and whether the
+service should apply migrations at all (DDL rights), are open decisions (16 Nov
+report). While running, a `StorePump` moves every event to PostgreSQL on its own
+thread (`services/live/background.py`; TCP keepalives, 10 s statement and lock
+timeouts); during an outage events wait, first in the pump backlog and then in the hub
+buffer, whose oldest are dropped past 4096. `--redis-url-env NAME` likewise names a
+Redis URL: a `RedisForwarder` publishes every event on `ava:events:v1` on its own
+thread (1 s socket timeouts, no client retries); Redis down at start-up is reported
+(`redis_reachable: false`), not refused (pub/sub is at-most-once). On stop both pumps
+drain in parallel for at most `--drain-timeout` seconds (above 0, at most 300); their counts and
+whether anything was left go into the `stopped` record.
+
+Not here yet: `/readyz` and metrics for this process.
 """
 import argparse
 import ipaddress
@@ -30,8 +49,10 @@ import signal
 import socket
 import sys
 import threading
+import time
 
-EXIT_OK, EXIT_REFUSED, EXIT_INTERRUPTED = 0, 2, 130
+EXIT_OK, EXIT_FAILED, EXIT_REFUSED, EXIT_INTERRUPTED = 0, 1, 2, 130
+JOIN_GRACE_S = 1.0
 MAX_CALLS_LIMIT = 64
 _HOSTNAME = re.compile(r'^(?=.{1,253}$)[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?'
                        r'(?:\.[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?)*$')
@@ -57,6 +78,13 @@ def _positive_float(text):
         raise argparse.ArgumentTypeError(f'not a number: {text!r}') from None
     if not (value > 0 and value < float('inf')):
         raise argparse.ArgumentTypeError('must be a finite number above 0')
+    return value
+
+
+def _drain_seconds(text):
+    value = _positive_float(text)
+    if value > 300:
+        raise argparse.ArgumentTypeError('must be at most 300 seconds')
     return value
 
 
@@ -118,6 +146,12 @@ def build_parser():
     parser.add_argument('--capacity-windows-per-s', type=_positive_float, default=4.0)
     parser.add_argument('--tap-extension', type=_extension, action='append', dest='tap_extensions',
                         help='only tap calls to this dialled extension (repeatable); default: every marked call')
+    parser.add_argument('--database-url-env', type=_env_name,
+                        help='environment variable with a PostgreSQL connection string (enables event storage)')
+    parser.add_argument('--redis-url-env', type=_env_name,
+                        help='environment variable with a Redis URL (enables event publishing)')
+    parser.add_argument('--drain-timeout', type=_drain_seconds, default=5.0,
+                        help='seconds the storage/publish pumps may drain on stop (above 0, at most 300; default 5)')
     return parser
 
 
@@ -128,12 +162,77 @@ def _check_bind(host):
         probe.bind((host, 0))
 
 
+CONNECT_TIMEOUT_S = 5
+# A database that stops answering after connecting must not hang the store thread for
+# the OS TCP timeout (review M3): keepalives (tcp_user_timeout only where the OS has it)
+# plus per-session statement/lock timeouts, set after connecting so a connection
+# string's own `options` (e.g. search_path) is kept.
+KEEPALIVES = {'keepalives': 1, 'keepalives_idle': 5, 'keepalives_interval': 2, 'keepalives_count': 3,
+              'tcp_user_timeout': 10_000}
+STORE_TIMEOUTS_MS = {'statement_timeout': 10_000, 'lock_timeout': 10_000}
+MIGRATION_LOCK_TIMEOUT_MS = 30_000
+REDIS_TIMEOUT_S = 1.0
+
+
+def _session(connection, timeouts):
+    for name, value in timeouts.items():
+        connection.execute(f'SET {name} = {int(value)}')  # names from the constants above only
+    connection.commit()  # back to idle: the store refuses connections inside a transaction
+    return connection
+
+
+def _open_store(dsn):
+    """Connect once, apply pending migrations, return (PostgresEventStore, applied
+    versions). Raises ImportError, MigrationError or the driver's errors (a held
+    migration lock past 30 s raises the driver's LockNotAvailable)."""
+    import psycopg
+    from services.store.events_pg import PostgresEventStore
+    from services.store.migrate import apply_migrations
+
+    from psycopg.conninfo import conninfo_to_dict
+    # Defaults only where the connection string sets nothing (an operator can tune them).
+    given = conninfo_to_dict(dsn)
+    defaults = {key: value for key, value in {'connect_timeout': CONNECT_TIMEOUT_S, **KEEPALIVES}.items()
+                if key not in given}
+
+    def raw():
+        return psycopg.connect(dsn, **defaults)
+
+    def connect():
+        connection = raw()
+        try:
+            return _session(connection, STORE_TIMEOUTS_MS)
+        except BaseException:
+            connection.close()
+            raise
+    with raw() as connection:
+        _session(connection, {'lock_timeout': MIGRATION_LOCK_TIMEOUT_MS})
+        applied = apply_migrations(connection)
+    return PostgresEventStore(connect), applied
+
+
+def _open_redis(url):
+    """Return (client, reachable). Raises ImportError, or ValueError for a bad URL.
+    No client-side retries (redis-py retries by default): one attempt per publish
+    batch stays within the 1 s socket timeouts."""
+    import redis
+    from redis.backoff import NoBackoff
+    from redis.retry import Retry
+    client = redis.Redis.from_url(url, socket_timeout=REDIS_TIMEOUT_S, socket_connect_timeout=REDIS_TIMEOUT_S,
+                                  retry=Retry(NoBackoff(), 0))
+    try:
+        client.ping()
+        return client, True
+    except Exception:  # down or refusing: the forwarder counts failures while running
+        return client, False
+
+
 def _defaults():
     from services.inference.silero_vad import SileroVad
     from services.live.service import LiveService, load_detector
     from services.tap.ari import AriClient
     return {'load_detector': load_detector, 'vad': SileroVad, 'ari': AriClient, 'service': LiveService,
-            'bind_check': _check_bind}
+            'bind_check': _check_bind, 'store': _open_store, 'redis': _open_redis}
 
 
 def _say(stream, record):
@@ -154,25 +253,75 @@ def main(argv=None, *, environ=None, factories=None, stop_event=None, stderr=Non
         return EXIT_INTERRUPTED
     if isinstance(prepared, int):
         return prepared
-    service = prepared
+    service, pumps = prepared
     stop = stop_event or threading.Event()
     restore = _install_signals(stop.set)
-    code = EXIT_OK
+    code, error = EXIT_OK, None
     try:
+        for pump in pumps:
+            pump['thread'].start()
         service.run(stop)
     except KeyboardInterrupt:  # a second Ctrl+C while stopping
         code = EXIT_INTERRUPTED
+    except Exception as failure:  # run() contains its own faults; this is a last guard
+        code, error = EXIT_FAILED, type(failure).__name__
     finally:
         restore()
-    _say(stderr, {'event': 'stopped', 'forced': code != EXIT_OK, 'service': dict(service.counts),
-                  'tap': dict(service.tap.stats), 'sink': dict(service.sink.counts),
-                  'pipeline': dict(service.pipeline.counts)})
+    code = _stop_pumps(pumps, args.drain_timeout, code)
+    record = {'event': 'stopped', 'forced': code == EXIT_INTERRUPTED, 'service': dict(service.counts),
+              'tap': dict(service.tap.stats), 'sink': dict(service.sink.counts),
+              'pipeline': dict(service.pipeline.counts)}
+    if error:
+        record['error'] = error
+    for pump in pumps:
+        record[pump['thread'].name] = {**pump['thread'].snapshot(), **pump['report']()}
+    _say(stderr, record)
+    return code
+
+
+def _stop_pumps(pumps, drain_s, code):
+    """After `run`: its final monitor_lost ends are in the hub. Every pump is asked to
+    drain first (in parallel, one deadline), then joined; a forced stop drains nothing.
+    A Ctrl+C here forces the rest (review M4). A stuck pump keeps its client open."""
+    drain = 0.0 if code == EXIT_INTERRUPTED else drain_s
+    try:
+        for pump in pumps:
+            pump['thread'].request_stop(drain)
+        deadline = time.monotonic() + drain + JOIN_GRACE_S
+        for pump in pumps:
+            # Short slices: a long Thread.join cannot be interrupted by Ctrl+C on Windows.
+            while not pump['thread'].join(min(0.1, deadline - time.monotonic())) \
+                    and time.monotonic() < deadline:
+                pass
+            if not pump['thread'].alive:
+                _close_quietly(pump['resource'])
+    except KeyboardInterrupt:
+        for pump in pumps:
+            pump['thread'].request_stop(0)
+        for pump in pumps:  # one short slice each, so the record reflects the forced stop
+            if pump['thread'].join(0.1):
+                _close_quietly(pump['resource'])
+        return EXIT_INTERRUPTED
     return code
 
 
 def _start(args, environ, factories, stderr):
-    """Every start-up check; returns the built service or an exit code."""
+    """Every start-up check; returns (service, pumps) or an exit code. Whatever was
+    opened (store, Redis client) is closed on a refusal and on any unexpected exit,
+    including Ctrl+C (review L5)."""
+    opened = []
+    try:
+        return _prepare(args, environ, factories, stderr, opened)
+    except BaseException:
+        for resource in opened:
+            _close_quietly(resource)
+        raise
+
+
+def _prepare(args, environ, factories, stderr, opened):
     def refuse(message):
+        for resource in opened:
+            _close_quietly(resource)
         _say(stderr, {'event': 'refused', 'reason': message})
         return EXIT_REFUSED
 
@@ -207,6 +356,37 @@ def _start(args, environ, factories, stderr):
         made['vad'](args.vad_model)  # fail now on a missing, unpinned or unloadable model
     except Exception as error:  # onnxruntime errors are not OSError/ValueError
         return refuse(f'VAD: {type(error).__name__}: {error}')
+    store = applied = redis_client = None
+    redis_reachable = None
+    if args.database_url_env:
+        dsn = environ.get(args.database_url_env)
+        if not dsn:
+            return refuse(f'database connection string not set: put it in the {args.database_url_env} '
+                          'environment variable')
+        try:
+            store, applied = made['store'](dsn)
+        except ImportError as error:
+            return refuse(f'missing dependency: {error.name or error} (requirements-store.txt)')
+        except Exception as error:
+            from services.store.migrate import MigrationError
+            if isinstance(error, MigrationError):
+                return refuse(f'database migrations: {error}')
+            # Driver messages can echo connection details: the type name only.
+            return refuse(f'database unreachable or refused the login: {type(error).__name__}')
+        opened.append(store)
+    if args.redis_url_env:
+        url = environ.get(args.redis_url_env)
+        if not url:
+            return refuse(f'Redis URL not set: put it in the {args.redis_url_env} environment variable')
+        try:
+            redis_client, redis_reachable = made['redis'](url)
+        except ImportError as error:
+            return refuse(f'missing dependency: {error.name or error} (requirements-redis.txt)')
+        except ValueError:  # the URL itself is never printed
+            return refuse('Redis URL is not valid')
+        except Exception as error:  # any other client error: the type name only
+            return refuse(f'Redis client: {type(error).__name__}')
+        opened.append(redis_client)
     try:
         ari = made['ari'](args.ari_url, args.ari_user, password, args.ari_app)
     except ValueError as error:
@@ -226,11 +406,43 @@ def _start(args, environ, factories, stderr):
                                   tap_extensions=set(args.tap_extensions) if args.tap_extensions else None)
     except (ValueError, TypeError) as error:
         return refuse(f'service: {error}')
-    _say(stderr, {'event': 'starting', 'model_version': card['version'], 'onnx_sha256': card['onnx']['sha256'],
-                  'config_fingerprint': fingerprint(config), 'per_window': args.per_window, 'threads': args.threads,
-                  'max_calls': args.max_calls, 'ari_url': args.ari_url.rstrip('/'), 'ari_app': args.ari_app,
-                  'ari_reachable': reachable, 'tap_extensions': sorted(args.tap_extensions or [])})
-    return service
+    # Subscribed before `run`, so no event is published before the pumps listen.
+    from services.events.fanout import MAX_BUFFER
+    from services.live.background import PumpThread
+    pumps = []
+    if store is not None:
+        from services.store.pump import StorePump
+        subscription = service.hub.subscribe(buffer=MAX_BUFFER)
+        store_pump = StorePump(subscription, store)
+        # Events not yet stored: the pump backlog plus what waits in the hub buffer.
+        pumps.append({'thread': PumpThread('store', store_pump.pump,
+                                           pending=lambda: store_pump.backlog + subscription.buffered()),
+                      'resource': store,
+                      'report': lambda: {'counts': dict(store_pump.counts), 'backlog': store_pump.backlog,
+                                         'consecutive_failures': store_pump.consecutive_failures}})
+    if redis_client is not None:
+        from services.events.redis_bridge import RedisForwarder
+        channel_feed = service.hub.subscribe(buffer=MAX_BUFFER)
+        forwarder = RedisForwarder(channel_feed, redis_client)
+        pumps.append({'thread': PumpThread('redis', forwarder.pump, pending=channel_feed.buffered),
+                      'resource': redis_client, 'report': lambda: {'counts': dict(forwarder.stats)}})
+    record = {'event': 'starting', 'model_version': card['version'], 'onnx_sha256': card['onnx']['sha256'],
+              'config_fingerprint': fingerprint(config), 'per_window': args.per_window, 'threads': args.threads,
+              'max_calls': args.max_calls, 'ari_url': args.ari_url.rstrip('/'), 'ari_app': args.ari_app,
+              'ari_reachable': reachable, 'tap_extensions': sorted(args.tap_extensions or [])}
+    if store is not None:
+        record['database_migrations_applied'] = applied
+    if redis_client is not None:
+        record['redis_reachable'] = redis_reachable
+    _say(stderr, record)
+    return service, pumps
+
+
+def _close_quietly(resource):
+    try:
+        resource.close()
+    except Exception:
+        pass
 
 
 def _install_signals(on_signal):
