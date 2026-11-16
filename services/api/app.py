@@ -518,17 +518,22 @@ def create_app(service, *, hub=None, registry=None, dashboard_dir=None, pipeline
 
     @app.websocket('/v1/events')
     async def events(websocket: WebSocket, call_id: str | None = None):
-        await websocket.accept()
         if hub is None:
+            await websocket.accept()
             await websocket.close(code=1011, reason='No live event source is connected')
             return
+        # Subscribe before accepting: a client that reads the REST snapshot as soon as the
+        # socket opens cannot miss an event published between that read and the subscription.
         try:
             subscription = hub.subscribe(call_id=call_id or None, buffer=WS_BUFFER)
         except HubFull:
+            await websocket.accept()
             await websocket.close(code=1013, reason='Too many event subscribers; retry later')
             return
-        receiver = asyncio.create_task(websocket.receive())  # watches for the client leaving
+        receiver = None
         try:
+            await websocket.accept()
+            receiver = asyncio.create_task(websocket.receive())  # watches for the client leaving
             while True:
                 if receiver.done():
                     if receiver.result()['type'] == 'websocket.disconnect':
@@ -550,7 +555,8 @@ def create_app(service, *, hub=None, registry=None, dashboard_dir=None, pipeline
         except (WebSocketDisconnect, OSError):
             pass  # client went away mid-send (Starlette or the server's transport)
         finally:
-            receiver.cancel()
+            if receiver is not None:
+                receiver.cancel()
             subscription.close()
 
     if dashboard_dir is not None:  # mounted last: API routes above always win

@@ -34,6 +34,27 @@ class LifecycleTests(unittest.TestCase):
     def setUp(self):
         self.reg, self.ev = CallRegistry(), Stream()
 
+    def test_summary_board_fields_ema_quality_and_last_seq(self):
+        """Claude-authored, 16 Nov 2026 (backlog 7.1, FR-U1): the live board reads
+        confidence (EMA), the quality flag and the last applied seq from the summary."""
+        r, ev = self.reg, self.ev
+        r.apply(ev('call.started', 'c1', 100.0))
+        [fresh] = r.list_calls()
+        self.assertEqual((fresh['last_ema'], fresh['quality'], fresh['last_seq']), (None, None, 1))
+        r.apply(ev.score('c1', 101.0, 0.7, ema=0.4, quality='ok'))
+        r.apply(ev('call.started', 'other', 101.5))  # another call's seq is not this call's
+        # a low-quality update has no score or EMA: the last valid EMA stays
+        r.apply(ev.score('c1', 102.0, None, ema=None, quality='low'))
+        [c1, _] = r.list_calls()
+        self.assertEqual((c1['last_ema'], c1['quality'], c1['last_seq']), (0.4, 'low', 4))
+        # out-of-range or wrongly typed values are not shown; quality stays as it was
+        r.apply(ev.score('c1', 103.0, 0.5, ema=1.5, quality='great'))
+        r.apply(ev.score('c1', 104.0, 0.5, ema=True))
+        [c1, _] = r.list_calls()
+        self.assertEqual((c1['last_ema'], c1['quality'], c1['last_seq']), (0.4, 'low', 6))
+        r.apply(ev.score('c1', 105.0, 0.5, ema=0, quality='ok'))
+        self.assertEqual((r.get_call('c1')['last_ema'], r.get_call('c1')['quality']), (0.0, 'ok'))
+
     def test_full_call_with_alert_raised_cleared_and_reraised(self):
         r, ev = self.reg, self.ev
         self.assertTrue(r.apply(ev('call.started', 'c1', 100.0)))

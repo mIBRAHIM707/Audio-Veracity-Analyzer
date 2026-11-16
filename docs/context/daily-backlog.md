@@ -309,7 +309,13 @@ items needing that data are listed at the end and stay out of the queue.
   model.
 
 ## 7 — Dashboard and operations (FR-U, FR-A8)
-- [ ] 7.1 Live board, alerts, timeline and batch job states.
+- [x] 7.1 Live board, alerts, timeline and batch job states.
+  Evidence (16 Nov): `#live` board (`dashboard/src/live.ts`, `LiveBoard.tsx`): FR-U1
+  cards, FR-U2 feed with banner/title/tone, FR-U3 per-call timeline; REST snapshot plus
+  `WS /v1/events` merged by `seq`, gap/reconnect re-reads, jittered back-off. Batch job
+  states from 12 Nov (DU03, DU11-DU13). 12 Playwright (LB01-LB12) + 10 pure (LS01-LS10)
+  Claude-authored cases; review conditional pass, fixes re-reviewed. Not yet: a browser
+  run against a real scorer/Redis relay (lab), Urdu/RTL text.
 - [ ] 7.2 Health/readiness/metrics and visible unmonitored/low-quality conditions.
   Progress (12 Nov): FR-A8 on the analysis API: `/readyz` with a validated warm-up
   inference (sticky once warmed, stays ready while busy), Prometheus `/metrics`

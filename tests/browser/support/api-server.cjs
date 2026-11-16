@@ -95,4 +95,4 @@ function readPcm16Mono(buffer) {
   throw new Error('no data chunk');
 }
 
-module.exports = { DIST, ROOT, readPcm16Mono, startApi, tones, wavFromPcm };
+module.exports = { DIST, ROOT, freePort, readPcm16Mono, startApi, tones, wavFromPcm };

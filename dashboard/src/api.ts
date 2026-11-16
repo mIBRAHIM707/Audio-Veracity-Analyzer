@@ -9,6 +9,8 @@ export interface WindowScore {
   t_end: number;
   partial: boolean;
   p_synthetic: number;
+  /** Extra text for the table's Note column (the live view puts the direction here). */
+  note?: string;
 }
 
 export interface AnalysisResult {

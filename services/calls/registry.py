@@ -38,6 +38,10 @@ Rules (FR-A3 / architecture §2.5, with the choices made here marked):
   at `call.ended` becomes `ended_open` with no clear (architecture §2.4). A clear for an
   unknown alert is recorded with `raised_ts=None` (choice) and counted.
 - `system.health` events are not about one call's timeline and are ignored here.
+- Summaries (16 Nov, for the live board, FR-U1) also carry `last_ema` (the newest valid
+  `ema` in 0..1), `quality` (`ok`/`low` from the newest `score.updated` that carried it,
+  else None) and `last_seq` (the hub `seq` of the call's last applied event), so a
+  client merging REST with `WS /v1/events` can skip events the snapshot already holds.
 """
 from collections import OrderedDict, deque
 import math
@@ -57,6 +61,7 @@ IDLE_END_REASON = 'idle_expired'  # registry-inferred; not an FR-A4 call.ended r
 MAX_DIRECTION_CHARS = 16
 MAX_ALERT_ID_CHARS = 128
 TREND_POINTS = 20
+QUALITIES = ('ok', 'low')  # services/scorer/publish.py call-level quality
 SEVERITY = {'monitoring': 0, 'no_speech': 0, 'unmonitored': 1, 'suspicious': 2, 'alert': 3}
 COUNTERS = ('applied', 'duplicate_or_stale', 'after_end', 'refused_active_limit',
             'implicit_start', 'unknown_alert_cleared', 'ignored_system_health', 'forgotten_ended',
@@ -67,6 +72,11 @@ COUNTERS = ('applied', 'duplicate_or_stale', 'after_end', 'refused_active_limit'
 def _positive(name, value, kind=(int, float)):
     if isinstance(value, bool) or not isinstance(value, kind) or not math.isfinite(value) or value <= 0:
         raise ValueError(f'{name} must be a positive finite number')
+
+
+def _finite_unit(value):
+    return (not isinstance(value, bool) and isinstance(value, (int, float)) and math.isfinite(value)
+            and 0 <= value <= 1)
 
 
 def _direction(value):
@@ -81,8 +91,9 @@ class _Call:
         self.state = 'monitoring'
         self.last_seq = 0
         self.newest_ts = self.last_event_ts = -math.inf
-        self.last_score = None
+        self.last_score = self.last_ema = None
         self.degraded = False
+        self.quality = None  # 'ok' or 'low' once a score.updated carried it
         self.points = deque()  # full-resolution, in arrival (seq) order
         self.buckets = OrderedDict()  # (direction, bucket_start) -> bucket dict
         self.dropped_buckets = 0
@@ -96,9 +107,10 @@ class _Call:
         return {'call_id': self.call_id, 'status': 'active' if self.ended_ts is None else 'ended',
                 'state': self.state, 'started_ts': self.started_ts, 'started_seen': self.started_seen,
                 'ended_ts': self.ended_ts, 'final_state': self.final_state, 'end_reason': self.end_reason,
-                'last_score': self.last_score, 'degraded': self.degraded, 'score_trend': recent,
+                'last_score': self.last_score, 'last_ema': self.last_ema, 'quality': self.quality,
+                'degraded': self.degraded, 'score_trend': recent,
                 'alerts_total': len(self.alerts), 'alerts_open': open_alerts,
-                'alerts_dropped': self.alerts_dropped, 'stale': stale}
+                'alerts_dropped': self.alerts_dropped, 'stale': stale, 'last_seq': self.last_seq}
 
     def detail(self, stale=False):
         out = self.summary(stale)
@@ -223,7 +235,12 @@ class CallRegistry:
         call.state, call.degraded = data['state'], data['degraded']
         if score is not None:
             call.last_score = float(score)
-        point = {'ts': envelope.ts, 'seq': envelope.seq, 'score': None if score is None else float(score),
+        ema = data.get('ema')  # optional in the contract; the scorer's mapping sends it
+        if _finite_unit(ema):
+            call.last_ema = float(ema)
+        if data.get('quality') in QUALITIES:
+            call.quality = data['quality']
+        point ={'ts': envelope.ts, 'seq': envelope.seq, 'score': None if score is None else float(score),
                  'state': data['state'], 'degraded': data['degraded'],
                  'effective_stride_s': float(data['effective_stride_s']),
                  'direction': _direction(data.get('direction'))}

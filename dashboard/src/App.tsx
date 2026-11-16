@@ -3,9 +3,11 @@ import type { DragEvent, ReactNode } from 'react';
 import { ApiError, checkFile, pollJob, submitAnalysis } from './api';
 import type { AnalysisResult, JobStatus } from './api';
 import { Timeline } from './Timeline';
+import { LiveBoard } from './LiveBoard';
 
 // Batch upload page (PRD FR-U4; backlog 2.3). Drag-and-drop or choose a file, poll the
 // job when the service queues it, show the verdict and the per-window timeline.
+// The live call board (FR-U1/U2, backlog 7.1) is at `#live` (LiveBoard.tsx).
 
 const DECISION_THRESHOLD = 0.5; // services/inference/analysis.py, uncalibrated baseline
 export const POLL = { intervalMs: 1000, maxConsecutiveErrors: 5, timeoutMs: 20 * 60 * 1000 };
@@ -85,7 +87,47 @@ function Result({ fileName, result }: { fileName: string; result: AnalysisResult
   );
 }
 
+type Page = 'batch' | 'live';
+
+/** `#live` is the live call board (FR-U1/U2); anything else is the batch page, which
+ * stays the default so a batch-only server never opens an event connection. */
+function pageFromHash(): Page {
+  return window.location.hash === '#live' ? 'live' : 'batch';
+}
+
 export function App() {
+  const [page, setPage] = useState<Page>(pageFromHash);
+  useEffect(() => {
+    const onHash = () => setPage(pageFromHash());
+    window.addEventListener('hashchange', onHash);
+    return () => window.removeEventListener('hashchange', onHash);
+  }, []);
+  useEffect(() => {
+    if (page === 'batch') document.title = 'AVA batch analysis';
+  }, [page]);
+  return (
+    <main>
+      <nav aria-label="Pages" className="pages">
+        <a href="#live" aria-current={page === 'live' ? 'page' : undefined}>Live calls</a>
+        <a href="#batch" aria-current={page === 'batch' ? 'page' : undefined}>Batch analysis</a>
+      </nav>
+      {page === 'live'
+        ? (
+          <>
+            <header>
+              <h1>AVA live calls</h1>
+              <p className="muted">Passive, advisory monitoring. AVA never blocks or changes a call.</p>
+            </header>
+            <Limitations />
+            <LiveBoard />
+          </>
+        )
+        : <BatchPage />}
+    </main>
+  );
+}
+
+function BatchPage() {
   const [view, setView] = useState<View>({ phase: 'idle' });
   const [dragging, setDragging] = useState(false);
   const controller = useRef<AbortController | null>(null);
@@ -142,7 +184,7 @@ export function App() {
   };
 
   return (
-    <main>
+    <>
       <header>
         <h1>AVA batch analysis</h1>
         <p className="muted">CPU-only analysis of one audio file. The file is sent only to this AVA server.</p>
@@ -181,6 +223,6 @@ export function App() {
           <Result fileName={view.fileName} result={view.result} />
         </ResultBoundary>
       )}
-    </main>
+    </>
   );
 }

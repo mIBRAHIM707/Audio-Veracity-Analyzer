@@ -31,6 +31,9 @@ No participant data involved.
 hash-pinned 16 kHz RIR WAVs, `--rir`; one seeded RIR per clip before noise). Needs a
 person: download an RIR/noise corpus (OpenSLR SLR28, Apache-2.0) to `D:/AVA-Data`, and
 choose which RIRs count as handset vs speakerphone.
+16 Nov: backlog 7.1 done — the dashboard has a live call board at `#live` (cards,
+alert feed with banner and optional tone, per-call timeline), fed by the API's REST
+snapshot and event stream. Infrastructure only; no detector accuracy implied.
 
 Updated 4 October 2026. This is the active sequence; evidence lives in
 `current-state.md` and `handoffs/`. Check marks mean the stated bounded task passed

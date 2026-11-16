@@ -8,15 +8,22 @@ interface Props {
   windows: WindowScore[];
   durationSeconds: number;
   threshold: number;
+  /** Replaces the batch description of the bars (the live view's bars differ). */
+  caption?: string;
+  /** Table shows only the newest rows (the chart still draws every window). */
+  maxRows?: number;
+  /** Heading of the first column (the live view numbers events, not windows). */
+  indexHeading?: string;
 }
 
 const WIDTH = 640;
 const HEIGHT = 120;
 
-export function Timeline({ windows, durationSeconds, threshold }: Props) {
+export function Timeline({ windows, durationSeconds, threshold, caption, maxRows, indexHeading = 'Window' }: Props) {
   if (windows.length === 0) {
     return <p className="muted" data-testid="timeline-empty">No window was scored.</p>;
   }
+  const rows = maxRows !== undefined && windows.length > maxRows ? windows.slice(-maxRows) : windows;
   const span = Math.max(durationSeconds, ...windows.map(w => w.t_end), 1e-6);
   const x = (t: number) => (t / span) * WIDTH;
   const y = (p: number) => HEIGHT - Math.min(Math.max(p, 0), 1) * HEIGHT;
@@ -36,20 +43,22 @@ export function Timeline({ windows, durationSeconds, threshold }: Props) {
         <line className="threshold" x1={0} x2={WIDTH} y1={y(threshold)} y2={y(threshold)} />
       </svg>
       <figcaption className="muted">
-        Bars: windows (4 s, 2 s hop; overlapping). Line: decision threshold {threshold}.
-        Faded bars are partial windows.
+        {caption ?? 'Bars: windows (4 s, 2 s hop; overlapping). Faded bars are partial windows.'} Line: decision threshold {threshold}.
       </figcaption>
+      {rows.length < windows.length && (
+        <p className="muted" data-testid="timeline-rows-capped">Table: newest {rows.length} of {windows.length} windows.</p>
+      )}
       <table>
         <thead>
-          <tr><th scope="col">Window</th><th scope="col">Seconds</th><th scope="col">p(synthetic)</th><th scope="col">Note</th></tr>
+          <tr><th scope="col">{indexHeading}</th><th scope="col">Seconds</th><th scope="col">p(synthetic)</th><th scope="col">Note</th></tr>
         </thead>
         <tbody>
-          {windows.map(w => (
+          {rows.map(w => (
             <tr key={w.index} data-testid="timeline-row" className={w.p_synthetic >= threshold ? 'synthetic' : undefined}>
               <td>{w.index}</td>
               <td>{w.t_start.toFixed(1)}–{w.t_end.toFixed(1)}</td>
               <td>{w.p_synthetic.toFixed(3)}</td>
-              <td>{[w.p_synthetic >= threshold ? 'scored synthetic' : '', w.partial ? 'partial' : ''].filter(Boolean).join(', ')}</td>
+              <td>{[w.p_synthetic >= threshold ? 'scored synthetic' : '', w.partial ? 'partial' : '', w.note ?? ''].filter(Boolean).join(', ')}</td>
             </tr>
           ))}
         </tbody>

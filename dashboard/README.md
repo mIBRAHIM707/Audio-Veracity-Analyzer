@@ -2,7 +2,8 @@
 
 React 18 + TypeScript + Vite single-page app (architecture §2.6, ADR-6), built to
 static files that the analysis API serves on its own origin: no CORS, no CDN, no
-web fonts, no telemetry (PRD FR-U8). Today it holds the batch upload page (FR-U4):
+web fonts, no telemetry (PRD FR-U8). It holds the live call board (below) and the
+batch upload page (FR-U4):
 
 - drag-and-drop or choose one PCM16 WAV; files over 100 MB or empty are refused
   in the browser before upload;
@@ -95,8 +96,72 @@ never asserted: this is not an accuracy result. It needs a gitignored
 npm run test:real-model
 ```
 
+## Live call board (backlog 7.1, 16 Nov 2026)
+
+`#live` (link "Live calls"; the batch page stays the default, so a batch-only server
+never opens an event connection). Sources: `GET /v1/calls?status=all` and
+`WS /v1/events` on the same origin (`src/live.ts` pure state, `src/LiveBoard.tsx`).
+
+- FR-U1 card per active call: call ID, duration (server event time, corrected for the
+  browser clock from the newest event), state as text (`Monitoring`, `Suspicious`,
+  `Alert`, `No speech`, `Unmonitored`; colour only adds to it), confidence = the
+  newest smoothed score (EMA, labelled uncalibrated), a sparkline of the last 20
+  window scores (gaps for unscored updates, dashed line at 0.5), open/total alerts and
+  flags: low audio quality, degraded (reduced scoring rate), no events for 5 min
+  (registry `stale`). Up to 20 ended calls are listed with their end reason. The
+  limitation text is shown above the board.
+- FR-U2 alert feed (newest first, at most 50): a new live alert shows a `role=alert`
+  banner, puts the open-alert count in the tab title, and plays a short Web Audio tone
+  (no audio file) once the user turns sound on (browsers block sound until a gesture).
+  Alerts already open when the page loads come from the call details, without sound.
+  Cleared alerts and alerts open at call end are marked as such.
+- FR-U3 call timeline ("Show timeline"): `GET /v1/calls/{id}` scored points as bars
+  spanning the scoring stride before each score's publish time (seconds since the call
+  started; 2 s normally), windows at or above 0.5 marked, direction in the note column,
+  re-read when the call has new events (throttled to one read a second; a read in
+  progress is never aborted by a newer event, the next one follows it); the table shows
+  the newest 120 rows, the chart every window; the first column is the event `seq`.
+  Older 10 s summaries are counted.
+- Merge rule: REST snapshot first, then events with `seq` above the call's `last_seq`
+  (new registry summary field); events that arrive while the snapshot loads are queued.
+  `stream.gap` (dropped or upstream-lost events) re-reads REST. A closed socket shows
+  "Live updates disconnected … the board may be out of date" and reconnects after 1, 2,
+  4, 8, then every 10 s, each with jitter of ±25%, re-reading REST each time. The
+  back-off restarts only after a healthy connection (a frame received or open 5 s), so
+  a server that accepts and at once closes (no live source, too many subscribers) is not
+  retried every second. A 503 (no live source) is shown. Unreadable frames are counted
+  and ignored; malformed REST bodies are an error text. Late events for an ended call
+  the page has already pruned are skipped (no phantom card). A call revived after
+  `idle_expired` reopens its alerts open at the expiry, as the registry does.
+- Server side: `WS /v1/events` subscribes to the hub before accepting the upgrade, so a
+  snapshot read as soon as the socket opens cannot miss an event.
+
+Tests (Claude-authored, 16 Nov 2026): `tests/browser/dashboard-live.spec.cjs` (12
+cases, LB01-LB12) use the real API with a real `EventHub`; events enter through the
+hub's validation from a loopback test control server (`serve_dashboard_api.py
+--control-port`); `routeWebSocket` drops, withholds, replays or injects frames.
+`tests/browser/live-state.spec.ts` (LS01-LS10) tests the pure merge rules in
+`src/live.ts` with Playwright's runner (no browser; runs in the `foundation` project,
+so CI runs it). Mutation checks: without the `seq` rule LB04 fails; without the gap
+re-read LB06 fails; resetting the back-off on `open` fails LB10.
+
+Found while building it: `requirements-api.txt` had no WebSocket library, so a real
+uvicorn refused every `WS /v1/events` upgrade (earlier tests used the in-process
+TestClient). `websockets==17.4` is now pinned there.
+
+Known limits: the live timeline uses publish time, not audio time (the event carries a
+window index, not its audio seconds); bars of both directions share one axis. The
+board's clock skew comes from the newest envelope's `ts`, so relayed or backlogged
+events can make durations jump. Reconciliation after a disconnection marks feed items
+cleared only when the call has no open alert (alert A cleared and B raised meanwhile
+leaves A shown open until the next detail read). A re-raise of an alert whose details
+were never read (more than 16 calls with alerts at load) counts and sounds as new. The
+page's total alert count can pass the registry's 256-alert cap until the next
+snapshot. A revived call's open count is rebuilt from the 50-item feed, so it can be
+low until the next snapshot. No live view in another language or right-to-left text yet.
+
 ## Not yet
 
-Live call board, alert feed and call detail (backlog 7.1), TanStack Query (one page
-does not need it yet), MP3/AMR/GSM input (the API accepts PCM16 WAV only), job
-cancellation, authentication (7.3), Urdu/RTL text.
+Call detail with codec and snippets (FR-U5, P1), history and search (FR-U6), TanStack
+Query, MP3/AMR/GSM input (the API accepts PCM16 WAV only), job cancellation,
+authentication (7.3), Urdu/RTL text.

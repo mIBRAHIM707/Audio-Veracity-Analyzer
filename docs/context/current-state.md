@@ -112,6 +112,23 @@ and about 50,000 original clips, excluding codec copies.
   spends a real-time budget, while received frames are always played (2.1x after the
   fix, of which 1x is the received frames). The real Asterisk lab still passes. Tap I/O and inference share one thread
   in the live service, a latency risk still to measure.
+  Attempt 3 (7.1): the dashboard now has a live call board at `#live`
+  (`dashboard/src/live.ts`, `LiveBoard.tsx`). It shows one card per call (state as
+  text, duration, smoothed score labelled uncalibrated, sparkline, quality, degraded
+  and stale flags), an alert feed (banner, tab-title count, an optional Web Audio tone)
+  and a per-call timeline. It reads `GET /v1/calls` first and then `WS /v1/events`,
+  skipping any event already in the snapshot by its `seq`. After `stream.gap` or a
+  reconnect it reads REST again. Registry summaries gained `last_ema`, `quality` and
+  `last_seq`. Found: `requirements-api.txt` had no WebSocket library, so a real uvicorn
+  refused `/v1/events`. `websockets==17.4` is now pinned. Attempt 4: independent
+  review (conditional pass, no Highs) fixed: reconnect back-off now grows with jitter
+  even when the server accepts and at once closes; the timeline read is never aborted
+  by newer events and its table is capped at 120 rows; late events for pruned ended
+  calls make no phantom card; idle-revived calls reopen their alerts; the API
+  subscribes to the hub before accepting the WebSocket. Tests: 12 Claude-authored
+  Playwright cases on the real API and hub plus 10 pure merge-rule cases
+  (`tests/browser/live-state.spec.ts`, run on CI); 3 mutation checks fail as expected.
+  Infrastructure evidence only (no detector, no browser run against a real Redis relay).
 - **15 Nov daily run (Docker now available; details in `daily-runs/2026-11-15.md`).**
   Opus VoIP codec path with loss/jitter (3.4); speech-active noise SNR bound to the
   Silero model hash (3.4); PostgreSQL 16 migrations and per-hop event store (5.1,

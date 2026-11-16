@@ -42,3 +42,33 @@ table { border-collapse: collapse; width: 100%; margin-top: 8px; font-size: 0.9r
 th, td { border-bottom: 1px solid var(--line); padding: 4px 8px; text-align: left; }
 tr.synthetic td { color: var(--bad); }
 .timeline { overflow-x: auto; }
+/* Live board (backlog 7.1). State is always written as text; colour only adds to it. */
+.pages { display: flex; gap: 16px; border-bottom: 1px solid var(--line); padding-bottom: 6px; }
+.pages a { color: var(--accent); text-decoration: none; }
+.pages a[aria-current="page"] { font-weight: 700; text-decoration: underline; }
+.connection { font-size: 0.9rem; margin: 8px 0; }
+.connection.closed { color: var(--bad); font-weight: 600; }
+.board-layout { display: grid; grid-template-columns: minmax(0, 2fr) minmax(0, 1fr); gap: 16px; }
+@media (max-width: 720px) { .board-layout { grid-template-columns: 1fr; } }
+.cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); gap: 10px; }
+.card { border: 1px solid var(--line); border-left-width: 6px; border-radius: 6px; padding: 8px 10px; }
+.card.selected { outline: 2px solid var(--accent); }
+.card header { display: flex; justify-content: space-between; gap: 8px; align-items: baseline; }
+.card .state { font-weight: 700; }
+.card.state-suspicious { border-left-color: var(--warn-line); }
+.card.state-alert { border-left-color: var(--bad); }
+.card.state-unmonitored, .card.state-no_speech { border-left-style: dashed; }
+.state-alert .state { color: var(--bad); }
+.facts.compact { gap: 2px 10px; font-size: 0.9rem; margin: 6px 0; }
+.sparkline { display: block; }
+.sparkline polyline { stroke: var(--accent); stroke-width: 1.5; }
+.sparkline circle { fill: var(--accent); }
+.sparkline .threshold { stroke: var(--muted); stroke-dasharray: 3 2; stroke-width: 0.75; }
+.flags { margin: 6px 0; display: flex; flex-wrap: wrap; gap: 4px; }
+.flag { border: 1px solid var(--warn-line); background: var(--warn-bg); border-radius: 4px; padding: 0 6px; font-size: 0.85rem; }
+.feed ol { padding-left: 18px; margin: 0; }
+.feed li { margin-bottom: 4px; font-size: 0.9rem; }
+.feed .alert-open strong { color: var(--bad); }
+.alert-banner { border: 2px solid var(--bad); border-radius: 6px; padding: 8px 12px; margin: 8px 0; font-weight: 600; display: flex; gap: 12px; align-items: center; justify-content: space-between; }
+button.link { border: none; padding: 0; color: var(--accent); text-decoration: underline; }
+.detail { margin-top: 16px; }
