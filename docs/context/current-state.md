@@ -95,6 +95,14 @@ and about 50,000 original clips, excluding codec copies.
   Readiness requires the ARI stream, a loop that is turning and a detector that is not
   failing. The PRD's FR-A8 wording ("readyz performs a warm-up inference") needs the
   proposed update; FR-O6 is still partial.
+  Attempt 2 (5.2): the analysis API can take a `RedisRelay` (`create_app(..., relay=)`).
+  A `RelayLoop` thread moves the scorer's events from Redis into the API hub. Relay
+  loss (sequence gaps, scorer restarts, Redis outages) reaches WebSocket clients as
+  `stream.gap` with `upstream_missing`/`upstream_interruptions`, and `/v1/calls` and
+  `ava_event_relay_*` metrics count it. A real-Redis test carries events from the
+  forwarder to a WebSocket and turns `CLIENT KILL` into `stream.gap`. This is library
+  wiring only: no API command line opens Redis yet, and REST is not corrected after
+  a gap (no PostgreSQL recovery).
 - **15 Nov daily run (Docker now available; details in `daily-runs/2026-11-15.md`).**
   Opus VoIP codec path with loss/jitter (3.4); speech-active noise SNR bound to the
   Silero model hash (3.4); PostgreSQL 16 migrations and per-hop event store (5.1,

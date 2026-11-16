@@ -104,15 +104,23 @@ class RedisRelay:
     silently dropped connection is never noticed and a reconnect can exceed `timeout`."""
 
     def __init__(self, connect, hub, *, channel=CHANNEL):
-        self._connect, self._hub, self.channel = connect, hub, channel
+        self._connect, self.hub, self.channel = connect, hub, channel
         self._pubsub = None
         self._last_seq = None
+        self._in_outage = False
         self.stats = {'relayed': 0, 'invalid': 0, 'hub_errors': 0, 'gaps': 0, 'missing': 0, 'restarts': 0,
-                      'connection_errors': 0}
+                      'connection_errors': 0, 'interruptions': 0, 'loss_report_errors': 0}
 
     @property
     def subscribed(self):
         return self._pubsub is not None
+
+    def _report_loss(self, missing=0, interruptions=0):
+        """Tell the hub's subscribers (WebSocket clients see `stream.gap`). Advisory."""
+        try:
+            self.hub.report_upstream_loss(missing=missing, interruptions=interruptions)
+        except Exception:  # a hub without loss reports, or a fault: counted, relaying goes on
+            self.stats['loss_report_errors'] += 1
 
     def close(self):
         pubsub, self._pubsub = self._pubsub, None
@@ -132,6 +140,7 @@ class RedisRelay:
             if self._pubsub is None:
                 self._pubsub = self._connect().pubsub(ignore_subscribe_messages=True)
                 self._pubsub.subscribe(self.channel)  # on failure, close() releases it below
+                self._in_outage = False
             wait = timeout
             for _ in range(limit):
                 message = self._pubsub.get_message(timeout=wait)
@@ -144,6 +153,13 @@ class RedisRelay:
         except Exception:  # connection loss or client fault: resubscribe next time
             self.stats['connection_errors'] += 1
             self.close()
+            if not self._in_outage:
+                # Pub/sub keeps nothing for a disconnected subscriber: events published
+                # until the resubscription are lost. Reported once per outage, at its start
+                # (the next message's seq may later add a counted gap).
+                self._in_outage = True
+                self.stats['interruptions'] += 1
+                self._report_loss(interruptions=1)
         return relayed
 
     def _relay(self, payload):
@@ -152,23 +168,27 @@ class RedisRelay:
         except Exception:  # contract violations, and any parser fault: never a connection error
             self.stats['invalid'] += 1
             return 0
+        missing = interruptions = 0
         if self._last_seq is not None:
             if envelope.seq > self._last_seq + 1:
-                self.stats['gaps'] += 1
-                self.stats['missing'] += envelope.seq - self._last_seq - 1
+                missing = envelope.seq - self._last_seq - 1
             elif envelope.seq <= self._last_seq:
                 # The source hub restarted (its seq starts at 1): events before this one
-                # since the restart are missing. Loss just before the restart is not
-                # visible (no restart marker).
+                # since the restart are missing, and loss just before the restart is not
+                # visible (no restart marker), so it is also an interruption.
                 self.stats['restarts'] += 1
-                if envelope.seq > 1:
-                    self.stats['gaps'] += 1
-                    self.stats['missing'] += envelope.seq - 1
+                missing, interruptions = envelope.seq - 1, 1
+        if missing:
+            self.stats['gaps'] += 1
+            self.stats['missing'] += missing
         self._last_seq = envelope.seq
+        if missing or interruptions:  # before the event after the gap is published
+            self._report_loss(missing=missing, interruptions=interruptions)
         try:
-            self._hub.publish(envelope.type, envelope.call_id, envelope.data, ts=envelope.ts)
+            self.hub.publish(envelope.type, envelope.call_id, envelope.data, ts=envelope.ts)
         except Exception:  # EventContractError/EventHubError: counted, the relay keeps going
             self.stats['hub_errors'] += 1
+            self._report_loss(missing=1)  # subscribers never get this valid event
             return 0
         self.stats['relayed'] += 1
         return 1

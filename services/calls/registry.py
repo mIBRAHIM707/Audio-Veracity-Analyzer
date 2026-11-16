@@ -60,7 +60,8 @@ TREND_POINTS = 20
 SEVERITY = {'monitoring': 0, 'no_speech': 0, 'unmonitored': 1, 'suspicious': 2, 'alert': 3}
 COUNTERS = ('applied', 'duplicate_or_stale', 'after_end', 'refused_active_limit',
             'implicit_start', 'unknown_alert_cleared', 'ignored_system_health', 'forgotten_ended',
-            'lost_events', 'apply_errors', 'idle_expired', 'revived', 'alerts_raised')
+            'lost_events', 'apply_errors', 'idle_expired', 'revived', 'alerts_raised',
+            'upstream_missing', 'upstream_interruptions')
 
 
 def _positive(name, value, kind=(int, float)):
@@ -353,12 +354,19 @@ class CallRegistry:
         with self._lock:
             self._counters['lost_events'] += count
 
+    def note_upstream_loss(self, missing, interruptions):
+        """Record events a Redis relay lost before they reached this process (16 Nov)."""
+        with self._lock:
+            self._counters['upstream_missing'] += missing
+            self._counters['upstream_interruptions'] += interruptions
+
 
 class RegistryFeed:
     """Feeds a registry from an in-process `EventHub` subscription. `pump()` drains what
     is buffered (never blocks) and applies it; envelopes the subscription dropped are
-    counted in the registry's `lost_events` (the registry may then be out of date for
-    some calls until PostgreSQL recovery exists, backlog 5.1/5.3)."""
+    counted in the registry's `lost_events`, and loss a Redis relay reported upstream in
+    `upstream_missing` / `upstream_interruptions` (the registry may then be out of date
+    for some calls until PostgreSQL recovery exists, backlog 5.1/5.3)."""
 
     def __init__(self, registry, hub, *, buffer=4096):
         self.registry = registry
@@ -367,9 +375,11 @@ class RegistryFeed:
 
     def pump(self):
         with self._lock:
-            envelopes, dropped = self._subscription.drain()
+            envelopes, dropped, missing, interruptions = self._subscription.drain_batch()
             if dropped:
                 self.registry.note_lost(dropped)
+            if missing or interruptions:
+                self.registry.note_upstream_loss(missing, interruptions)
             for envelope in envelopes:
                 self.registry.apply(envelope)
             return len(envelopes)

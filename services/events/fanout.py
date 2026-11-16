@@ -11,12 +11,14 @@ call-filtered subscriber normally sees gaps; order by `seq`, not `ts` (wall cloc
 `system.health` without a call ID reaches every subscriber; a call-scoped one reaches
 only that call's and unfiltered subscribers. The subscriber count is bounded; extra
 subscriptions are refused. `seq` restarts at 1 with a new hub (no restart marker
-yet). Redis pub/sub and the WebSocket endpoint are backlog 5.2.
+yet). A relay feeding the hub from Redis reports events lost before they arrived with
+`report_upstream_loss`; subscribers read it with `drain_batch` (16 Nov).
 """
 from collections import deque
 import dataclasses
 import threading
 import time
+from typing import NamedTuple
 
 from .contract import _finite_real, make_envelope
 
@@ -33,12 +35,25 @@ class EventHubError(RuntimeError):
     """The hub itself failed (e.g. its clock); the event was not delivered."""
 
 
+class Drained(NamedTuple):
+    """One `drain_batch` result. `dropped`: envelopes this subscription's own buffer
+    discarded. `upstream_missing`: events a relay knows were lost before they reached
+    this hub (counted from the source sequence). `upstream_interruptions`: losses of
+    unknown size (the source connection was lost, or the source restarted)."""
+    envelopes: list
+    dropped: int
+    upstream_missing: int
+    upstream_interruptions: int
+
+
 class Subscription:
     def __init__(self, hub, call_id, maxlen):
         self._hub, self.call_id = hub, call_id
         self._buffer = deque(maxlen=maxlen)
         self.dropped_total = 0
         self._dropped_unreported = 0
+        self._upstream_missing = 0
+        self._upstream_interruptions = 0
         self.closed = False
 
     def _offer(self, envelope):  # called with the hub lock held
@@ -55,9 +70,27 @@ class Subscription:
         if limit is not None and (type(limit) is not int or limit < 1):
             raise ValueError('limit must be a positive integer or None')
         with self._hub._lock:
-            count = len(self._buffer) if limit is None else min(limit, len(self._buffer))
-            dropped, self._dropped_unreported = self._dropped_unreported, 0
-            return [self._buffer.popleft() for _ in range(count)], dropped
+            return self._take(limit)
+
+    def drain_batch(self, limit=None):
+        """Like `drain`, and also takes the upstream loss reported by a relay since the
+        previous `drain_batch` (`EventHub.report_upstream_loss`), all read together.
+        Loss is reported at the start of the batch in which it became known: some
+        envelopes in that batch may have been published before the loss. Any nonzero
+        count means state should be re-read over REST. `drain` leaves upstream loss
+        for `drain_batch`."""
+        if limit is not None and (type(limit) is not int or limit < 1):
+            raise ValueError('limit must be a positive integer or None')
+        with self._hub._lock:
+            envelopes, dropped = self._take(limit)
+            missing, self._upstream_missing = self._upstream_missing, 0
+            interruptions, self._upstream_interruptions = self._upstream_interruptions, 0
+            return Drained(envelopes, dropped, missing, interruptions)
+
+    def _take(self, limit):  # called with the hub lock held
+        count = len(self._buffer) if limit is None else min(limit, len(self._buffer))
+        dropped, self._dropped_unreported = self._dropped_unreported, 0
+        return [self._buffer.popleft() for _ in range(count)], dropped
 
     def buffered(self):
         """Envelopes waiting in this subscription now (read under the hub lock)."""
@@ -77,6 +110,8 @@ class EventHub:
         self._max = max_subscribers
         self._clock = clock
         self._seq = 0
+        self.upstream_missing_total = 0
+        self.upstream_interruptions_total = 0
 
     def subscribe(self, *, call_id=None, buffer=DEFAULT_BUFFER):
         """New subscription; `call_id` filters to one call (plus system.health)."""
@@ -102,6 +137,22 @@ class EventHub:
     def subscriber_count(self):
         with self._lock:
             return len(self._subscribers)
+
+    def report_upstream_loss(self, *, missing=0, interruptions=0):
+        """A relay feeding this hub lost events before they arrived: `missing` counted
+        ones, `interruptions` losses of unknown size. Every current subscriber is told
+        (the lost events' call IDs are unknown) through `drain_batch`. Uses no `seq`."""
+        for name, value in (('missing', missing), ('interruptions', interruptions)):
+            if type(value) is not int or value < 0:
+                raise ValueError(f'{name} must be a non-negative integer')
+        if not missing and not interruptions:
+            raise ValueError('report at least one missing event or interruption')
+        with self._lock:
+            self.upstream_missing_total += missing
+            self.upstream_interruptions_total += interruptions
+            for subscription in self._subscribers:
+                subscription._upstream_missing += missing
+                subscription._upstream_interruptions += interruptions
 
     def publish(self, event_type, call_id, data, *, ts=None):
         """Validate, then deliver; returns the envelope. Raises only EventContractError

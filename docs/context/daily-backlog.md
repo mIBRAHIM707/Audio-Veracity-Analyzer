@@ -219,8 +219,15 @@ items needing that data are listed at the end and stay out of the queue.
   messages re-validated, source `ts` kept, seq gaps/restarts counted, resubscribe after
   errors); `EventHub.publish(ts=)`; redis-py 8.1.0 in `requirements-redis.txt`; 17
   Claude-authored tests (3 on a Redis 7.4.12 container); review conditional pass, M1 and
-  lows fixed. 16 Nov: forwarder thread in the live service (see 5.1). Remaining: the
-  relay thread in the API process, `stream.gap` on relay loss.
+  lows fixed. 16 Nov: forwarder thread in the live service (see 5.1). 16 Nov (attempt 2):
+  relay loss reported to the hub (`EventHub.report_upstream_loss`, `drain_batch`: gaps,
+  source restarts, one interruption per Redis outage, hub refusals), `RelayLoop` thread
+  (`services/events/relay_loop.py`, backoff, bounded stop), `create_app(..., relay=)`
+  with `stream.gap` `upstream_missing`/`upstream_interruptions`, registry upstream
+  counters and `ava_event_relay_*` metrics; Claude-authored tests incl. a real-Redis
+  WebSocket case; review conditional pass fixed. Remaining: an API command line that
+  opens Redis (library wiring only today), a source epoch for restart detection, job
+  cancellation/idempotency (scope decision).
 - [ ] 5.3 Restart recovery, in-flight handling and default no-audio-retention behavior.
   Progress (12 Nov): default no-raw-audio retention on the analysis API verified by 3
   Claude-authored tests (spooled uploads removed with rollover proven, no audio in
@@ -241,7 +248,9 @@ items needing that data are listed at the end and stay out of the queue.
   16 Nov: `tests/lab/test_live_storage_lab.py` real Asterisk call through the command
   line with real PostgreSQL 16 and Redis 7: stored windows equal the published ones,
   flushed while the call runs; the Redis channel carries the same sequence.
-  Remaining: process restarts and state recovery, the API side reading from Redis.
+  16 Nov (attempt 2): the API side reading from a real Redis (forwarder -> Redis ->
+  relay thread -> WebSocket; `CLIENT KILL` reaches the client as `stream.gap`).
+  Remaining: process restarts and state recovery.
 
 ## 6 — Asterisk laboratory (FR-T1–T5/T7, FR-I1/I2)
 - [ ] 6.1 Docker/WSL preflight; Asterisk/SIPp endpoints and WAV injection.

@@ -48,6 +48,15 @@ Limits to know: worst-case buffered memory is subscribers x buffer x event size
 events); deployments should use smaller buffers or fewer subscribers. `seq` restarts at
 1 with a new hub; there is no restart marker yet (FR-I11 work in 5.3).
 
+Upstream loss (16 Nov): `EventHub.report_upstream_loss(missing=, interruptions=)` tells
+every current subscriber (filtered ones too: the lost events' call IDs are unknown)
+that a relay lost events before they reached this hub; it uses no `seq`.
+`Subscription.drain_batch(limit)` returns `Drained(envelopes, dropped,
+upstream_missing, upstream_interruptions)` read together under the lock; `drain()` keeps
+its `(envelopes, dropped)` result and leaves upstream loss for `drain_batch`. Loss is
+reported at the start of the batch in which it became known, so a few envelopes in that
+batch may predate it; any nonzero count means re-read REST.
+
 `publish(..., ts=)` (15 Nov) keeps an event's original time when it is relayed from
 another process; the hub still assigns its own `seq`. An invalid `ts` is a contract
 error and uses no `seq`.
@@ -76,16 +85,38 @@ Conditions for wiring (not enforced by the module): each pump runs on its own th
 never the scoring thread or the API event loop; clients set `socket_timeout`,
 `socket_connect_timeout` and `health_check_interval` (otherwise a silently dropped
 connection blocks or is never noticed); the caller owns and closes the clients.
+
+Loss reports (16 Nov): the relay tells its hub (`report_upstream_loss`) about a sequence
+gap (`missing`, before the event after the gap is published), a source restart (an
+interruption, plus `missing` = seq - 1 when known), a valid event the hub refused
+(`missing` 1), and a Redis outage (one interruption at its start, until a subscription
+succeeds again; the next message's seq may add a counted gap). Counters `interruptions`
+and `loss_report_errors` (a hub without loss reports) join the relay stats. Invalid
+messages show up as a gap at the next valid one.
+
+`relay_loop.py` (16 Nov): `RelayLoop(relay)` runs the relay on one owned daemon thread
+(`ava-redis-relay`): `pump(timeout=0.5)` while subscribed with a 20 ms pause after an
+empty turn; while unsubscribed a doubling backoff from 0.5 s to 10 s, reset after a
+subscription; a stop wakes any wait. `stop(join_timeout_s)` (default wait + 1 s) closes
+the relay's subscription only after the thread ended; a thread stuck in a client call is
+reported `stuck` and left behind as a daemon. Pump exceptions are counted (`faults`,
+`last_fault` type name). `open_relay_client(url)` builds the redis-py client: 2 s socket
+and connect timeouts (above the 0.5 s pump wait), TCP keepalive, a 10 s pub/sub health
+check and no client retries. The analysis API runs it (`create_app(..., relay=)`).
 Messages are not authenticated: any client that can PUBLISH on the channel can inject
 valid-looking events, so Redis must be on the private lab/cluster network with an ACL
 (a deployment decision, 10.x). The 64 KiB message bound is checked after redis-py has
 read the message; Redis's `client-output-buffer-limit pubsub` bounds memory. The
 real-Redis tests (which rely on redis-py 8.1.0 not resubscribing by itself after
-`CLIENT KILL`) do not run in CI. Not done: the pump loops, surfacing relay gaps to
-WebSocket clients (`stream.gap`), Redis session state (hash per call), AOF.
+`CLIENT KILL`) do not run in CI. Done since: the forwarder thread in the live service
+(16 Nov), the relay thread in the API and relay loss as `stream.gap` (16 Nov). Not done:
+an API command line that opens Redis, Redis session state (hash per call), AOF.
 
 `requirements-redis.txt`: redis-py 8.1.0 (MIT). Tests `tests/unit/test_redis_bridge.py`
-(Claude-authored, 15 Nov): pure tests with a fake client always run; real-Redis cases
+(Claude-authored, 15 Nov) and `tests/unit/test_event_relay_api.py` (Claude-authored,
+16 Nov; hub loss reports, relay loss reports, the relay thread, the API wiring, and one
+real-Redis case: hub -> forwarder -> Redis -> relay thread -> WebSocket, with
+`CLIENT KILL` becoming `stream.gap`): pure tests with a fake client always run; real-Redis cases
 need `AVA_TEST_REDIS_URL` (skipped in CI). Local run, with `.local/redis-test.env`
 holding `AVA_TEST_REDIS_URL=redis://127.0.0.1:56379/0` and `AVA_REQUIRE_REDIS=1`:
 

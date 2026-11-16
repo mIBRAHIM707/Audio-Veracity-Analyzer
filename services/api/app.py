@@ -15,9 +15,11 @@ GET  /v1/calls[?status=all|active|ended]  FR-A3 call summaries (state, score tre
 GET  /v1/calls/{id} FR-A3 detail: alerts and the timeline (30 min full resolution,
                   older points in 10 s buckets).
 WS   /v1/events[?call_id=]  FR-A4 envelopes as JSON text; a `stream.gap` control
-                  message reports envelopes dropped for a slow client (re-read REST).
+                  message reports envelopes dropped for a slow client, and events the
+                  Redis relay lost upstream (re-read REST).
 The calls and events routes need an `EventHub` passed to `create_app`; otherwise
-they answer 503 / close with 1011. Redis pub/sub and PostgreSQL history are backlog 5.1.
+they answer 503 / close with 1011. With a `RedisRelay` on that hub the scorer's events
+arrive from Redis pub/sub (16 Nov). PostgreSQL history is backlog 5.1.
 
 Errors: 411 no Content-Length, 413 oversize/too long, 422 undecodable/unsupported,
 503 busy, too many concurrent uploads or job queue full, 500 detector failure.
@@ -42,6 +44,7 @@ from fastapi.staticfiles import StaticFiles
 
 from services.calls.registry import CallRegistry, RegistryFeed
 from services.events.fanout import HubFull
+from services.events.relay_loop import RelayLoop
 from services.inference.analysis import (AnalysisError, AnalyzerBusy, MAX_ASYNC_SECONDS, MAX_BYTES,
                                          NeedsAsyncJob, decode_wav)
 # FR-O6 live-pipeline families, shared with the live service process (moved 16 Nov).
@@ -59,6 +62,17 @@ REGISTRY_SEPARATE = (('ava_call_registry_lost_events_total', 'lost_events',
                       'Published events the registry feed dropped before applying them.'),
                      ('ava_calls_idle_expired_total', 'idle_expired',
                       'Active calls ended by the registry to free a slot after the idle timeout.'))
+RELAY_OUTCOMES = ('relayed', 'invalid', 'hub_errors')
+RELAY_COUNTERS = (('ava_event_relay_missing_events_total', 'missing',
+                   'Events the relay counted lost from gaps in the scorer sequence.'),
+                  ('ava_event_relay_gaps_total', 'gaps', 'Sequence gaps the relay saw.'),
+                  ('ava_event_relay_source_restarts_total', 'restarts', 'Scorer sequence restarts the relay saw.'),
+                  ('ava_event_relay_connection_errors_total', 'connection_errors',
+                   'Redis connection or subscription failures.'),
+                  ('ava_event_relay_interruptions_total', 'interruptions',
+                   'Redis outages (each one loses an unknown number of events).'),
+                  ('ava_event_relay_loss_report_errors_total', 'loss_report_errors',
+                   'Losses the relay could not report to WebSocket clients.'))
 PUMP_INTERVAL_S = 0.2
 WS_BUFFER, WS_BATCH, WS_POLL_S, WS_SEND_TIMEOUT_S = 256, 64, 0.1, 10.0
 MAX_QUEUED_JOBS, MAX_KEPT_JOBS = 4, 64
@@ -140,7 +154,7 @@ class Metrics:
                 for stage in ANALYSIS_STAGES:
                     self.stages.observe(stages.get(stage), stage)
 
-    def render(self, jobs, service, uploads_in_flight, live=None, pipeline=None):
+    def render(self, jobs, service, uploads_in_flight, live=None, pipeline=None, relay=None):
         stats = jobs.stats()
         lines = ['# HELP ava_api_requests_total HTTP responses by route and status class.',
                  '# TYPE ava_api_requests_total counter']
@@ -175,6 +189,8 @@ class Metrics:
             lines += ['# HELP ava_alerts_raised_total Alerts raised on calls seen by the registry.',
                       '# TYPE ava_alerts_raised_total counter',
                       f'ava_alerts_raised_total {live["counters"]["alerts_raised"]}']
+        if relay is not None:
+            lines += relay_lines(relay)
         if pipeline is not None:
             try:
                 snapshot, age = pipeline.read()
@@ -268,6 +284,43 @@ class JobStore:
                 self._jobs[job_id].update(update)
 
 
+def gap_message(batch):
+    """`stream.gap` control text for a `Drained` batch, or None. `dropped` is always
+    present (this client's own buffer overflowed); `upstream_missing` (events counted
+    lost before they reached this process) and `upstream_interruptions` (losses of
+    unknown size: the Redis relay lost its connection or the scorer restarted) only
+    when nonzero."""
+    if not (batch.dropped or batch.upstream_missing or batch.upstream_interruptions):
+        return None
+    message = {'type': 'stream.gap', 'dropped': batch.dropped}
+    if batch.upstream_missing:
+        message['upstream_missing'] = batch.upstream_missing
+    if batch.upstream_interruptions:
+        message['upstream_interruptions'] = batch.upstream_interruptions
+    return json.dumps(message)
+
+
+def relay_lines(snapshot):
+    """FR-O6 lines for the Redis relay thread (`RelayLoop.snapshot()` plus the relay's
+    counters). No channel names, URLs or call IDs."""
+    stats = snapshot['relay']
+    lines = ['# HELP ava_event_relay_messages_total Redis pub/sub messages the relay handled, by outcome.',
+             '# TYPE ava_event_relay_messages_total counter']
+    lines += [f'ava_event_relay_messages_total{{outcome="{outcome}"}} {stats.get(outcome, 0)}'
+              for outcome in RELAY_OUTCOMES]
+    for name, key, text in RELAY_COUNTERS:
+        lines += [f'# HELP {name} {text}', f'# TYPE {name} counter', f'{name} {stats.get(key, 0)}']
+    for name, value, text in (('ava_event_relay_subscribed', int(snapshot['subscribed']),
+                               '1 while the relay holds a Redis subscription.'),
+                              ('ava_event_relay_running', int(snapshot['alive']),
+                               '1 while the relay thread runs.')):
+        lines += [f'# HELP {name} {text}', f'# TYPE {name} gauge', f'{name} {value}']
+    lines += ['# HELP ava_event_relay_thread_faults_total Exceptions raised out of a relay pump.',
+              '# TYPE ava_event_relay_thread_faults_total counter',
+              f'ava_event_relay_thread_faults_total {snapshot["faults"]}']
+    return lines
+
+
 async def _close_quietly(websocket, code, reason):
     """Close without waiting on a stuck client for longer than the send timeout."""
     try:
@@ -285,16 +338,21 @@ async def read_bounded(upload):
     return bytes(data)
 
 
-def create_app(service, *, hub=None, registry=None, dashboard_dir=None, pipeline_stats=None):
+def create_app(service, *, hub=None, registry=None, dashboard_dir=None, pipeline_stats=None, relay=None):
     """`hub` is the in-process `services.events.EventHub` carrying FR-A4 events; with it
     the app serves `/v1/calls` from a `CallRegistry` (a new one unless given) and
     `WS /v1/events`. Without it those routes answer 503: no live source is connected.
+    `relay` is a `services.events.redis_bridge.RedisRelay` on that same hub: while the
+    app runs (lifespan) a `RelayLoop` thread moves the scorer's events from Redis into
+    the hub, and the relay's loss reports reach WebSocket clients as `stream.gap`.
     `pipeline_stats` is the `services.scorer.pipeline.PipelineStats` the live loop
     publishes to; `/metrics` then adds the `ava_live_*` window/queue/stride families.
     `dashboard_dir` is the built dashboard (`dashboard/dist`, architecture §2.6): served
     at `/` on the same origin, after every API route so it never shadows one."""
     if registry is not None and hub is None:
         raise ValueError('a call registry needs the event hub that feeds it')
+    if relay is not None and (hub is None or getattr(relay, 'hub', None) is not hub):
+        raise ValueError('an event relay must publish into the app\'s event hub')
     if dashboard_dir is not None and not (Path(dashboard_dir) / 'index.html').is_file():
         raise ValueError('dashboard_dir must be a built dashboard containing index.html')
     metrics = Metrics()
@@ -302,6 +360,7 @@ def create_app(service, *, hub=None, registry=None, dashboard_dir=None, pipeline
     in_flight = [0]
     registry = None if hub is None else (registry or CallRegistry())
     feeds = []  # the live feed; subscribed only while the app runs (lifespan)
+    relay_loops = []  # likewise the Redis relay thread
     pump_errors = [0]
 
     def pump_once():
@@ -322,8 +381,20 @@ def create_app(service, *, hub=None, registry=None, dashboard_dir=None, pipeline
             feeds.append(RegistryFeed(registry, hub))
             pump_task = asyncio.create_task(pump_forever())
         try:
+            if relay_loops and not relay_loops[-1].alive:
+                relay_loops.pop()  # a loop left stuck by an earlier run has since ended
+            # After the registry subscribed, so it sees the first relayed event. The relay
+            # has one owner: never a second thread while an earlier one is stuck in it.
+            if relay is not None and not relay_loops:
+                loop = RelayLoop(relay)
+                relay_loops.append(loop)
+                loop.start()
             yield
         finally:
+            # Off the event loop; the join waits for one pump at most. A stuck loop stays
+            # listed (and visible in /metrics) so a later run does not start another.
+            if relay_loops and await run_in_threadpool(relay_loops[-1].stop):
+                relay_loops.pop()
             if pump_task is not None:
                 pump_task.cancel()
                 try:
@@ -363,7 +434,10 @@ def create_app(service, *, hub=None, registry=None, dashboard_dir=None, pipeline
         if feeds:
             pump_once()
             live = {**registry.live_stats(), 'subscribers': hub.subscriber_count}
-        return PlainTextResponse(metrics.render(jobs, service, in_flight[0], live, pipeline_stats),
+        relay_snapshot = None
+        if relay_loops:
+            relay_snapshot = {**relay_loops[-1].snapshot(), 'relay': dict(relay.stats)}
+        return PlainTextResponse(metrics.render(jobs, service, in_flight[0], live, pipeline_stats, relay_snapshot),
                                  media_type='text/plain; version=0.0.4; charset=utf-8')
 
     @app.middleware('http')
@@ -460,10 +534,12 @@ def create_app(service, *, hub=None, registry=None, dashboard_dir=None, pipeline
                     if receiver.result()['type'] == 'websocket.disconnect':
                         break
                     receiver = asyncio.create_task(websocket.receive())  # client text is ignored
-                envelopes, dropped = subscription.drain(WS_BATCH)
+                batch = subscription.drain_batch(WS_BATCH)
+                envelopes = batch.envelopes
                 texts = [envelope.to_json() for envelope in envelopes]
-                if dropped:  # control message, not an FR-A4 event: the client should re-read REST
-                    texts.insert(0, json.dumps({'type': 'stream.gap', 'dropped': dropped}))
+                gap = gap_message(batch)
+                if gap is not None:  # control message, not an FR-A4 event: the client should re-read REST
+                    texts.insert(0, gap)
                 for text in texts:
                     # A client that stops reading must not hold the server: give up after a timeout.
                     await asyncio.wait_for(websocket.send_text(text), WS_SEND_TIMEOUT_S)

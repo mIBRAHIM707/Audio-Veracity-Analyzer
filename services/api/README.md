@@ -12,7 +12,7 @@ persistence yet; bind it to localhost.
 | `GET /openapi.json` | local schema; the `/docs` pages stay off (CDN assets), a recorded deviation from FR-A11 |
 | `GET /v1/calls[?status=all\|active\|ended]` | FR-A3 summaries from `services/calls` (state, last score, 20-point score trend, alert counts) plus registry counters; 422 bad status; 503 without an event hub |
 | `GET /v1/calls/{id}` | FR-A3 detail: alerts (`open`, `cleared`, `ended_open`) and the timeline (`full_resolution`, `downsampled`); 404 unknown |
-| `WS /v1/events[?call_id=]` | FR-A4 envelopes as JSON text, oldest first; a `{"type": "stream.gap", "dropped": n}` control message when a slow client's 256-envelope buffer overflowed (re-read REST); closes 1013 at the subscriber limit, 1011 without an event hub; client messages are ignored |
+| `WS /v1/events[?call_id=]` | FR-A4 envelopes as JSON text, oldest first; a `{"type": "stream.gap", "dropped": n}` control message when a slow client's 256-envelope buffer overflowed, with `upstream_missing` (events the Redis relay counted lost) and `upstream_interruptions` (Redis outages or scorer restarts, size unknown) added only when nonzero (re-read REST); closes 1013 at the subscriber limit, 1011 without an event hub; client messages are ignored |
 
 `GET /metrics` (FR-A8, FR-O6 subset, 14 Nov): `ava_analysis_seconds` is a histogram
 (it was a summary) and `ava_analysis_stage_seconds{stage=decode|condition|inference}`
@@ -42,9 +42,35 @@ the snapshot and are validated; untimed calls counted in
 metrics, structured JSON logs and Grafana remain.
 
 The calls and events routes need `create_app(service, hub=EventHub())`: the in-process
-hub the scorer publishes to (Redis pub/sub is backlog 5.1). A background task drains
-the hub into the registry every 0.2 s and each calls request drains first, so
-responses include everything published so far.
+hub the scorer publishes to. A background task drains the hub into the registry every
+0.2 s and each calls request drains first, so responses include everything published
+so far.
+
+When the scorer runs in another process (`python -m services.live --redis-url-env`),
+pass `relay=RedisRelay(lambda: client, hub)` with
+`client = services.events.relay_loop.open_relay_client(url)` (16 Nov). While the app
+runs, a `RelayLoop` thread moves events from Redis into the hub (architecture §2.5);
+shutdown stops it and closes its subscription; the caller closes the client. Loss the
+relay detects reaches WebSocket clients as `stream.gap` (see above). REST is not
+corrected for it (no PostgreSQL recovery yet): `/v1/calls` reports
+`registry.upstream_missing` and `registry.upstream_interruptions` (not exported as
+registry metrics: the relay counters carry the same numbers), so after a gap a
+call may look active until its idle timeout. Reading `stream.gap`: one Redis outage
+usually gives two messages (an interruption at once, then the counted
+`upstream_missing` when the next event arrives), so do not add them up as separate
+losses; a gap is sent at the start of the batch in which it became known, so a few
+events after it may predate it (order by `seq`). Not detectable: a scorer restart whose
+first events were also lost reads as an ordinary gap with too small a count, and two
+scorers on one channel look like constant restarts (needs a source epoch; one scorer
+per channel). `/metrics` then adds
+`ava_event_relay_messages_total{outcome=relayed|invalid|hub_errors}`,
+`ava_event_relay_missing_events_total`, `ava_event_relay_gaps_total`,
+`ava_event_relay_source_restarts_total`, `ava_event_relay_connection_errors_total`,
+`ava_event_relay_interruptions_total`, `ava_event_relay_loss_report_errors_total`,
+`ava_event_relay_thread_faults_total` (a valid event the hub refused is
+`outcome="hub_errors"` and reaches clients as one missing event) and the
+gauges `ava_event_relay_subscribed` and `ava_event_relay_running`. There is no API
+command line yet, so the relay is wired by whoever builds the app (tests today).
 
 Long files are routed to a job before the analyser is touched, so they queue even
 while another analysis runs. Jobs are held in a bounded in-memory store (4 queued,
