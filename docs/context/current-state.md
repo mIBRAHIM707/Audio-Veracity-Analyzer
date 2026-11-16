@@ -100,9 +100,12 @@ and about 50,000 original clips, excluding codec copies.
   loss (sequence gaps, scorer restarts, Redis outages) reaches WebSocket clients as
   `stream.gap` with `upstream_missing`/`upstream_interruptions`, and `/v1/calls` and
   `ava_event_relay_*` metrics count it. A real-Redis test carries events from the
-  forwarder to a WebSocket and turns `CLIENT KILL` into `stream.gap`. This is library
-  wiring only: no API command line opens Redis yet, and REST is not corrected after
-  a gap (no PostgreSQL recovery).
+  forwarder to a WebSocket and turns `CLIENT KILL` into `stream.gap`. REST is not
+  corrected after a gap (no PostgreSQL recovery). The API now has a command line,
+  `python -m services.api --model-root DIR --port N --redis-url-env NAME`. It is
+  loopback by default (no authentication) and refuses a busy port with exit 2. It
+  stops gracefully on SIGTERM or Ctrl+Break with a `stopped` record. Its tests
+  need requirements-api.txt, so they skip on the Linux CI job.
 - **15 Nov daily run (Docker now available; details in `daily-runs/2026-11-15.md`).**
   Opus VoIP codec path with loss/jitter (3.4); speech-active noise SNR bound to the
   Silero model hash (3.4); PostgreSQL 16 migrations and per-hop event store (5.1,

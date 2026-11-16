@@ -69,8 +69,42 @@ per channel). `/metrics` then adds
 `ava_event_relay_interruptions_total`, `ava_event_relay_loss_report_errors_total`,
 `ava_event_relay_thread_faults_total` (a valid event the hub refused is
 `outcome="hub_errors"` and reaches clients as one missing event) and the
-gauges `ava_event_relay_subscribed` and `ava_event_relay_running`. There is no API
-command line yet, so the relay is wired by whoever builds the app (tests today).
+gauges `ava_event_relay_subscribed` and `ava_event_relay_running`.
+
+## Command line (16 Nov)
+
+```text
+uv run --no-project --python 3.11 --with-requirements requirements-api.txt --with-requirements requirements-redis.txt \
+    --with-requirements requirements-model.txt --extra-index-url https://download.pytorch.org/whl/cpu \
+    python -m services.api --model-root D:/AVA-Data/models/antideepfake --port 8000 \
+    [--dashboard dashboard/dist] [--redis-url-env AVA_REDIS_URL]
+```
+
+`services/api/__main__.py` serves the app with uvicorn on `--host` (default 127.0.0.1);
+a non-loopback address is refused without `--allow-non-loopback` (no authentication).
+Start-up checks: torch is installed and the model directory holds `model.safetensors`
+(the baseline is hash-verified and loaded on first use; `/readyz` runs the warm-up),
+the dashboard has `index.html`, the listening socket binds (a port in use refuses;
+`--port 0` takes a free port), and with `--redis-url-env NAME` the variable is set and
+the URL parses. The URL is never on the command line or printed. Redis down at
+start-up is reported (`redis_reachable: false`) and the relay thread keeps retrying; it
+is not refused. Records go to stderr as JSON lines: `starting` (port, pid, threads,
+`allow_non_loopback`) after the bind; `stopped` (stop signal, relay counters) after a
+graceful shutdown on SIGINT, SIGTERM or Windows Ctrl+Break, exit 0; `refused`, exit 2;
+`interrupted` for Ctrl+C during start-up, exit 130. uvicorn re-raises the stop signal
+after shutting down; the command line installs flag-only handlers first so the
+process is not killed before the `stopped` record. Open connections get 10 s at stop.
+
+Tests: `tests/unit/test_api_cli.py` (Claude-authored, 16 Nov). In-process cases inject
+the detector, Redis opener and server; child-process cases run
+`tests/unit/api_cli_child.py` (the real `main`, fixture detector) with real uvicorn: a
+stop signal gives exit 0 and a `stopped` record (Ctrl+Break on Windows, SIGTERM
+elsewhere; checked to fail when the handlers are removed), a busy port exits 2 with one
+`refused` record, and with real Redis a published call reaches `/v1/calls`. They need
+requirements-api.txt, so they skip on the Linux CI job (it installs only
+requirements-audio.txt; workflows are not edited by the daily runner). On Windows the
+venv `python.exe` is a launcher: stopping a child means waiting until its server stops
+answering, with the `starting` pid as a last resort.
 
 Long files are routed to a job before the analyser is touched, so they queue even
 while another analysis runs. Jobs are held in a bounded in-memory store (4 queued,

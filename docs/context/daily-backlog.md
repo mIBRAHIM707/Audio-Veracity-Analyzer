@@ -225,9 +225,12 @@ items needing that data are listed at the end and stay out of the queue.
   (`services/events/relay_loop.py`, backoff, bounded stop), `create_app(..., relay=)`
   with `stream.gap` `upstream_missing`/`upstream_interruptions`, registry upstream
   counters and `ava_event_relay_*` metrics; Claude-authored tests incl. a real-Redis
-  WebSocket case; review conditional pass fixed. Remaining: an API command line that
-  opens Redis (library wiring only today), a source epoch for restart detection, job
-  cancellation/idempotency (scope decision).
+  WebSocket case; review conditional pass fixed. Then `python -m services.api`
+  (`services/api/__main__.py`: loopback by default, bind before announcing,
+  `--redis-url-env` relay, graceful SIGTERM/Ctrl+Break with a `stopped` record); 12
+  Claude-authored tests incl. child processes with real uvicorn and Redis; review fixed.
+  Remaining: a source epoch for restart detection, job cancellation/idempotency
+  (scope decision).
 - [ ] 5.3 Restart recovery, in-flight handling and default no-audio-retention behavior.
   Progress (12 Nov): default no-raw-audio retention on the analysis API verified by 3
   Claude-authored tests (spooled uploads removed with rollover proven, no audio in
