@@ -174,6 +174,45 @@ class MetricsTests(unittest.TestCase):
         names = re.findall(r'^# TYPE (\S+) ', text, re.M)
         self.assertEqual(len(names), len(set(names)))
 
+    def test_exported_kinds_are_exactly_the_receiver_and_jitter_stats_keys(self):
+        # Claude-authored (16 Nov 2026, review finding): a renamed or new stats key must
+        # fail here rather than export a stale 0 forever.
+        from services.live.health import JITTER_COUNTERS, RECEIVER_COUNTERS
+        from services.tap.jitter import JitterBuffer
+        from services.tap.rtp_receiver import RtpSession
+        session = RtpSession(host='127.0.0.1', jitter=JitterBuffer(depth_s=0.06))
+        self.addCleanup(session.close)
+        stats = session.receiver_stats()
+        self.assertEqual(set(RECEIVER_COUNTERS), {key for key in stats if not key.startswith('jitter_')})
+        self.assertEqual({f'jitter_{key}' for key in JITTER_COUNTERS}, {key for key in stats if key.startswith('jitter_')})
+        self.assertEqual(len(RECEIVER_COUNTERS) + len(JITTER_COUNTERS), len(stats))
+
+    def test_rtp_receiver_and_jitter_totals_are_exported(self):
+        # Claude-authored (16 Nov 2026): every known kind is present (0 until a call ends),
+        # then the tap's totals, incl. dropped_handover (re-review suggestion, 6.3).
+        service = make_service(ManualClock())
+        health = HealthServer(service, port=0)
+        self.addCleanup(health.stop)
+        values = samples(health.metrics())
+        self.assertEqual(values['ava_live_rtp_receiver_total{kind="packets"}'], 0)
+        self.assertEqual(values['ava_live_jitter_buffer_total{kind="dropped_handover"}'], 0)
+        service.tap._add_receiver_totals({'packets': 500, 'gaps': 3, 'jitter_concealed_frames': 40,
+                                          'jitter_dropped_handover': 7, 'unknown_new_key': 9})
+        service.tap._add_receiver_totals({'packets': 20, 'jitter_dropped_handover': 1})
+        text = health.metrics()
+        values = samples(text)
+        self.assertEqual((values['ava_live_rtp_receiver_total{kind="packets"}'],
+                          values['ava_live_rtp_receiver_total{kind="gaps"}'],
+                          values['ava_live_jitter_buffer_total{kind="concealed_frames"}'],
+                          values['ava_live_jitter_buffer_total{kind="dropped_handover"}']), (520, 3, 40, 8))
+        self.assertNotIn('unknown_new_key', text)  # only the fixed kinds are exported
+        self.assertEqual(values['ava_live_metrics_render_errors_total'], 0)
+        service.tap.receiver_totals = {'packets': float('nan')}  # corrupted: the family alone is dropped
+        values = samples(health.metrics())
+        self.assertNotIn('ava_live_rtp_receiver_total{kind="packets"}', values)
+        self.assertIn('ava_live_tap_events_total{kind="tapped"}', values)
+        self.assertEqual(values['ava_live_metrics_render_errors_total'], 1)
+
     def test_a_bad_family_is_dropped_and_counted_not_the_endpoint(self):
         clock = ManualClock()
         service = make_service(clock)

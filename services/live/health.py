@@ -60,6 +60,13 @@ TAP_COUNTERS = ('events', 'bad_events', 'tapped', 'tap_failures', 'refused_capac
 SINK_COUNTERS = ('started', 'refused', 'audio_chunks', 'audio_unfed', 'ended', 'ended_elsewhere', 'end_retries',
                  'ends_forced', 'end_cancelled_tail', 'health_published', 'health_failures', 'pump_errors',
                  'errors')
+# services/tap/rtp_receiver.py RtpSession.stats and services/tap/jitter.py JitterBuffer.stats
+# (prefixed `jitter_`), summed over ended calls; a key never seen is exported as 0.
+RECEIVER_COUNTERS = ('packets', 'malformed', 'other_payload', 'other_source', 'gaps', 'missing', 'late_or_duplicate',
+                     'over_limit', 'ssrc_changes', 'other_ptime')
+JITTER_COUNTERS = ('received', 'played', 'concealed_frames', 'repeated_frames', 'silence_frames', 'late', 'duplicate',
+                   'reordered', 'resyncs', 'talkspurts', 'restarts', 'drift_adjustments', 'dropped_pending',
+                   'dropped_handover')
 STORE_OUTCOMES = ('stored', 'duplicate', 'after_end', 'not_stored', 'unknown_alert', 'refused', 'skipped_faulty')
 STORE_WAITS = ('retry_waits', 'store_misconfigured', 'faults')
 
@@ -175,7 +182,8 @@ class HealthServer:
     def metrics(self):
         ready, _, _ = self.readiness()
         lines = _family('gauge', 'ava_live_ready', '1 when /readyz would answer 200.', [((), int(ready))])
-        sections = (self._service_lines, self._call_lines, self._tap_lines, self._pipeline_lines, self._pump_lines)
+        sections = (self._service_lines, self._call_lines, self._tap_lines, self._receiver_lines, self._pipeline_lines,
+                    self._pump_lines)
         for section in sections:
             try:
                 lines += section()
@@ -217,6 +225,17 @@ class HealthServer:
                         [((('kind', key),), tap[key]) for key in TAP_COUNTERS])
                 + _family('counter', 'ava_live_sink_events_total', 'Tap-to-scoring sink counters by kind.',
                           [((('kind', key),), sink[key]) for key in SINK_COUNTERS]))
+
+    def _receiver_lines(self):
+        totals = dict(getattr(self.service.tap, 'receiver_totals', None) or {})  # replaced, never mutated
+        return (_family('counter', 'ava_live_rtp_receiver_total',
+                        'RTP receiver counts summed over ended calls (packets, malformed, gaps, ...); kinds have '
+                        'different units, do not sum across kinds.',
+                        [((('kind', key),), totals.get(key, 0)) for key in RECEIVER_COUNTERS])
+                + _family('counter', 'ava_live_jitter_buffer_total',
+                          'Jitter-buffer counts summed over ended calls (frames, packets and events; do not sum '
+                          'across kinds); dropped_handover = concealment skipped by the hand-over budget (FR-I2).',
+                          [((('kind', key),), totals.get(f'jitter_{key}', 0)) for key in JITTER_COUNTERS]))
 
     def _pipeline_lines(self):
         snapshot, age = self.service.pipeline_stats.read()

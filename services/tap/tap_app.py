@@ -95,6 +95,8 @@ class TapApp:
         self._marked = {}  # channel IDs marked as inbound caller legs (insertion-ordered)
         self.stats = {'events': 0, 'bad_events': 0, 'tapped': 0, 'tap_failures': 0, 'refused_capacity': 0,
                       'ended': 0, 'sink_errors': 0, 'cleanup_errors': 0, 'swept': 0}
+        # Receiver and `jitter_` buffer counts summed over ended calls (FR-I2, FR-O6).
+        self.receiver_totals = {}
 
     # -- event dispatch ----------------------------------------------------------------
 
@@ -201,9 +203,20 @@ class TapApp:
             pass
         self._drain(call, final=True)
         receiver = call.session.receiver_stats()
+        self._add_receiver_totals(receiver)
         self._release(call)
         self.stats['ended'] += 1
         self._emit('ended', call_id, reason, receiver)
+
+    def _add_receiver_totals(self, receiver):
+        """Adds one ended call's receiver and jitter-buffer counts to `receiver_totals`.
+        The dict is replaced, never changed in place, so another thread (the health
+        server) can copy it while the loop thread adds a call."""
+        totals = dict(self.receiver_totals)
+        for key, value in (receiver or {}).items():
+            if isinstance(key, str) and type(value) is int and value >= 0:
+                totals[key] = totals.get(key, 0) + value
+        self.receiver_totals = totals
 
     def _release(self, call):
         """Free the tap's own resources; the call channel is never touched."""

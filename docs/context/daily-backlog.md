@@ -337,7 +337,9 @@ items needing that data are listed at the end and stay out of the queue.
   (`services/live/health.py`, `--health-port`; pipeline families shared with the API via
   `services/scorer/metrics_text.py`, calls/capacity, tap/sink, pump and store health);
   lab: ready and one active call reported during a real call.
-  Remaining FR-O6: telephony RTP metrics, JSON logs, Grafana.
+  16 Nov: RTP receiver and jitter-buffer counts (incl. `dropped_handover`) summed over
+  ended calls on the live `/metrics`. Remaining FR-O6: in-call RTP metrics, per-stage
+  latency, JSON logs, Grafana.
 - [ ] 7.3 P1 history/search/local authentication/audit and feedback after P0.
 - [ ] 7.QA Astra-designed Playwright suite, offline assets, failures/reconnects.
 

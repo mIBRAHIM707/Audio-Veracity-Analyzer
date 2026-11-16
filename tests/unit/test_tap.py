@@ -478,6 +478,51 @@ class TapAppTests(unittest.TestCase):
         self.assertEqual((stats['ssrc_changes'], stats['jitter_restarts'], stats['jitter_concealed_frames']), (1, 1, 0))
         self.assertEqual(len(self.sink.frames), 40)
 
+    def test_receiver_totals_sum_each_ended_call(self):
+        # Claude-authored (16 Nov 2026): the live /metrics RTP and jitter families read
+        # these totals (FR-I2, FR-O6); counted once per call, at its end.
+        app = self.make(jitter_depth_s=0.06)
+        for call_id in ('c30', 'c31'):
+            app.handle(answered(call_id))
+        self.feed(app, 'c30', [(k, 0x46, 0.02 * k) for k in range(50) if k % 10 != 5])  # 5 holes
+        self.feed(app, 'c31', [(k, 0x47, 1.0 + 0.02 * k) for k in range(30)])
+        self.assertEqual(app.receiver_totals, {}, 'nothing counted before a call ends')
+        before = app.receiver_totals
+        self.now[0] = 2.0
+        app.handle({'type': 'ChannelDestroyed', 'channel': {'id': 'c30'}})
+        self.assertEqual(before, {}, 'the totals are replaced, not changed in place')
+        app.handle({'type': 'ChannelDestroyed', 'channel': {'id': 'c31'}})
+        first, second = self.sink.receiver_stats['c30'], self.sink.receiver_stats['c31']
+        self.assertEqual(set(app.receiver_totals), set(first) | set(second))
+        for key, total in app.receiver_totals.items():
+            self.assertEqual(total, first.get(key, 0) + second.get(key, 0), key)
+        self.assertEqual((app.receiver_totals['packets'], app.receiver_totals['jitter_concealed_frames']), (75, 5))
+        app.handle({'type': 'ChannelDestroyed', 'channel': {'id': 'c31'}})  # already ended: not counted again
+        self.assertEqual(app.receiver_totals['packets'], 75)
+        app._add_receiver_totals({'packets': True, 'gaps': -1, 'missing': 2.5, 3: 4, 'late_or_duplicate': 1})
+        self.assertEqual((app.receiver_totals['packets'], app.receiver_totals['gaps'],
+                          app.receiver_totals['late_or_duplicate']), (75, first['gaps'] + second['gaps'],
+                                                                      first['late_or_duplicate'] + second['late_or_duplicate'] + 1))
+
+    def test_receiver_totals_count_a_lost_and_retapped_call_per_tap(self):
+        # Claude-authored (16 Nov 2026, review finding): a call ended `monitor_lost` (its
+        # media channel destroyed) and tapped again is counted once per tap.
+        app = self.make(jitter_depth_s=0.06)
+        app.handle(answered('c40'))
+        self.feed(app, 'c40', [(k, 0x48, 0.02 * k) for k in range(20)])
+        app.handle({'type': 'ChannelDestroyed', 'channel': {'id': app.calls['c40'].media_id}})
+        self.assertEqual(self.sink.events[-1], ('ended', 'c40', 'monitor_lost'))
+        first = dict(self.sink.receiver_stats['c40'])
+        app.handle(answered('c40'))
+        self.assertIn('c40', app.calls, 'a monitor_lost call may be tapped again')
+        self.feed(app, 'c40', [(k, 0x49, 1.0 + 0.02 * k) for k in range(10)])
+        self.now[0] = 2.0
+        app.handle({'type': 'ChannelDestroyed', 'channel': {'id': 'c40'}})
+        second = self.sink.receiver_stats['c40']
+        self.assertEqual((first['packets'], second['packets'], app.receiver_totals['packets']), (20, 10, 30))
+        for key, total in app.receiver_totals.items():
+            self.assertEqual(total, first.get(key, 0) + second.get(key, 0), key)
+
     def test_jitter_mode_hangup_drain_delivers_buffered_frames(self):
         app = self.make(jitter_depth_s=0.06)
         app.handle(answered('c22'))

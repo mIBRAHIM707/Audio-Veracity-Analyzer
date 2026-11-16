@@ -94,7 +94,9 @@ and about 50,000 original clips, excluding codec copies.
   live process now serves `/healthz`, `/readyz` and `/metrics` (`--health-port`; 7.2/8.1).
   Readiness requires the ARI stream, a loop that is turning and a detector that is not
   failing. The PRD's FR-A8 wording ("readyz performs a warm-up inference") needs the
-  proposed update; FR-O6 is still partial.
+  proposed update; FR-O6 is still partial. Since 16 Nov attempt 5 the live `/metrics` also
+  exports RTP receiver and jitter-buffer counts (incl. `dropped_handover`), summed when
+  each call ends (`ava_live_rtp_receiver_total`, `ava_live_jitter_buffer_total`).
   Attempt 2 (5.2): the analysis API can take a `RedisRelay` (`create_app(..., relay=)`).
   A `RelayLoop` thread moves the scorer's events from Redis into the API hub. Relay
   loss (sequence gaps, scorer restarts, Redis outages) reaches WebSocket clients as

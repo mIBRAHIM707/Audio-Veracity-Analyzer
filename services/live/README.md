@@ -192,7 +192,12 @@ at stop; the start record adds `health`. At most 8 connections are served at onc
   `services/api/app.py` unchanged: windows offered/resolved, batches, detector failures,
   queues, stride, inference latency histogram, snapshot age/validity); ARI connects and
   disconnects; loop, hook and shutdown errors; the detector failure run; active calls,
-  capacity and capacity refusals; tap and sink counters by kind; per pump
+  capacity and capacity refusals; tap and sink counters by kind; RTP receiver counts
+  (`ava_live_rtp_receiver_total{kind}`: packets, malformed, gaps, missing, ...) and
+  jitter-buffer counts (`ava_live_jitter_buffer_total{kind}`: played, `concealed_frames`,
+  `dropped_handover`, resyncs, ...; kinds mix frames, packets and events, so do not sum
+  across kinds), summed over ended calls only (a call in progress is counted
+  when it ends; a call ended `monitor_lost` and re-tapped later is counted per tap); per pump
   alive/stuck/faults/moved/hub drops, store outcomes, waits (retry, misconfigured,
   faults), backlog and consecutive failures, Redis forwarded, failed and unheard; health
   requests and refused connections. No call IDs, numbers or audio; label values are
@@ -210,7 +215,10 @@ failing 3 batches in a row makes it unready and one success resets it, also thro
 real pipeline with a raising ONNX session; a real loop turning keeps it ready and
 stopping makes it unready; validation; metrics parse as valid exposition text, one TYPE
 per family, no call ID or number; a bad counter and a malformed snapshot dropped and
-counted; store-outage pump families; HTTP routes, 404, 405 for every other method incl.
+counted; store-outage pump families; RTP receiver/jitter totals exported with every
+kind at 0 before a call ends, summed after, unknown keys not exported and a corrupted
+total dropped alone (added later on 16 Nov, with a `test_tap.py` case summing two real
+ended calls); HTTP routes, 404, 405 for every other method incl.
 HEAD/OPTIONS, content type; silent clients dropped after the timeout and connections
 over the cap closed; four concurrent scrapers while the loop turns, none hung; the port
 freed at stop;
@@ -232,6 +240,6 @@ was counted as a disconnect (fixed, unit-tested).
 ## Not done
 
 A deployment configuration file (beyond the scoring JSON); FR-O6 per-stage live latency,
-alerts per minute, telephony RTP metrics (per-call receiver/jitter statistics are not
-aggregated yet), JSON logs and a Grafana dashboard (P1); scorer resume from stored state (FR-I11); agent direction; capacity measurement on box A1 (8.QA); file-mode jobs through the same
+alerts per minute, live (in-call) RTP metrics (receiver/jitter counts are exported only
+when a call ends), JSON logs and a Grafana dashboard (P1); scorer resume from stored state (FR-I11); agent direction; capacity measurement on box A1 (8.QA); file-mode jobs through the same
 batcher.
