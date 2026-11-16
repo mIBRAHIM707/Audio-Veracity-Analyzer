@@ -149,12 +149,12 @@ def _split_leaks(rows, split):
 
 
 def load_windows(prepared_root, split, purpose, *, parent_root=None, noise_path=None,
-                 allow_source_errors=False, max_windows=10_000, ffmpeg=None, vad=None):
+                 allow_source_errors=False, max_windows=10_000, ffmpeg=None, vad=None, rir_paths=None):
     """Return ``{'windows': [...], 'summary': {...}}``; each window keeps its row metadata.
 
     ``window['samples']`` is ``array('h')`` of exactly WINDOW_SAMPLES values. An
     augmented-copy root needs its ``parent_root`` (and ``noise_path`` if the chain
-    names noise): the parent must be a conditioned prepared root and
+    names noise, ``rir_paths`` if it names RIRs): the parent must be a conditioned prepared root and
     ``data.prepare.augment.verify_augmented`` must pass before anything loads.
     Roots that quarantined sources or refused copies are refused unless
     ``allow_source_errors`` is true (the count is then reported). Holding the default
@@ -182,7 +182,8 @@ def load_windows(prepared_root, split, purpose, *, parent_root=None, noise_path=
         try:
             # GSM/AMR-NB roots rebuild through the pinned ffmpeg (data/prepare/ffmpeg_codecs.Ffmpeg).
             # A speech-active noise SNR rebuilds through the named VAD model (`vad`).
-            problems = augment.verify_augmented(parent_root, root, noise_path, ffmpeg=ffmpeg, vad=vad)
+            problems = augment.verify_augmented(parent_root, root, noise_path, ffmpeg=ffmpeg, vad=vad,
+                                                rir_paths=rir_paths)
         except RecursionError as error:
             raise ValueError('Report nesting is too deep') from error
         if problems:
@@ -200,8 +201,9 @@ def load_windows(prepared_root, split, purpose, *, parent_root=None, noise_path=
         def codec_of(row):
             return augment.row_codec(spec, row)
     else:
-        if parent_root is not None or noise_path is not None or ffmpeg is not None or vad is not None:
-            raise ValueError('parent_root, noise_path, ffmpeg and vad apply only to augmented-copy roots')
+        if parent_root is not None or noise_path is not None or ffmpeg is not None or vad is not None \
+                or rir_paths:
+            raise ValueError('parent_root, noise_path, ffmpeg, vad and rir_paths apply only to augmented-copy roots')
         _require_conditioned(report)
         source_errors = _summary_errors(report)
         def codec_of(row):

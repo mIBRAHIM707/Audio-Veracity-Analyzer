@@ -27,6 +27,10 @@ label). Live-call lab now works in Docker (Asterisk tap, real public clips throu
 call); PostgreSQL/Redis plumbing exists. A live service process now starts only with
 a matching model card, and scored a lab call with the exported (untrained-head) model.
 No participant data involved.
+16 Nov: data-relevant — `augment.py` can add room reverberation (`reverb` spec with
+hash-pinned 16 kHz RIR WAVs, `--rir`; one seeded RIR per clip before noise). Needs a
+person: download an RIR/noise corpus (OpenSLR SLR28, Apache-2.0) to `D:/AVA-Data`, and
+choose which RIRs count as handset vs speakerphone.
 
 Updated 4 October 2026. This is the active sequence; evidence lives in
 `current-state.md` and `handoffs/`. Check marks mean the stated bounded task passed

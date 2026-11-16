@@ -145,7 +145,14 @@ items needing that data are listed at the end and stay out of the queue.
   `noise.snr_basis: speech_active` + `vad_sha256`; writer/verifier/loader take the VAD;
   VAD faults systemic; insufficient-speech refusals tagged and counted; mask rule and
   per-frame decisions recorded); 13 Claude-authored unit + 1 real-Silero model test;
-  review conditional pass, findings fixed. Remaining: noise corpora, RIRs.
+  review conditional pass, findings fixed. 16 Nov: room impulse responses
+  (`data/prepare/reverb.py`: first-arrival direct path, polarity normalised, level-
+  preserving FFT convolution, DRR/energy lineage; optional `reverb` spec of 1-64
+  hash-pinned RIRs, seeded pick per clip before noise, `--rir`, unusable RIR stops the
+  run, `reverb_clipping` refusals, loader `rir_paths`); Claude-authored tests, review
+  conditional pass, findings fixed. Remaining: provisioning SLR28 RIRs/noises (blocked:
+  this session cannot write to `D:/AVA-Data`), RIR preparation (channels, trimming,
+  per-database licences), handset/speakerphone labelling (PRD question).
 - [ ] 3.QA Sample-level parity, malformed formats and immutable-original checks.
   Progress (14 Nov, catch-up): `docs/qa/phase-3-qa.md` independent conditional pass as
   infrastructure for the implemented scope; L1-L6 fixed (one plain-PCM fmt rule in

@@ -221,6 +221,28 @@ class WindowLoaderTests(unittest.TestCase):
             self.assertTrue(window['path'].endswith(f'_{window["codec"]}.wav'))
         self.assertEqual(loaded['summary']['chain_spec_sha256'], augment.spec_sha256(chain))
 
+    def test_reverb_root_loads_only_with_its_rirs(self):
+        # Claude-authored, 16 Nov 2026 (backlog 3.4 RIRs): the loader rebuilds through the RIRs.
+        from tests.unit.test_reverb import decaying_rir
+        rir = decaying_rir(seed=21)
+        rir_path, other_path = self.base / 'rir.wav', self.base / 'other.wav'
+        write_wav(rir_path, np.frombuffer(rir, dtype='<i2'))
+        write_wav(other_path, np.frombuffer(decaying_rir(seed=22), dtype='<i2'))
+        spec = {'chain_version': augment.CHAIN_VERSION, 'master_seed': 7, 'codec': 'g711_ulaw',
+                'concealment': 'repeat_then_silence', 'packet_loss': False, 'jitter': False, 'noise': None,
+                'reverb': {'rirs': [{'sha256': hashlib.sha256(rir).hexdigest(), 'label': 'handset',
+                                     'source_id': 'fixture', 'licence_ref': 'generated'}]}}
+        augmented = self.base / 'augmented-reverb'
+        augment.augment_prepared(self.prepared, augmented, spec, rir_paths=[rir_path])
+        loaded = windows.load_windows(augmented, 'train', 'train', parent_root=self.prepared, rir_paths=[rir_path])
+        self.assertEqual(loaded['summary']['windows'], 2)
+        self.assertEqual(loaded['summary']['chain_spec_sha256'], augment.spec_sha256(spec))
+        for paths in (None, [other_path]):
+            with self.assertRaisesRegex(ValueError, 'failed verification'):
+                windows.load_windows(augmented, 'train', 'train', parent_root=self.prepared, rir_paths=paths)
+        with self.assertRaisesRegex(ValueError, 'only to augmented'):
+            windows.load_windows(self.prepared, 'train', 'train', rir_paths=[rir_path])
+
     def test_augmented_copy_roots_load_with_inherited_provenance(self):
         spec = {'chain_version': augment.CHAIN_VERSION, 'master_seed': 7, 'codec': 'g711_alaw',
                 'concealment': 'repeat_then_silence', 'packet_loss': True, 'jitter': False, 'noise': None}

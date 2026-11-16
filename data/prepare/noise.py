@@ -6,7 +6,7 @@ noise is shorter than the speech. By default power is the mean square over the w
 clip (clip-level SNR); with `active_mask` (from `speech_mask` and a VAD, 15 Nov) the
 speech power is taken over speech-active samples only. The mix is
 rounded to int16 and clipped; clipped samples are counted in the record. Noise corpora
-(babble, street, vehicle) and room impulse responses are not provided here.
+(babble, street, vehicle) are not provided here; room impulse responses are reverb.py.
 Inputs must be `bytes` at the same sample rate; the caller resamples first.
 """
 import hashlib

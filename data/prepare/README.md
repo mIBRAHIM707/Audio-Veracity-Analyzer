@@ -243,8 +243,8 @@ speech power over the active samples only (at least 0.5 s, else `InsufficientSpe
 noise power still over the whole excerpt). This is mean-square power over Silero speech
 frames, not ITU-T P.56 active speech level. A VAD exception or invalid probability is a
 systemic `VadError`. Records without a mask are unchanged.
-No noise corpus or room impulse responses are included; `augment.py` applies it
-when a chain names a noise file.
+No noise corpus is included; `augment.py` applies it when a chain names a noise file.
+Room impulse responses are `reverb.py`, described with the chain below.
 
 ## Recorded augmentation chain (backlog 3.3/3.4 wiring; FR-D6, FR-D7, FR-D13)
 
@@ -254,8 +254,8 @@ repository. Run it as a module (a script-directory `codecs` import would shadow 
 standard library):
 
 ```text
-uv run --no-project --python 3.11 --with-requirements requirements-audio.txt python -m data.prepare.augment --prepared-root <prepared root> --spec <chain.json> --output-root <new root> [--noise <noise.wav>]
-uv run --no-project --python 3.11 --with-requirements requirements-audio.txt python -m data.prepare.augment --prepared-root <prepared root> --spec <chain.json> --verify <augmented root> [--noise <noise.wav>]
+uv run --no-project --python 3.11 --with-requirements requirements-audio.txt python -m data.prepare.augment --prepared-root <prepared root> --spec <chain.json> --output-root <new root> [--noise <noise.wav>] [--rir <rir.wav> ...]
+uv run --no-project --python 3.11 --with-requirements requirements-audio.txt python -m data.prepare.augment --prepared-root <prepared root> --spec <chain.json> --verify <augmented root> [--noise <noise.wav>] [--rir <rir.wav> ...]
 ```
 
 The specification has exactly `chain_version` (`ava-telephone-chain-v1`),
@@ -329,7 +329,40 @@ size, minimum, runtime version, per-frame decisions). Rebuilding is runtime-sens
 another CPU or onnxruntime build can flip a frame near 0.5 and the verifier then reports
 drift, so verify on the machine/runtime that wrote the root. The loader re-runs the VAD
 on every clip of such a root (CPU time). Specs without these keys keep the whole-clip
-SNR and their hashes. G.729 (no encoder in ffmpeg) and RIRs remain open.
+SNR and their hashes. G.729 (no encoder in ffmpeg) remains open.
+
+Room impulse responses (16 Nov 2026, PRD FR-D7): a single or mix spec may add
+`"reverb": {"rirs": [{"sha256", "label", "source_id", "licence_ref"}, ...]}` (1-64
+distinct 16 kHz mono PCM16 RIRs, at most 2 s each, by PCM SHA-256). Pass every RIR WAV
+with `--rir <path>` (repeat; order free; no missing or extra file) to the writer and
+`--verify`, and `rir_paths=` to the training window loader. Each copy picks one RIR by
+a seeded draw over (`ava-rir-pick-v1`, master seed, derivation clip ID), independent of
+the other draws, and the chain becomes room -> noise -> channel -> 16 kHz.
+`reverb.apply_rir` takes the RIR's direct path as the first arrival (the first sample
+within 20 dB of the peak, since an early reflection can be stronger than the direct
+sound), drops the samples before it so the copy is not delayed, and flips a negative
+direct path positive (`direct_sign` recorded); keeps the input length (the tail past
+the end is cut); and scales the result to the input's whole-clip mean square (level
+preserved). Every RIR is checked when loaded (not silent, at most 2 s, direct path no
+later than 0.5 s); an unusable RIR stops the run before anything is written. The step
+record holds the RIR hash/labels, pool index, direct-path and peak indices, sign,
+direct-to-reverberant ratio (+/-2.5 ms), pre-direct and cut-tail energy fractions, gain
+and hashes; the summary adds `rir_counts` and `reverb_clipping_refusals` (a copy that
+would clip is an error row tagged `refusal: reverb_clipping` with the RIR hash).
+FFT rounding can differ in the last bits between platforms or numpy builds, and the
+records hold float fields, so, as with the VAD, verify on the machine and numpy that
+wrote the root; this includes `models/ava/windows.load_windows`, which runs the verifier
+before training. Which RIRs represent a handset or a speakerphone is the RIR entry's
+`label`, chosen by a person from the corpus metadata (DRR is recorded, not used to
+classify; an open PRD question). No RIR corpus is provisioned yet (see the 16 Nov daily
+report). OpenSLR SLR28 (Apache-2.0 bundle, 16 kHz; simulated and real RIRs plus
+point-source noises) is the intended source. Not yet checked: its real RIRs come from
+RWCP, REVERB 2014 and AIR, whose own terms may differ from the bundle licence (record a
+`licence_ref` per source database), and some may be multichannel or longer than 2 s,
+which these rules refuse. Channel choice and trimming would be a separate, recorded
+preparation step. That step should also review RIRs with a large `peak_index -
+direct_index` gap or a low DRR: noise or sweep pre-echo within 20 dB of the peak would
+be taken as the first arrival and delay the copy (review L8). Specs without the key keep their hashes and reports.
 
 `tests/unit/test_conditioning_parity.py` checks that this preparation path and the
 analysis service (`services/inference/`) condition the same WAV to identical

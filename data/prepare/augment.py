@@ -31,7 +31,14 @@ the run before anything is written. A `codec_mix` spec lists 2-8 weighted channe
 each copy takes one by a seeded per-clip draw (`derive_channel`, recorded as
 `chain.codec_choice`; the summary adds per-codec and per-channel counts), so one augmented
 root spans several codecs. G.729 (no encoder in ffmpeg; the PRD accepts Opus or G.729)
-and room impulse responses are not implemented.
+is not implemented.
+
+Room impulse responses (16 Nov, optional `reverb` key, absent = unchanged spec hashes and
+reports): `{"rirs": [{sha256, label, source_id, licence_ref}, ...]}` lists 1-64 distinct
+16 kHz mono PCM16 RIRs (passed as `rirs`, `--rir`, matched by PCM SHA-256). Each copy
+convolves its clip with one seeded pick (`reverb.derive_reverb`, direct-path aligned,
+level preserved) first, before the noise: speech -> room -> (+ noise) -> channel. A
+reverberant copy that would clip is refused per clip (`refusal: reverb_clipping`).
 """
 import argparse
 import array
@@ -52,6 +59,8 @@ if __package__:
     from .noise import (MASK_RULE, MIN_ACTIVE_SAMPLES, VAD_FRAME_SAMPLES, VAD_THRESHOLD, InsufficientSpeech,
                         VadError, derive_noise, mix_planned, speech_mask)
     from .prepare_audio import PROVENANCE_FIELDS, measures
+    from .reverb import (MAX_POOL as MAX_RIRS, MAX_RIR_SAMPLES, apply_planned as apply_rir_planned, derive_reverb,
+                         rir_profile)
     from .wav_format import pcm_format_problem
 else:  # a script-directory 'codecs' import would shadow the standard library module
     raise SystemExit('Run as a module: python -m data.prepare.augment ...')
@@ -106,6 +115,10 @@ NOISE_KEYS = {'sha256', 'label', 'source_id', 'licence_ref'}
 # SHA-256) measures the speech power over VAD speech frames (noise.speech_mask). Absent:
 # whole-clip SNR, as before, so existing specs and their hashes are unchanged.
 NOISE_SPEECH_ACTIVE_KEYS = {'snr_basis', 'vad_sha256'}
+# Optional (16 Nov) in single and mix specs; absent keeps existing spec hashes.
+OPTIONAL_KEYS = {'reverb'}
+REVERB_KEYS = {'rirs'}
+RIR_KEYS = NOISE_KEYS
 CLIP_PATH = re.compile(r'clips/[A-Za-z0-9_-][A-Za-z0-9_.-]*\.wav')
 MAX_REPORT_BYTES = 64_000_000
 MAX_CLIP_BYTES = 1_000_000
@@ -125,6 +138,14 @@ class NoiseClipped(ValueError):
     def __init__(self, snr_db, clipped):
         super().__init__(f'noise mix at {snr_db} dB SNR clipped {clipped} samples; refused')
         self.snr_db, self.clipped = snr_db, clipped
+
+
+class ReverbClipped(ValueError):
+    """The level-preserving RIR convolution would clip; refused per clip, with the RIR."""
+
+    def __init__(self, rir_sha256, clipped):
+        super().__init__(f'reverberant copy with RIR {rir_sha256[:12]} clipped {clipped} samples; refused')
+        self.rir_sha256, self.clipped = rir_sha256, clipped
 
 
 def derivation_id(row):
@@ -153,12 +174,12 @@ def validate_spec(spec):
 
 def _mix_problems(spec):
     problems = []
-    missing, unknown = MIX_SPEC_KEYS - spec.keys(), spec.keys() - MIX_SPEC_KEYS
+    missing, unknown = MIX_SPEC_KEYS - spec.keys(), spec.keys() - MIX_SPEC_KEYS - OPTIONAL_KEYS
     if missing:
         problems.append(f'missing keys {sorted(missing)}')
     if unknown:
         problems.append(f'unknown keys {sorted(unknown)} (a codec_mix spec puts channel keys in its channels)')
-    shared = {key: spec[key] for key in ('chain_version', 'master_seed', 'noise') if key in spec}
+    shared = {key: spec[key] for key in ('chain_version', 'master_seed', 'noise', 'reverb') if key in spec}
     channels = spec['codec_mix']
     if not isinstance(channels, list) or not 2 <= len(channels) <= MAX_MIX_CHANNELS:
         return problems + [f'codec_mix must be a list of 2 to {MAX_MIX_CHANNELS} channels']
@@ -173,7 +194,8 @@ def _mix_problems(spec):
         single = {**shared, **{key: channel[key] for key in CHANNEL_KEYS}}
         # Shared-key problems are reported once below, not per channel.
         problems.extend(f'codec_mix[{index}]: {problem}' for problem in _single_problems(single)
-                        if not problem.startswith(('missing keys', 'chain_version', 'master_seed', 'noise')))
+                        if not problem.startswith(('missing keys', 'chain_version', 'master_seed', 'noise',
+                                                   'reverb')))
         key = {k: channel[k] for k in CHANNEL_KEYS}
         if key in seen:
             problems.append(f'codec_mix[{index}] repeats an earlier channel')
@@ -187,7 +209,7 @@ def _mix_problems(spec):
 
 def _single_problems(spec):
     problems = []
-    missing, unknown = SPEC_KEYS - spec.keys(), spec.keys() - SPEC_KEYS
+    missing, unknown = SPEC_KEYS - spec.keys(), spec.keys() - SPEC_KEYS - OPTIONAL_KEYS
     if missing:
         problems.append(f'missing keys {sorted(missing)}')
     if unknown:
@@ -234,7 +256,37 @@ def _single_problems(spec):
                     problems.append('noise.snr_basis must be "speech_active" (omit it for a whole-clip SNR)')
                 if not isinstance(noise['vad_sha256'], str) or not re.fullmatch(r'[0-9a-f]{64}', noise['vad_sha256']):
                     problems.append('noise.vad_sha256 must be the VAD model SHA-256 (lowercase hex)')
+    if 'reverb' in spec:
+        problems.extend(_reverb_problems(spec['reverb']))
     return problems
+
+
+def _reverb_problems(reverb):
+    if not isinstance(reverb, dict) or reverb.keys() != REVERB_KEYS:
+        return [f'reverb must be an object with keys {sorted(REVERB_KEYS)} (omit it for no reverb)']
+    rirs = reverb['rirs']
+    if not isinstance(rirs, list) or not 1 <= len(rirs) <= MAX_RIRS:
+        return [f'reverb.rirs must be a list of 1 to {MAX_RIRS} RIRs']
+    problems, seen = [], set()
+    for index, rir in enumerate(rirs):
+        if not isinstance(rir, dict) or rir.keys() != RIR_KEYS:
+            problems.append(f'reverb.rirs[{index}] must be an object with keys {sorted(RIR_KEYS)}')
+            continue
+        if not isinstance(rir['sha256'], str) or not re.fullmatch(r'[0-9a-f]{64}', rir['sha256']):
+            problems.append(f'reverb.rirs[{index}].sha256 must be a lowercase SHA-256 hex digest')
+        elif rir['sha256'] in seen:
+            problems.append(f'reverb.rirs[{index}] repeats an earlier RIR')
+        else:
+            seen.add(rir['sha256'])
+        for key in ('label', 'source_id', 'licence_ref'):
+            if not isinstance(rir[key], str) or not re.fullmatch(r'[A-Za-z0-9_.:-]{1,80}', rir[key]):
+                problems.append(f'reverb.rirs[{index}].{key} must be a short identifier')
+    return problems
+
+
+def needs_rirs(spec):
+    """True when the specification asks for room impulse responses."""
+    return isinstance(spec, dict) and 'reverb' in spec
 
 
 def needs_vad(spec):
@@ -269,6 +321,8 @@ def derive_channel(spec, clip_id):
     channel = channels[index]
     single = {'chain_version': spec['chain_version'], 'master_seed': spec['master_seed'],
               'noise': spec['noise'], **{key: channel[key] for key in CHANNEL_KEYS}}
+    if 'reverb' in spec:
+        single['reverb'] = spec['reverb']
     return single, {'derivation': MIX_DERIVATION, 'master_seed': spec['master_seed'], 'clip_id': clip_id,
                     'draw': draw, 'total_weight': total, 'channel_index': index,
                     'codec': channel['codec'], 'weight': channel['weight'],
@@ -302,7 +356,30 @@ def _check_vad(spec, vad):
         raise ValueError('the speech-active SNR needs the VAD whose model_sha256 the specification names')
 
 
-def augment_clip(clip_pcm, clip_id, spec, noise_pcm=None, ffmpeg=None, vad=None):
+def _check_rirs(spec, rirs):
+    """`rirs` maps PCM SHA-256 -> 16 kHz mono PCM16 bytes for exactly the spec's RIRs."""
+    if not needs_rirs(spec):
+        if rirs is not None:
+            raise ValueError('RIRs were given but the specification names no reverb')
+        return
+    wanted = {rir['sha256'] for rir in spec['reverb']['rirs']}
+    if not isinstance(rirs, dict) or rirs.keys() != wanted:
+        raise ValueError('reverb needs exactly the RIRs the specification names (by PCM SHA-256)')
+    for digest, pcm in rirs.items():
+        if not isinstance(pcm, bytes) or hashlib.sha256(pcm).hexdigest() != digest:
+            raise ValueError('RIR audio does not match its SHA-256')
+        _usable_rir(pcm, digest[:12])
+
+
+def _usable_rir(pcm, name):
+    """A bad RIR (silent, too long, late direct path) is systemic: refuse before any clip."""
+    try:
+        rir_profile(pcm)
+    except ValueError as error:
+        raise ValueError(f'RIR {name} is not usable: {error}') from None
+
+
+def augment_clip(clip_pcm, clip_id, spec, noise_pcm=None, ffmpeg=None, vad=None, rirs=None):
     """Apply the declared chain to one 16 kHz mono PCM16 clip. Returns (16 kHz PCM16
     bytes, record). `noise_pcm` must be 16 kHz mono PCM16 whose SHA-256 the spec names
     (exactly when the spec asks for noise). GSM/AMR-NB/Opus codecs need `ffmpeg` (an
@@ -313,23 +390,34 @@ def augment_clip(clip_pcm, clip_id, spec, noise_pcm=None, ffmpeg=None, vad=None)
     can choose GSM/AMR-NB needs `ffmpeg` even for clips that draw G.711. A
     speech-active noise spec needs `vad` (e.g. `services.inference.silero_vad.SileroVad`)
     whose `model_sha256` equals `noise.vad_sha256`; a clip with under 0.5 s of detected
-    speech is refused (ValueError, an error row)."""
+    speech is refused (ValueError, an error row). A `reverb` spec needs `rirs`, a dict
+    from PCM SHA-256 to the RIR's 16 kHz mono PCM16 bytes for exactly its RIRs; a
+    reverberant copy that would clip raises ReverbClipped."""
     validate_spec(spec)
     _check_ffmpeg(spec, ffmpeg)
     _check_vad(spec, vad)
+    _check_rirs(spec, rirs)
     if not isinstance(clip_pcm, bytes) or not clip_pcm or len(clip_pcm) % 2:
         raise ValueError('clip must be nonempty mono PCM16 bytes')
     if (spec['noise'] is None) != (noise_pcm is None):
         raise ValueError('noise audio must be given exactly when the specification names noise')
     channel, choice = derive_channel(spec, clip_id)
-    wide, record = _augment_single(clip_pcm, clip_id, channel, noise_pcm, ffmpeg, vad)
+    wide, record = _augment_single(clip_pcm, clip_id, channel, noise_pcm, ffmpeg, vad, rirs)
     if choice is None:
         return wide, record
     return wide, {**record, 'chain_spec_sha256': spec_sha256(spec), 'codec_choice': choice}
 
 
-def _augment_single(clip_pcm, clip_id, spec, noise_pcm, ffmpeg, vad=None):
+def _augment_single(clip_pcm, clip_id, spec, noise_pcm, ffmpeg, vad=None, rirs=None):
     steps, current = [], clip_pcm
+    if needs_rirs(spec):
+        entries = spec['reverb']['rirs']
+        plan = derive_reverb(spec['master_seed'], clip_id, len(entries))
+        current, record = apply_rir_planned(current, [rirs[e['sha256']] for e in entries], plan)
+        if record['clipped_samples']:
+            raise ReverbClipped(record['rir_sha256'], record['clipped_samples'])
+        steps.append({'step': 'room_impulse_response',
+                      **{f'rir_{k}': v for k, v in entries[plan['index']].items() if k != 'sha256'}, **record})
     if spec['noise'] is not None:
         if not isinstance(noise_pcm, bytes) or hashlib.sha256(noise_pcm).hexdigest() != spec['noise']['sha256']:
             raise ValueError('noise audio does not match the specification hash')
@@ -458,7 +546,32 @@ def _load_noise(spec, noise_path):
     return raw
 
 
-def _build(prepared_root, report, spec, noise, ffmpeg=None, vad=None):
+def _load_rirs(spec, rir_paths):
+    """Read RIR WAVs (16 kHz mono PCM16) -> {PCM SHA-256: PCM}; the set of hashes must
+    equal the spec's exactly (no missing, extra or duplicate files)."""
+    if not needs_rirs(spec):
+        if rir_paths:
+            raise ValueError('RIR files were given but the specification names no reverb')
+        return None
+    if not rir_paths:
+        raise ValueError('The specification names RIRs; give every RIR WAV (--rir)')
+    rirs = {}
+    for path in rir_paths:
+        # Byte bound only limits the read; the sample limit is rir_profile's.
+        raw = read_pcm16_wav(_read_regular(Path(path), MAX_RIR_SAMPLES * 2 + 65536, 'RIR file'), 'RIR file')
+        digest = hashlib.sha256(raw).hexdigest()
+        if digest in rirs:
+            raise ValueError(f'RIR file {Path(path).name} repeats an earlier RIR')
+        _usable_rir(raw, Path(path).name)
+        rirs[digest] = raw
+    wanted = {rir['sha256'] for rir in spec['reverb']['rirs']}
+    if rirs.keys() != wanted:
+        raise ValueError(f'RIR files do not match the specification: {len(wanted - rirs.keys())} missing, '
+                         f'{len(rirs.keys() - wanted)} not named')
+    return rirs
+
+
+def _build(prepared_root, report, spec, noise, ffmpeg=None, vad=None, rirs=None):
     """Pure-in-effect derivation of every copy: returns (clip rows, error rows, summary,
     {relative path: WAV bytes}). Used by the writer and, unchanged, by the verifier. A
     CodecToolError propagates (nothing has been written yet)."""
@@ -469,7 +582,11 @@ def _build(prepared_root, report, spec, noise, ffmpeg=None, vad=None):
             if hashlib.sha256(payload).hexdigest() != row['sha256']:
                 raise ValueError('Parent clip hash mismatch')
             out, record = augment_clip(read_pcm16_wav(payload, 'Parent clip'), derivation_id(row),
-                                       spec, noise, ffmpeg, vad)
+                                       spec, noise, ffmpeg, vad, rirs)
+        except ReverbClipped as failure:
+            errors.append({'parent_clip_path': row['path'], 'error': str(failure),
+                           'refusal': 'reverb_clipping', 'rir_sha256': failure.rir_sha256})
+            continue
         except NoiseClipped as failure:
             errors.append({'parent_clip_path': row['path'], 'error': str(failure),
                            'refusal': 'noise_clipping', 'snr_db': failure.snr_db})
@@ -499,6 +616,13 @@ def _build(prepared_root, report, spec, noise, ffmpeg=None, vad=None):
                'review_flagged_clips': sum(bool(c['review_flags']) for c in clips)}
     if needs_vad(spec):  # speech-active key only: whole-clip reports stay byte-identical
         summary['insufficient_speech_refusals'] = sum(e.get('refusal') == 'insufficient_speech' for e in errors)
+    if needs_rirs(spec):  # reverb-only keys: other reports stay byte-identical
+        summary['reverb_clipping_refusals'] = sum(e.get('refusal') == 'reverb_clipping' for e in errors)
+        rir_counts = {rir['sha256']: 0 for rir in spec['reverb']['rirs']}
+        for clip in clips:
+            step = next(s for s in clip['chain']['steps'] if s['step'] == 'room_impulse_response')
+            rir_counts[step['rir_sha256']] += 1
+        summary['rir_counts'] = rir_counts
     if 'codec_mix' in spec:  # mix-only key: single-spec reports stay byte-identical
         counts, channels = {codec: 0 for codec in _channel_codecs(spec)}, [0] * len(spec['codec_mix'])
         for clip in clips:
@@ -508,13 +632,15 @@ def _build(prepared_root, report, spec, noise, ffmpeg=None, vad=None):
     return clips, errors, summary, files
 
 
-def augment_prepared(prepared_root, output_root, spec, noise_path=None, ffmpeg=None, vad=None):
+def augment_prepared(prepared_root, output_root, spec, noise_path=None, ffmpeg=None, vad=None, rir_paths=None):
     """Write augmented copies of every parent clip to a new output root; return the
     summary. Unreadable or refused clips are listed as errors while others proceed; a
-    codec-tool failure aborts before anything is written."""
+    codec-tool failure aborts before anything is written. `rir_paths` lists the RIR WAVs
+    a `reverb` spec names."""
     validate_spec(spec)
     _check_ffmpeg(spec, ffmpeg)
     _check_vad(spec, vad)
+    rirs = _load_rirs(spec, rir_paths)
     prepared_root, report, report_sha = _load_parent(prepared_root)
     output_root = Path(output_root).resolve()
     if output_root.exists() or output_root.is_relative_to(prepared_root) or prepared_root.is_relative_to(output_root):
@@ -522,7 +648,7 @@ def augment_prepared(prepared_root, output_root, spec, noise_path=None, ffmpeg=N
     if output_root.is_relative_to(Path(__file__).resolve().parents[2]):
         raise ValueError('Augmented output must be outside the repository')
     noise = _load_noise(spec, noise_path)
-    clips, errors, summary, files = _build(prepared_root, report, spec, noise, ffmpeg, vad)
+    clips, errors, summary, files = _build(prepared_root, report, spec, noise, ffmpeg, vad, rirs)
     output_root.parent.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory(prefix='ava-aug-', dir=output_root.parent) as temp:
         staging = Path(temp) / 'result'
@@ -554,7 +680,8 @@ def _samples(raw):
     return samples
 
 
-def verify_augmented(prepared_root, augmented_root, noise_path=None, expected_spec=None, ffmpeg=None, vad=None):
+def verify_augmented(prepared_root, augmented_root, noise_path=None, expected_spec=None, ffmpeg=None, vad=None,
+                     rir_paths=None):
     """Read-only rebuild check: re-derive every augmented copy from its parent clip and the
     recorded specification and compare bytes and records. Returns a list of problems
     (empty means every listed copy rebuilds identically and nothing is unlisted). This
@@ -586,10 +713,14 @@ def verify_augmented(prepared_root, augmented_root, noise_path=None, expected_sp
         _check_vad(spec, vad)
     except ValueError as error:
         return problems + [str(error)]
+    try:
+        rirs = _load_rirs(spec, rir_paths)
+    except (OSError, ValueError) as error:
+        return problems + [str(error)]
     prepared_root, report, report_sha = _load_parent(prepared_root)
     noise = _load_noise(spec, noise_path)
     try:
-        clips, errors, summary, files = _build(prepared_root, report, spec, noise, ffmpeg, vad)
+        clips, errors, summary, files = _build(prepared_root, report, spec, noise, ffmpeg, vad, rirs)
     except CodecToolError as error:
         return problems + [f'codec tool failed during rebuild: {error}']
     except VadError as error:
@@ -636,6 +767,8 @@ def main(argv=None):
     parser.add_argument('--ffmpeg-sha256', help='refuse an ffmpeg executable with another hash')
     parser.add_argument('--vad-model', type=Path, help='local silero_vad.onnx for a speech-active SNR spec '
                         '(its SHA-256 must equal noise.vad_sha256; needs requirements-vad.txt)')
+    parser.add_argument('--rir', type=Path, action='append', default=[],
+                        help='16 kHz mono PCM16 RIR WAV named by reverb.rirs (repeat for each RIR)')
     group = parser.add_mutually_exclusive_group(required=True)
     group.add_argument('--output-root', type=Path)
     group.add_argument('--verify', type=Path, help='augmented root to rebuild read-only')
@@ -655,12 +788,12 @@ def main(argv=None):
             from services.inference.silero_vad import SileroVad
             vad = SileroVad(args.vad_model, expected_sha256=spec['noise']['vad_sha256'])
         if args.verify is not None:
-            problems = verify_augmented(args.prepared_root, args.verify, args.noise, spec, ffmpeg, vad)
+            problems = verify_augmented(args.prepared_root, args.verify, args.noise, spec, ffmpeg, vad, args.rir)
             for problem in problems:
                 print(problem, file=sys.stderr)
             print('FAIL' if problems else 'PASS')
             return 1 if problems else 0
-        summary = augment_prepared(args.prepared_root, args.output_root, spec, args.noise, ffmpeg, vad)
+        summary = augment_prepared(args.prepared_root, args.output_root, spec, args.noise, ffmpeg, vad, args.rir)
     except (OSError, ValueError, CodecToolError, VadError, ImportError) as error:
         print(f'Augmentation failed: {error}', file=sys.stderr)
         return 1
