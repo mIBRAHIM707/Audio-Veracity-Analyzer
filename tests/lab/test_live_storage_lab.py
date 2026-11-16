@@ -75,10 +75,15 @@ class LiveStorageLabTests(unittest.TestCase):
             return service
         factories = {**made, 'service': service_factory}
         stop, err, result = threading.Event(), io.StringIO(), []
+        import socket
+        with socket.socket() as probe:
+            probe.bind(('127.0.0.1', 0))
+            health_port = probe.getsockname()[1]
         argv = ['--card', str(card), '--onnx', str(ONNX), '--vad-model', str(VAD_MODEL), '--threads', '4',
                 '--ari-url', f'http://{lab.port("8088/tcp")}', '--ari-user', 'ava',
                 '--receiver-host', 'host.docker.internal', '--tap-extension', '700',
-                '--database-url-env', 'AVA_LAB_DB', '--redis-url-env', 'AVA_LAB_REDIS']
+                '--database-url-env', 'AVA_LAB_DB', '--redis-url-env', 'AVA_LAB_REDIS',
+                '--health-port', str(health_port)]
         environ = {'AVA_ARI_PASSWORD': password, 'AVA_LAB_DB': dsn, 'AVA_LAB_REDIS': REDIS_URL}
         runner = threading.Thread(target=lambda: result.append(cli.main(
             argv, environ=environ, factories=factories, stop_event=stop, stderr=err)), daemon=True)
@@ -104,17 +109,28 @@ class LiveStorageLabTests(unittest.TestCase):
              '-i', '127.0.0.1', '-mi', '127.0.0.1', '-min_rtp_port', '16000', '-max_rtp_port', '16100',
              '-timeout', '60s', '-timeout_error', '-nostdin'], check=False, timeout=180)), daemon=True)
         caller.start()
-        # FR-I11 per-hop flush: rows counted while SIPp still holds the call.
-        rows_during_call, deadline = 0, time.monotonic() + 120
+        # FR-I11 per-hop flush: rows counted while SIPp still holds the call. FR-A8: the
+        # health endpoint answers ready and counts the active call meanwhile.
+        from urllib import request
+        rows_during_call, ready_codes, active_seen, deadline = 0, set(), 0, time.monotonic() + 120
         while caller.is_alive() and time.monotonic() < deadline:
             with psycopg.connect(dsn) as reader:
                 count = reader.execute('SELECT count(*) FROM window_scores').fetchone()[0]
-            if caller.is_alive():  # only counts read before the call ended
+            with request.urlopen(f'http://127.0.0.1:{health_port}/readyz', timeout=5) as response:
+                code = response.status
+            with request.urlopen(f'http://127.0.0.1:{health_port}/metrics', timeout=5) as response:
+                text = response.read().decode()
+            active = [float(line.split()[-1]) for line in text.splitlines()
+                      if line.startswith('ava_live_calls_active ')]
+            if caller.is_alive():  # only readings taken before the call ended
                 rows_during_call = max(rows_during_call, count)
+                ready_codes.add(code)
+                active_seen = max([active_seen, *active])
             time.sleep(0.2)
         caller.join(60)
         self.assertEqual([r.returncode for r in call_result], [0])
         self.assertGreater(rows_during_call, 0, 'no window stored while the call was running')
+        self.assertEqual((ready_codes, active_seen), ({200}, 1))
         events, deadline = [], time.monotonic() + 60
         while time.monotonic() < deadline and not any(e.type == 'call.ended' for e in events):
             events += listener.drain()[0]

@@ -31,7 +31,7 @@ from services.events.fanout import EventHub
 from services.inference.capacity import CallGate, MicroBatcher
 from services.scorer.config import ConfigStore
 from services.scorer.live import LiveCalls
-from services.scorer.pipeline import LivePipeline
+from services.scorer.pipeline import LivePipeline, PipelineStats
 from services.scorer.speech_feed import SpeechFeed
 from services.tap.scoring_sink import TapScoringSink
 from services.tap.tap_app import TapApp
@@ -108,9 +108,14 @@ class LiveService:
         self.ari, self.clock, self._sleep = ari, clock, sleep
         self.hub = hub or EventHub()
         self.configs = ConfigStore(config)
-        self.live = LiveCalls(_CallConfigs(self.configs), self.hub, CallGate(max_calls))
+        self.gate = CallGate(max_calls)
+        self.live = LiveCalls(_CallConfigs(self.configs), self.hub, self.gate)
         batcher = MicroBatcher(capacity_windows_per_s=capacity_windows_per_s, max_pending_live=64)
         self.pipeline = LivePipeline(self.live, batcher, detector, config)
+        # FR-A8/FR-O6: the loop hands an ID-free aggregate to other threads after each
+        # turn (services/live/health.py reads it; its age shows a stalled loop).
+        self.pipeline_stats = PipelineStats(clock)
+        self.detector_failure_run, self._seen_batches, self._seen_failures = 0, 0, 0
         self.feed = SpeechFeed(self.pipeline, vad_factory)
         self.sink = TapScoringSink(self.live, self.feed, self.pipeline, clock, hub=self.hub)
         # The tap admits no more calls than scoring can take (CallGate = max_calls).
@@ -125,11 +130,26 @@ class LiveService:
             self.sink.pump()
         except Exception:  # the sink contains its own faults; this is a last guard
             self.counts['loop_errors'] += 1
+        self.pipeline.publish_metrics(self.pipeline_stats)  # never raises (counted)
+        self._track_detector()
         for hook in self.tick_hooks:
             try:
                 hook()
             except Exception:
                 self.counts['hook_errors'] += 1
+
+    def _track_detector(self):
+        """Loop thread only. `detector_failure_run` counts detector batches failed in a
+        row since the last batch with any success; readiness reads it (review M1: a
+        detector that fails fast keeps the loop turning)."""
+        counts = self.pipeline.counts
+        batches, failures = counts.get('batches', 0), counts.get('detector_failures', 0)
+        new_batches, new_failures = batches - self._seen_batches, failures - self._seen_failures
+        self._seen_batches, self._seen_failures = batches, failures
+        if new_batches > new_failures:
+            self.detector_failure_run = 0
+        else:
+            self.detector_failure_run += new_failures
 
     def run(self, stop_event, *, poll_s=0.05):
         """Serve until `stop_event` is set. Never raises for connection or loop faults.

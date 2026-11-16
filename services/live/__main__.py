@@ -38,7 +38,11 @@ thread (1 s socket timeouts, no client retries); Redis down at start-up is repor
 drain in parallel for at most `--drain-timeout` seconds (above 0, at most 300); their counts and
 whether anything was left go into the `stopped` record.
 
-Not here yet: `/readyz` and metrics for this process.
+Health (16 Nov; PRD FR-A8, FR-O6): `--health-port N` serves `/healthz`, `/readyz` and
+`/metrics` (`services/live/health.py`) on `--health-host` (default 127.0.0.1; no
+authentication). The port is bound during start-up, so a port in use refuses the start.
+`/readyz` is 200 only while the ARI stream is connected, the scoring loop is turning and
+the detector is not failing batch after batch; the start record adds `health`.
 """
 import argparse
 import ipaddress
@@ -150,6 +154,10 @@ def build_parser():
                         help='environment variable with a PostgreSQL connection string (enables event storage)')
     parser.add_argument('--redis-url-env', type=_env_name,
                         help='environment variable with a Redis URL (enables event publishing)')
+    parser.add_argument('--health-port', type=_bounded_int(1, 65535),
+                        help='serve /healthz, /readyz and /metrics on this TCP port (FR-A8); off if absent')
+    parser.add_argument('--health-host', type=_bind_host, default='127.0.0.1',
+                        help='local IPv4 address for the health endpoint (default 127.0.0.1; no authentication)')
     parser.add_argument('--drain-timeout', type=_drain_seconds, default=5.0,
                         help='seconds the storage/publish pumps may drain on stop (above 0, at most 300; default 5)')
     return parser
@@ -253,11 +261,13 @@ def main(argv=None, *, environ=None, factories=None, stop_event=None, stderr=Non
         return EXIT_INTERRUPTED
     if isinstance(prepared, int):
         return prepared
-    service, pumps = prepared
+    service, pumps, health = prepared
     stop = stop_event or threading.Event()
     restore = _install_signals(stop.set)
     code, error = EXIT_OK, None
     try:
+        if health is not None:
+            health.start()
         for pump in pumps:
             pump['thread'].start()
         service.run(stop)
@@ -268,6 +278,8 @@ def main(argv=None, *, environ=None, factories=None, stop_event=None, stderr=Non
     finally:
         restore()
     code = _stop_pumps(pumps, args.drain_timeout, code)
+    if health is not None:
+        _close_quietly(health)  # last, so the pumps' drain stays observable
     record = {'event': 'stopped', 'forced': code == EXIT_INTERRUPTED, 'service': dict(service.counts),
               'tap': dict(service.tap.stats), 'sink': dict(service.sink.counts),
               'pipeline': dict(service.pipeline.counts)}
@@ -426,6 +438,14 @@ def _prepare(args, environ, factories, stderr, opened):
         forwarder = RedisForwarder(channel_feed, redis_client)
         pumps.append({'thread': PumpThread('redis', forwarder.pump, pending=channel_feed.buffered),
                       'resource': redis_client, 'report': lambda: {'counts': dict(forwarder.stats)}})
+    health = None
+    if args.health_port is not None:
+        try:
+            health = made.get('health', _health_server)(service, pumps, args.health_host, args.health_port)
+        except OSError as error:  # port in use or address not local
+            return refuse(f'health endpoint {args.health_host}:{args.health_port}: '
+                          f'{type(error).__name__}: {error.strerror or error}')
+        opened.append(health)
     record = {'event': 'starting', 'model_version': card['version'], 'onnx_sha256': card['onnx']['sha256'],
               'config_fingerprint': fingerprint(config), 'per_window': args.per_window, 'threads': args.threads,
               'max_calls': args.max_calls, 'ari_url': args.ari_url.rstrip('/'), 'ari_app': args.ari_app,
@@ -434,8 +454,16 @@ def _prepare(args, environ, factories, stderr, opened):
         record['database_migrations_applied'] = applied
     if redis_client is not None:
         record['redis_reachable'] = redis_reachable
+    if health is not None:
+        host, port = health.address
+        record['health'] = {'host': host, 'port': port}
     _say(stderr, record)
-    return service, pumps
+    return service, pumps, health
+
+
+def _health_server(service, pumps, host, port):
+    from services.live.health import HealthServer
+    return HealthServer(service, pumps=pumps, host=host, port=port)
 
 
 def _close_quietly(resource):

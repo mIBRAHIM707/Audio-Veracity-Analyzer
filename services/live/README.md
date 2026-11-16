@@ -161,6 +161,63 @@ requirements-tap.txt --with-requirements requirements-export.txt --with-requirem
 requirements-store.txt --with-requirements requirements-redis.txt python -m unittest
 tests.lab.test_live_storage_lab -v`. Infrastructure evidence; untrained head.
 
+## Health, readiness and metrics (16 Nov 2026; PRD FR-A8, FR-O6)
+
+`--health-port N` (and `--health-host`, default 127.0.0.1) starts `health.HealthServer`,
+a standard-library HTTP server on its own daemon threads (no web framework in this
+process, no authentication: keep it on loopback or a private network). The port is
+bound exclusively during start-up (no `SO_REUSEADDR` on Windows, where it would let a
+second process share the port; a port in use refuses the start, exit 2) and closed last
+at stop; the start record adds `health`. At most 8 connections are served at once
+(extra ones are closed and counted) and a client that sends nothing is dropped after 5 s.
+
+- `GET /healthz`: 200 while the process serves HTTP.
+- `GET /readyz`: 200 only when the ARI event stream is connected, the scoring loop
+  published its pipeline snapshot in the last 10 s (one turn can hold a detector batch
+  of up to ~2 s and an ARI request of up to 5 s), and the detector has not failed 3
+  batches in a row since its last success; otherwise 503 with `reason`
+  `ari_disconnected`, `loop_not_started`, `loop_stalled` (e.g. a hung detector) or
+  `detector_failing` (a detector that fails fast). FR-A8 says `/readyz` "performs a
+  warm-up inference": the warm-up runs once in the start-up gate (`load_detector`
+  refuses to start without it) and readiness then follows recent detector success,
+  rather than running inference per request on the HTTP thread (any client could
+  trigger it and it would compete with scoring). Proposed FR-A8 wording for the PRD:
+  "`/readyz` reflects the start-up warm-up inference, the telephony stream and recent
+  detector success; it does not run inference per request." A failure run clears only
+  when a batch succeeds, which needs a scored call, so after a brief detector fault the
+  process can stay unready while idle (conservative; a spec question). Storage or Redis being down
+  does not make the process unready (advisory); it shows in the metrics.
+- `GET /metrics` (Prometheus text 0.0.4): `ava_live_ready`; the live-pipeline families
+  shared with the analysis API (`services/scorer/metrics_text.py`, moved there from
+  `services/api/app.py` unchanged: windows offered/resolved, batches, detector failures,
+  queues, stride, inference latency histogram, snapshot age/validity); ARI connects and
+  disconnects; loop, hook and shutdown errors; the detector failure run; active calls,
+  capacity and capacity refusals; tap and sink counters by kind; per pump
+  alive/stuck/faults/moved/hub drops, store outcomes, waits (retry, misconfigured,
+  faults), backlog and consecutive failures, Redis forwarded, failed and unheard; health
+  requests and refused connections. No call IDs, numbers or audio; label values are
+  checked identifiers. A family with an invalid value is dropped and counted
+  (`ava_live_metrics_render_errors_total`); the endpoint stays up. FR-O6 is partial
+  here: only inference latency is measured live, not per stage (tap/jitter, resample,
+  VAD, queue wait, end to end), and there is no alerts-per-minute family.
+
+`LiveService` now keeps its `CallGate` as `gate` and hands a `PipelineStats` snapshot to
+other threads after each loop turn (`pipeline_stats`), also while reconnecting.
+
+Evidence (Claude-authored, 16 Nov): `tests/unit/test_live_health.py` (13: readiness
+transitions with a manual clock including the stale boundary and a stall; a detector
+failing 3 batches in a row makes it unready and one success resets it, also through the
+real pipeline with a raising ONNX session; a real loop turning keeps it ready and
+stopping makes it unready; validation; metrics parse as valid exposition text, one TYPE
+per family, no call ID or number; a bad counter and a malformed snapshot dropped and
+counted; store-outage pump families; HTTP routes, 404, 405 for every other method incl.
+HEAD/OPTIONS, content type; silent clients dropped after the timeout and connections
+over the cap closed; four concurrent scrapers while the loop turns, none hung; the port
+freed at stop;
+command line: port in the start record, served while running, closed after, a busy port
+refused, bad ports usage errors); the storage lab case above also reads `/readyz` (200)
+and `/metrics` (`ava_live_calls_active 1`) while SIPp holds the real call.
+
 ## Detector faults on a real call (6.QA)
 
 `tests/lab/test_detector_fault_lab.py` (Claude-authored, 15 Nov): with a detector that
@@ -174,7 +231,7 @@ was counted as a disconnect (fixed, unit-tested).
 
 ## Not done
 
-A deployment configuration file (beyond the scoring JSON); `/readyz`/metrics exposure
-of this process (the analysis API has its own; pump health such as `consecutive_failures`
-is not visible while running, only in the stop record); scorer resume from stored state (FR-I11); agent direction; capacity measurement on box A1 (8.QA); file-mode jobs through the same
+A deployment configuration file (beyond the scoring JSON); FR-O6 per-stage live latency,
+alerts per minute, telephony RTP metrics (per-call receiver/jitter statistics are not
+aggregated yet), JSON logs and a Grafana dashboard (P1); scorer resume from stored state (FR-I11); agent direction; capacity measurement on box A1 (8.QA); file-mode jobs through the same
 batcher.

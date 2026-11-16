@@ -309,7 +309,11 @@ items needing that data are listed at the end and stay out of the queue.
   lost window on a batcher clock error and reused call IDs after `end_all`). 14 Nov
   (catch-up 4, commit 1839139): live inference latency histogram
   `ava_live_inference_seconds{outcome}` with timer-failure counter; review fixed.
-  Remaining FR-O6: telephony metrics, JSON logs, Grafana.
+  16 Nov: live process `/healthz`, `/readyz` (ARI stream + loop turning) and `/metrics`
+  (`services/live/health.py`, `--health-port`; pipeline families shared with the API via
+  `services/scorer/metrics_text.py`, calls/capacity, tap/sink, pump and store health);
+  lab: ready and one active call reported during a real call.
+  Remaining FR-O6: telephony RTP metrics, JSON logs, Grafana.
 - [ ] 7.3 P1 history/search/local authentication/audit and feedback after P0.
 - [ ] 7.QA Astra-designed Playwright suite, offline assets, failures/reconnects.
 
@@ -330,8 +334,9 @@ items needing that data are listed at the end and stay out of the queue.
   from the environment only, start-up checks of hosts, extensions, config, model, VAD
   and ARI credentials, JSON start/stop records, exit 2 on refusal, signal stop with a
   forced second Ctrl+C); 12 unit + 1 lab Claude-authored tests; review M1-M4 and lows
-  fixed. 16 Nov: store/Redis pumps on their own threads (see 5.1). Remaining: `/readyz`
-  and metrics for this process, measured capacity (8.QA), file jobs through the batcher.
+  fixed. 16 Nov: store/Redis pumps on their own threads (see 5.1); `/readyz` and
+  metrics for this process (see 7.2). Remaining: measured capacity (8.QA), file jobs
+  through the batcher.
 - [ ] 8.2 Degraded stride/unmonitored behavior and resource bounds.
   Progress (10 Nov): `services/scorer/degraded.py` stride controller (grow per behind
   report, cap, unmonitored, 30 s recovery), 13 Claude-authored tests, review fixed.
