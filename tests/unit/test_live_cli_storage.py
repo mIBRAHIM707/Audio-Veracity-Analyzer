@@ -23,8 +23,12 @@ from tests.unit.test_store_postgres import DSN, REAL
 DB_SECRET = 'postgresql://ava:db-pw-91c2@db.internal:5432/ava'
 REDIS_SECRET = 'redis://:redis-pw-3d8e@cache.internal:6379/0'
 ENV = {'AVA_ARI_PASSWORD': SECRET, 'AVA_DB': DB_SECRET, 'AVA_REDIS': REDIS_SECRET}
-WITH_DB = BASE + ['--database-url-env', 'AVA_DB']
-WITH_REDIS = BASE + ['--redis-url-env', 'AVA_REDIS']
+# 17 Nov: the FR-O6 event log (on by default) writes JSON lines between the start and
+# stop records; these tests index those two records by position, so it is off here
+# (tests/unit/test_live_eventlog.py covers it).
+QUIET = BASE + ['--event-log', 'off']
+WITH_DB = QUIET + ['--database-url-env', 'AVA_DB']
+WITH_REDIS = QUIET + ['--redis-url-env', 'AVA_REDIS']
 REDIS_URL = os.environ.get('AVA_TEST_REDIS_URL')
 
 
@@ -126,8 +130,9 @@ class StorageCliTests(unittest.TestCase):
 
     def test_without_the_options_nothing_is_opened_and_records_are_unchanged(self):
         harness = StorageHarness()
-        code, lines, _ = run(BASE, harness, ENV)
+        code, lines, _ = run(QUIET, harness, ENV)
         self.assertEqual(code, EXIT_OK)
+        self.assertEqual([line['event'] for line in lines], ['starting', 'stopped'])
         self.assertEqual((harness.dsns, harness.urls), ([], []))
         self.assertNotIn('database_migrations_applied', lines[0])
         self.assertNotIn('redis_reachable', lines[0])

@@ -143,8 +143,9 @@ class LiveServiceLabTests(unittest.TestCase):
         clips = json.loads(QA_CONFIG.read_text(encoding='utf-8'))['genuine'][:3]
         payloads = rtp_pcap.rtp_payloads(b''.join(rtp_pcap.wav_to_pcm8k(path) for path in clips), 'ulaw')
         rtp_pcap.write_pcap(payloads, 0, lab.path('inject.pcap'))
+        caller = f'cli{secrets.token_hex(4)}'  # the caller number Asterisk sees
         done = lab.command(['exec', lab.name, 'sipp', '127.0.0.1:5060', '-sf', '/lab/sipp/uac_inject.xml',
-                            '-s', '700', '-key', 'caller', f'cli{secrets.token_hex(4)}', '-key', 'pt', '0',
+                            '-s', '700', '-key', 'caller', caller, '-key', 'pt', '0',
                             '-key', 'codec', 'PCMU', '-m', '1', '-d', str(len(payloads) * 20 + 1500),
                             '-i', '127.0.0.1', '-mi', '127.0.0.1', '-min_rtp_port', '16000', '-max_rtp_port', '16100',
                             '-timeout', '60s', '-timeout_error', '-nostdin'], check=False, timeout=180)
@@ -158,12 +159,20 @@ class LiveServiceLabTests(unittest.TestCase):
         self.assertFalse(runner.is_alive())
         self.assertEqual(result, [cli.EXIT_OK], err.getvalue())
         records = [json.loads(line) for line in err.getvalue().splitlines()]
-        self.assertEqual([r['event'] for r in records], ['starting', 'stopped'])
+        # 17 Nov: the FR-O6 event log (on by default) writes JSON lines between the two records.
+        self.assertEqual((records[0]['event'], records[-1]['event']), ('starting', 'stopped'))
         self.assertEqual((records[0]['model_version'], records[0]['ari_reachable']), ('lab-cli-untrained', True))
         self.assertNotIn(password, err.getvalue())
         self.assertGreaterEqual(len([e for e in events if e.type == 'score.updated' and e.data.get('scored')]), 3)
         self.assertEqual([e.data['reason'] for e in events if e.type == 'call.ended'], ['bye'])
-        self.assertEqual(records[1]['service']['disconnects'], 0)
+        self.assertEqual(records[-1]['service']['disconnects'], 0)
+        call_id = next(e.call_id for e in events if e.type == 'call.started')
+        logged = [(r['event'], r.get('call_id'), r.get('reason')) for r in records[1:-1]
+                  if r['event'] in ('call_started', 'call_ended')]
+        self.assertEqual(logged, [('call_started', call_id, None), ('call_ended', call_id, 'bye')])
+        self.assertTrue(all({'ts', 'level', 'event'} <= set(r) for r in records[1:-1]))
+        self.assertNotIn(caller, err.getvalue(), 'the caller number is never logged')
+        self.assertNotIn('score_updated', err.getvalue())
 
 
 if __name__ == '__main__':

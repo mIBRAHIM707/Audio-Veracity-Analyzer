@@ -44,6 +44,12 @@ authentication). The port is bound during start-up, so a port in use refuses the
 `/readyz` is 200 only while the ARI stream is connected, the scoring loop is turning and
 the detector is not failing batch after batch; the start record adds `health`.
 
+Operations log (17 Nov; PRD FR-O6): unless `--event-log off`, an `eventlog` pump thread
+writes JSON lines to stderr between the start and stop records: call started/ended,
+alerts raised/cleared, health events, ARI connects and drops, detector failure runs and
+new faults (`services/live/eventlog.py`). Field allowlists keep caller numbers, scores
+and audio out; lines are rate-limited (50/s), and lost lines are reported.
+
 Alert snippets (17 Nov; PRD FR-O5): off by default, so no raw audio is stored.
 `--retention on --retention-dir DIR --retention-key-file FILE [--retention-ttl-days 7]`
 keeps a 30 s ring of each admitted call's tapped audio and writes one AES-256-GCM
@@ -178,6 +184,8 @@ def build_parser():
                                                      '(needed with --retention on)')
     parser.add_argument('--retention-ttl-days', type=_ttl_days, default=7.0,
                         help='days a snippet is kept (above 0, at most 365; default 7)')
+    parser.add_argument('--event-log', choices=('stderr', 'off'), default='stderr',
+                        help='structured JSON operations log (FR-O6) on stderr (default) or off')
     return parser
 
 
@@ -471,6 +479,11 @@ def _prepare(args, environ, factories, stderr, opened):
         forwarder = RedisForwarder(channel_feed, redis_client)
         pumps.append({'thread': PumpThread('redis', forwarder.pump, pending=channel_feed.buffered),
                       'resource': redis_client, 'report': lambda: {'counts': dict(forwarder.stats)}})
+    if args.event_log == 'stderr' and getattr(service, 'hub', None) is not None:
+        from services.live.eventlog import EventLog
+        event_log = EventLog(service.hub, service, stderr)
+        pumps.append({'thread': PumpThread('eventlog', event_log.pump, pending=event_log.pending),
+                      'resource': event_log, 'report': event_log.report})
     recorder = getattr(service, 'recorder', None)
     if retention is not None and recorder is not None:
         # Seals/writes snippets and runs the TTL/purge cleanup off the scoring thread.

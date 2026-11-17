@@ -152,6 +152,8 @@ class LiveStorageLabTests(unittest.TestCase):
         self.assertFalse(runner.is_alive())
         self.assertEqual(result, [cli.EXIT_OK], err.getvalue())
         records = [json.loads(line) for line in err.getvalue().splitlines()]
+        # 17 Nov: FR-O6 event-log lines sit between the start and stop records.
+        self.assertEqual((records[0]['event'], records[-1]['event']), ('starting', 'stopped'))
         self.assertEqual((records[0]['database_migrations_applied'], records[0]['redis_reachable']), ([1], True))
         self.assertNotIn(password, err.getvalue())
         self.assertNotIn(dsn, err.getvalue())
@@ -167,7 +169,7 @@ class LiveStorageLabTests(unittest.TestCase):
         for row, event in zip(windows, windows_published):
             if event.data['scored']:
                 self.assertAlmostEqual(row[3], event.data['score'], places=6)
-        store = records[1]['store']
+        store = records[-1]['store']
         self.assertEqual((store['stuck'], store['drained'], store['faults']), (False, True, 0))
         self.assertEqual(store['counts']['retry_waits'] + store['counts']['refused'], 0)
 
@@ -181,7 +183,7 @@ class LiveStorageLabTests(unittest.TestCase):
                 break
         self.assertEqual([(m['type'], m['seq']) for m in published if m['call_id'] == call_id],
                          [(e.type, e.seq) for e in events + listener.drain()[0] if e.call_id == call_id])
-        self.assertEqual(records[1]['redis']['counts']['publish_failures'], 0)
+        self.assertEqual(records[-1]['redis']['counts']['publish_failures'], 0)
 
 
 if __name__ == '__main__':

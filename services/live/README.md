@@ -267,6 +267,65 @@ command line: port in the start record, served while running, closed after, a bu
 refused, bad ports usage errors); the storage lab case above also reads `/readyz` (200)
 and `/metrics` (`ava_live_calls_active 1`) while SIPp holds the real call.
 
+## Operations log (17 Nov 2026; PRD FR-O6 "structured JSON logs", §6.3)
+
+Unless `--event-log off`, an `eventlog` pump thread (`eventlog.py`, never the scoring
+thread) writes one JSON object per line to stderr, between the `starting` and `stopped`
+records:
+
+```json
+{"ts": "2026-11-17T08:00:00.250Z", "level": "info", "event": "call_started", "call_id": "1763366400.12"}
+```
+
+- From its own hub subscription: `call_started`; `call_ended` with `reason` and
+  `final_state`; `alert_raised` (warning) with `alert_id` and `direction`;
+  `alert_cleared`; and `system_health` (warning) with `reason` and `media_state`. Each
+  event has an explicit field allowlist, so caller and dialled numbers, scores, audio
+  and any other data field are never written. `score.updated` is not logged.
+- From the service counters, as deltas against a baseline taken when the log is built
+  (before the service runs), compared at most once per second, so a counter rising on
+  every turn gives one merged line per second:
+  - `ari_connected`, `ari_disconnected`;
+  - loop, hook and shutdown errors;
+  - tap failures, bad ARI events and sink errors;
+  - `call_refused_capacity`;
+  - scoring pump, sink, result and retention errors;
+  - `direction_unmonitored`;
+  - `detector_failing` once a run reaches 3 failed batches, `detector_recovered` at 0.
+- Rate limit: 50 lines/s with a one-second burst. Hub lines lost to it or to hub
+  overflow are reported as `log_dropped` with a `count`. The service lines come first
+  in each turn and are exempt, so an ARI drop or a detector failure is never lost to a
+  burst of call events. `ts` is the event's own time for hub lines and the write time
+  for service lines; within a turn service lines are written first, so order by `ts`,
+  not by line position. Lines are ASCII-escaped JSON. Strings are cut to 128 characters,
+  and a failing stream is counted, never raised. The baseline is taken before the
+  service runs, so the first `ari_connected` is logged. A failure-and-recovery shorter
+  than one pump interval (0.2 s) can be missed. The stopped record carries the counts
+  under `eventlog`, and `ava_live_pump_hub_dropped_total{pump="eventlog"}` counts hub
+  overflow.
+- For log consumers: stderr is mostly, not only, JSON. Python warnings, onnxruntime's
+  native messages or a crash traceback can still appear, so skip lines that do not
+  parse. Call IDs are pseudonymous but link to stored call records; keep log retention
+  in line with them. A stderr that blocks (a full pipe) blocks this thread and the stop
+  record too, so point stderr at a file or a reader that keeps up.
+
+Evidence (Claude-authored, 17 Nov): `tests/unit/test_live_eventlog.py`, 14 cases. They
+cover:
+- line format and allowlists (a caller number in `call.started` data and an extra
+  health field never appear);
+- the baseline and deltas, the first connect after construction, and a counter rising
+  on every turn merged into one line per second;
+- detector transitions;
+- service lines surviving a burst of 60 call events under a 5/s limit;
+- the rate limit and hub overflow;
+- ASCII output with a control character in an ID;
+- a broken stream, value cutting and validation. Two of them check
+the command line: event lines appear between the records and are drained at stop, and
+`off` writes none. The live command-line lab test (`tests/lab/test_live_service_lab.py`)
+now checks, on a real Asterisk call, `call_started` and `call_ended reason=bye` lines
+for the call's ID. In the same test, the SIPp caller number and `score_updated` never
+appear in stderr.
+
 ## Alert snippets (17 Nov 2026; PRD FR-O5, §6.3; architecture §2.4)
 
 Off by default: without `--retention on` no audio is buffered and the recorder does not

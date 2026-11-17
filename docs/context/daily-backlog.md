@@ -359,8 +359,11 @@ items needing that data are listed at the end and stay out of the queue.
   ended calls on the live `/metrics`. 17 Nov: per-stage loop latency
   `ava_live_stage_seconds{stage=queue_wait|batch_wait|apply|window_to_result}` and
   `ava_live_alerts_raised_total` (`services/scorer/pipeline.py`, `metrics_text.py`); 11
-  Claude-authored tests, review conditional pass fixed. Remaining FR-O6: in-call RTP
-  metrics, timing of jitter/resample/VAD on their own, JSON logs, Grafana.
+  Claude-authored tests, review conditional pass fixed. 17 Nov: structured JSON
+  operations log of the live process (`services/live/eventlog.py`, `--event-log`,
+  allowlisted fields, rate limit, merged counter lines); 14 Claude-authored tests and a
+  real-call lab check; two review rounds fixed. Remaining FR-O6: in-call RTP metrics, timing of jitter/resample/VAD on
+  their own, JSON logs for the analysis API, Grafana.
 - [ ] 7.3 P1 history/search/local authentication/audit and feedback after P0.
 - [ ] 7.QA Astra-designed Playwright suite, offline assets, failures/reconnects.
 
