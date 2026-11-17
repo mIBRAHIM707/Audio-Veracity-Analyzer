@@ -115,6 +115,61 @@ services:
     # a restarting container with one `refused` JSON line per attempt in its log.
     restart: unless-stopped
 
+  api:
+    # The analysis API and the dashboard (architecture §2.5, §2.6): file analysis with
+    # the AntiDeepfake baseline, and /v1/calls + WS /v1/events relayed from Redis.
+    # It has NO authentication, so it is published nowhere: only containers on the
+    # internal network reach it (see README "Reaching the dashboard").
+    image: ava-api:dev
+    pull_policy: never
+    depends_on:
+      redis: {condition: service_healthy}
+    environment:
+      AVA_REDIS_URL: redis://redis:6379/0
+    command:
+      - --model-root
+      - /models/antideepfake
+      - --threads
+      - "${AVA_API_THREADS:-2}"
+      - --host
+      - 0.0.0.0
+      - --allow-non-loopback  # inside the internal network only; nothing is published
+      - --port
+      - "8000"
+      - --dashboard
+      - /app/dashboard
+      - --redis-url-env
+      - AVA_REDIS_URL
+    volumes:
+      - ${AVA_MODEL_ROOT:?set AVA_MODEL_ROOT (the AntiDeepfake checkpoint folder)}:/models/antideepfake:ro
+    networks: [backend]
+    read_only: true
+    tmpfs:
+      # Uploads spool here (2 concurrent x 100 MB, services/api/app.py); torch also
+      # needs a temporary folder at model load.
+      - /tmp:size=256m,noexec,nosuid,nodev
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    init: true
+    pids_limit: 256
+    # Review M1: file analysis must not starve the live scorer. A coarse bound only:
+    # PRD FR-I9 (batch at most 25 % of inference capacity while calls are active) is
+    # NOT enforced across the two containers (README). Memory: the model (~1.3 GB),
+    # uploads in memory and on the /tmp tmpfs, queued jobs.
+    cpus: ${AVA_API_CPUS:-2}
+    mem_limit: ${AVA_API_MEMORY:-3g}
+    healthcheck:
+      # /readyz verifies the checkpoint's hashes, loads it and runs one warm-up
+      # inference on its first call (about a minute on this laptop); later calls are
+      # immediate. A probe cut off by the timeout does not stop the load.
+      test: ["CMD", "python", "-c", "import urllib.request,sys; sys.exit(urllib.request.urlopen('http://127.0.0.1:8000/readyz', timeout=8).status != 200)"]
+      interval: 5s
+      timeout: 10s
+      retries: 6
+      start_period: 180s
+    stop_grace_period: 20s  # running analyses get 10 s at stop (services/api/__main__.py)
+    restart: unless-stopped
+
 networks:
   backend:
     internal: true  # no route to the internet for any service

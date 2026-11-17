@@ -1,13 +1,25 @@
-# Repository-root build context (deploy/live/Dockerfile). Allowlist by file type: only
-# the code, SQL migrations and pinned requirement files the live image needs are sent to
-# the builder, so audio, models, keys, .local/, data/ and any stray file never reach an
-# image layer.
+# Repository-root build context (deploy/live/Dockerfile, deploy/api/Dockerfile).
+# Allowlist by file type: only the code, SQL migrations, dashboard sources and pinned
+# requirement files the images need are sent to the builder, so audio, models, keys,
+# .local/, data/, node_modules/ and any stray file never reach an image layer.
 *
 !requirements-*.txt
 !deploy/live/requirements-live.txt
+!deploy/api/requirements-api-image.txt
 !services/**/*.py
 !services/store/migrations/*.sql
 !models/export/*.py
+!models/smoke/antideepfake.py
 !data/prepare/*.py
+!dashboard/package.json
+!dashboard/package-lock.json
+!dashboard/index.html
+!dashboard/tsconfig.json
+!dashboard/vite.config.ts
+!dashboard/src/**/*.ts
+!dashboard/src/**/*.tsx
+!dashboard/src/**/*.css
+# (review L8) dashboard/public/ does not exist; add it here and to deploy/api/Dockerfile
+# if the dashboard ever gains one.
 **/__pycache__
 **/*.pyc

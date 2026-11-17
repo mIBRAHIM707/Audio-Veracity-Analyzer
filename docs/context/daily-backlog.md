@@ -475,8 +475,15 @@ items needing that data are listed at the end and stay out of the queue.
   PostgreSQL 16, Redis 7 AOF, live, lab Asterisk; internal network with no egress);
   ONNX Runtime telemetry found ON by default in official builds and forced off
   (`services/inference/ort_runtime.py`, image env); Claude-authored lab test (real call
-  stored and logged, egress blocked) and unit tests; review fixed. Remaining: API/
-  dashboard image, Kubernetes manifests and NetworkPolicy, hashed requirements/SBOM.
+  stored and logged, egress blocked) and unit tests; review fixed. 17 Nov (attempt 2):
+  API/dashboard image (`deploy/api/Dockerfile`: digest-pinned Node 22 stage builds the
+  dashboard from the lockfile; Python stage with 32 exact pins incl. torch 2.8.0+cpu,
+  `--no-deps`, uid 10001) and Compose `api` service (internal only, read-only, 2 CPUs/3 GB,
+  `/readyz` health check with the real checkpoint, Redis relay); lab test extended (real
+  call reaches the API WebSocket via Redis, `/v1/calls`, dashboard assets, file analysis
+  with the real checkpoint, no egress) and a CI unit test of the pinning rules; review
+  conditional pass fixed. Remaining: publishing the dashboard (auth decision), FR-I9 cap
+  across containers, Kubernetes manifests and NetworkPolicy, hashed requirements/SBOM.
 - [ ] 10.QA Reproducible startup, CPU parity where measurable, rollback/readiness.
 
 ## 11 — Final software integration

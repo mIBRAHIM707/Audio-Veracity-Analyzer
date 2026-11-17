@@ -36,6 +36,9 @@ alert feed with banner and optional tone, per-call timeline), fed by the API's R
 snapshot and event stream. Infrastructure only; no detector accuracy implied.
 17 Nov: no data change — live `/metrics` now times each window through the scoring
 loop (queue, batch, apply, offer to result) and counts alerts raised (FR-O6).
+17 Nov (attempt 2): no data change — the analysis API and dashboard now have a Docker
+image and run in the Compose stack (internal only; not reachable from a host browser
+until an authentication/publishing decision is made).
 
 Updated 4 October 2026. This is the active sequence; evidence lives in
 `current-state.md` and `handoffs/`. Check marks mean the stated bounded task passed
