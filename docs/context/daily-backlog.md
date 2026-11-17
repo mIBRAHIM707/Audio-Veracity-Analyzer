@@ -200,6 +200,10 @@ items needing that data are listed at the end and stay out of the queue.
   PumpThread; `--database-url-env`/`--redis-url-env`, migrations applied at start-up,
   bounded drain on stop); lab: a real call's windows are in PostgreSQL while it runs.
   Remaining: scorer resume (FR-I11), other architecture tables, Redis session state.
+  17 Nov scope note: architecture §2.4 resume assumes the scorer restarts apart from the
+  `tap-receiver`; here tap and scorer share one process and a restart ends open calls
+  `monitor_lost` (§2.4), so resume needs a topology decision (split process, or resume
+  re-tapped calls) before it can be built.
 - [ ] 5.2 Jobs/cancellation/idempotency, calls/alerts API and WebSocket events.
   Progress (10 Nov): `services/scorer/ordered.py` per-call serialized boundary
   (phase-4 QA M1/L3): monotonic per-direction `window_idx`, duplicate/stale results
@@ -229,8 +233,10 @@ items needing that data are listed at the end and stay out of the queue.
   (`services/api/__main__.py`: loopback by default, bind before announcing,
   `--redis-url-env` relay, graceful SIGTERM/Ctrl+Break with a `stopped` record); 12
   Claude-authored tests incl. child processes with real uvicorn and Redis; review fixed.
-  Remaining: a source epoch for restart detection, job cancellation/idempotency
-  (scope decision).
+  17 Nov: source epoch (`EventHub.epoch` sent as `source` by the forwarder; the relay
+  detects restarts exactly, also with lost first events, and drops non-advancing seqs
+  within an epoch as `out_of_order`); Claude-authored tests incl. real Redis; review
+  fixed. Remaining: job cancellation/idempotency (scope decision).
 - [ ] 5.3 Restart recovery, in-flight handling and default no-audio-retention behavior.
   Progress (12 Nov): default no-raw-audio retention on the analysis API verified by 3
   Claude-authored tests (spooled uploads removed with rollover proven, no audio in

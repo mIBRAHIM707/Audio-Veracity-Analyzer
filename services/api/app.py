@@ -62,7 +62,7 @@ REGISTRY_SEPARATE = (('ava_call_registry_lost_events_total', 'lost_events',
                       'Published events the registry feed dropped before applying them.'),
                      ('ava_calls_idle_expired_total', 'idle_expired',
                       'Active calls ended by the registry to free a slot after the idle timeout.'))
-RELAY_OUTCOMES = ('relayed', 'invalid', 'hub_errors')
+RELAY_OUTCOMES = ('relayed', 'invalid', 'hub_errors', 'out_of_order')
 RELAY_COUNTERS = (('ava_event_relay_missing_events_total', 'missing',
                    'Events the relay counted lost from gaps in the scorer sequence.'),
                   ('ava_event_relay_gaps_total', 'gaps', 'Sequence gaps the relay saw.'),

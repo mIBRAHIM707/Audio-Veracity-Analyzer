@@ -46,7 +46,9 @@ scoring.
 Limits to know: worst-case buffered memory is subscribers x buffer x event size
 (64 x 4096 x 16 KiB, about 4 GiB, if every subscriber has a full buffer of maximum-size
 events); deployments should use smaller buffers or fewer subscribers. `seq` restarts at
-1 with a new hub; there is no restart marker yet (FR-I11 work in 5.3).
+1 with a new hub, and every hub has its own random `epoch` (32 hex characters,
+`EventHub(epoch=)` to fix one in tests; 17 Nov), which the Redis bridge uses as a
+restart marker.
 
 Upstream loss (16 Nov): `EventHub.report_upstream_loss(missing=, interruptions=)` tells
 every current subscriber (filtered ones too: the lost events' call IDs are unknown)
@@ -68,10 +70,11 @@ Architecture §2.4/§2.5: the scorer publishes to Redis pub/sub and `api` fans o
 and PUBLISHes each envelope's JSON on `ava:events:v1`; Redis faults are counted
 (`publish_failures`), never raised into scoring, and those envelopes are lost.
 `RedisRelay(connect, hub).pump(timeout)` subscribes, treats each message as untrusted
-(64 KiB bound, strict UTF-8 JSON without NaN/Infinity, exactly the five envelope keys,
-the FR-A4 contract re-checked) and republishes valid events into the local hub with
+(64 KiB bound, strict UTF-8 JSON without NaN/Infinity, exactly the five envelope keys
+plus, since 17 Nov, an optional `source`; the FR-A4 contract re-checked) and republishes valid events into the local hub with
 the source `ts`. The source `seq` only detects loss: a jump counts `gaps` and
-`missing`, a step back counts `restarts` (the source hub restarted). Pub/sub is
+`missing`, a step back counts `restarts` for messages without `source` (see "Source
+epoch" below for the rules with it). Pub/sub is
 at-most-once: events published while the relay is disconnected are lost and show up as
 a gap at the next message; after a connection error the relay resubscribes on the next
 pump. One forwarder per channel, on an unfiltered subscription (several scorer
@@ -80,6 +83,40 @@ a pump may return before `timeout` (subscribe confirmations), so call it in a lo
 After the first failed publish a forwarder pump counts the rest of its batch as failed
 without trying, so an unreachable Redis costs one client timeout per pump. A source
 restart (seq back to n) counts n - 1 missing; loss just before a restart is invisible.
+
+Source epoch (17 Nov; closes the 16 Nov review L2). The wire form is the five envelope
+keys plus `source`, the forwarding hub's `epoch` (`encode_message`); the relay accepts
+messages with or without it (`parse_message_with_source`; a `source` that is not 32
+lowercase hex characters is invalid). Relay rules:
+
+| Message | Counted as | Reported to subscribers |
+|---|---|---|
+| same `source`, `seq` = last + 1 | relayed | nothing |
+| same `source`, `seq` > last + 1 | gap, `missing` = the jump | `missing` |
+| new `source` (any `seq`) | `restarts`, `missing` = seq - 1 | `missing` and 1 interruption |
+| same `source`, `seq` <= last | `out_of_order`, dropped (last seq kept) | 1 interruption per run of them |
+| no `source`, `seq` <= last | `restarts` (the earlier rule) | `missing` and 1 interruption |
+| `source` appears or disappears | `restarts` | `missing` and 1 interruption |
+
+So a restart is found even when the new hub's first events were lost (its first seen
+`seq` may be above the old one, or exactly the next one). A message within one epoch
+that does not advance is a duplicate, a fault or a restarted hub that reused its
+epoch; it is not delivered, and subscribers get one interruption at the start of each
+such run (the next relayed message ends it). The relay cannot tell a harmless duplicate
+from a reused epoch, so a duplicate also produces that "re-read REST" hint with nothing
+lost. After a reused-epoch run, the message that ends it is compared with the old last
+`seq`, so the new hub's own skipped events are not counted in `missing` (the
+interruption already covers them). Epochs must be unique per hub:
+`EventHub(epoch=)` is for tests. The wire `seq` must be at least 1 (hubs number from
+1), so a restart never counts a negative loss.
+
+Upgrade order: an API relay from before 17 Nov accepts exactly the five envelope keys
+and so refuses every message with `source` (all `invalid`, a blank live board).
+Update or restart the API (`python -m services.api`) before the scorer
+(`python -m services.live`); the new relay accepts both forms.
+`out_of_order` is a fourth message outcome on the API's
+`ava_event_relay_messages_total`. One forwarder per hub: a forwarder made on a
+subscription without `hub_epoch` (a test fake) uses its own random epoch.
 
 Conditions for wiring (not enforced by the module): each pump runs on its own thread,
 never the scoring thread or the API event loop; clients set `socket_timeout`,

@@ -10,12 +10,14 @@ that lost envelopes should re-read state over REST. `seq` is hub-wide, so a
 call-filtered subscriber normally sees gaps; order by `seq`, not `ts` (wall clock).
 `system.health` without a call ID reaches every subscriber; a call-scoped one reaches
 only that call's and unfiltered subscribers. The subscriber count is bounded; extra
-subscriptions are refused. `seq` restarts at 1 with a new hub (no restart marker
-yet). A relay feeding the hub from Redis reports events lost before they arrived with
+subscriptions are refused. `seq` restarts at 1 with a new hub, which has a new random
+`epoch` (17 Nov). A relay feeding the hub from Redis reports events lost before they arrived with
 `report_upstream_loss`; subscribers read it with `drain_batch` (16 Nov).
 """
 from collections import deque
 import dataclasses
+import re
+import secrets
 import threading
 import time
 from typing import NamedTuple
@@ -92,6 +94,11 @@ class Subscription:
         dropped, self._dropped_unreported = self._dropped_unreported, 0
         return [self._buffer.popleft() for _ in range(count)], dropped
 
+    @property
+    def hub_epoch(self):
+        """The epoch of the hub whose `seq` numbers this subscription's envelopes."""
+        return self._hub.epoch
+
     def buffered(self):
         """Envelopes waiting in this subscription now (read under the hub lock)."""
         with self._hub._lock:
@@ -101,10 +108,21 @@ class Subscription:
         self._hub._remove(self)
 
 
+EPOCH_PATTERN = re.compile(r'[0-9a-f]{32}')  # use with fullmatch (review L3: `$` accepts a trailing newline)
+
+
 class EventHub:
-    def __init__(self, *, max_subscribers=DEFAULT_MAX_SUBSCRIBERS, clock=time.time):
+    def __init__(self, *, max_subscribers=DEFAULT_MAX_SUBSCRIBERS, clock=time.time, epoch=None):
+        """`epoch` names this hub's `seq` numbering (32 lowercase hex characters, random
+        by default, so every new hub, and so every process restart, gets a new one). The
+        Redis forwarder sends it with each event so a relay tells a source restart from
+        a gap exactly (17 Nov). Pass one only in tests: it must be unique per hub, as a
+        reused epoch makes a restarted hub's events look out of order to a relay."""
         if type(max_subscribers) is not int or max_subscribers < 1:
             raise ValueError('max_subscribers must be a positive integer')
+        if epoch is not None and (not isinstance(epoch, str) or not EPOCH_PATTERN.fullmatch(epoch)):
+            raise ValueError('epoch must be 32 lowercase hexadecimal characters')
+        self.epoch = epoch or secrets.token_hex(16)
         self._lock = threading.Lock()
         self._subscribers = []
         self._max = max_subscribers

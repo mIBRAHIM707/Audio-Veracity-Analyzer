@@ -15,7 +15,8 @@ import uuid
 
 from services.events.contract import EventContractError, make_envelope
 from services.events.fanout import EventHub
-from services.events.redis_bridge import CHANNEL, MAX_MESSAGE_BYTES, RedisForwarder, RedisRelay, parse_message
+from services.events.redis_bridge import (CHANNEL, MAX_MESSAGE_BYTES, RedisForwarder, RedisRelay, encode_message,
+                                          parse_message)
 
 REDIS_URL = os.environ.get('AVA_TEST_REDIS_URL')
 REAL = unittest.skipIf(not REDIS_URL and os.environ.get('AVA_REQUIRE_REDIS') != '1',
@@ -128,13 +129,27 @@ class ForwarderTests(unittest.TestCase):
         # Re-review A-M1: after the first failure the rest of the batch is not attempted.
         self.assertEqual(forwarder.pump(), 1)
         self.assertEqual(client.calls, 2)
-        self.assertEqual(client.published, [(CHANNEL, sent[0].to_json())])
+        # 17 Nov: the wire form adds the hub's epoch as `source`; the exact bytes for a fixed
+        # epoch are pinned in test_wire_bytes_are_pinned below.
+        self.assertEqual(client.published, [(CHANNEL, encode_message(sent[0], hub.epoch))])
+        self.assertEqual(json.loads(client.published[0][1]), {**json.loads(sent[0].to_json()), 'source': hub.epoch})
         self.assertEqual(forwarder.stats, {'forwarded': 1, 'publish_failures': 2, 'hub_dropped': 0,
                                            'no_receivers': 0})
         later = hub.publish('call.started', 'c9', {})
         self.assertEqual(forwarder.pump(), 1)  # the next pump tries again
-        self.assertEqual(client.published[-1], (CHANNEL, later.to_json()))
+        self.assertEqual(client.published[-1], (CHANNEL, encode_message(later, hub.epoch)))
         self.assertEqual(forwarder.pump(), 0)
+
+    def test_wire_bytes_are_pinned(self):
+        # Review L6 (17 Nov): one literal payload for a fixed epoch (key order, spacing, UTF-8).
+        hub = EventHub(clock=lambda: T0, epoch='0123456789abcdef' * 2)
+        client = FakeClient()
+        forwarder = RedisForwarder(hub.subscribe(), client)
+        hub.publish('call.started', 'c1', {'from': 'اردو'})
+        forwarder.pump()
+        self.assertEqual(client.published[0][1],
+                         '{"call_id": "c1", "data": {"from": "اردو"}, "seq": 1, '
+                         '"source": "0123456789abcdef0123456789abcdef", "ts": 1763200000.0, "type": "call.started"}')
 
     def test_unreachable_redis_costs_one_attempt_per_pump(self):
         hub = EventHub(clock=lambda: T0)

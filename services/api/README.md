@@ -59,16 +59,21 @@ shutdown stops it and closes its subscription; the caller closes the client. Los
 relay detects reaches WebSocket clients as `stream.gap` (see above). REST is not
 corrected for it (no PostgreSQL recovery yet): `/v1/calls` reports
 `registry.upstream_missing` and `registry.upstream_interruptions` (not exported as
-registry metrics: the relay counters carry the same numbers), so after a gap a
+registry metrics; the registry's interruptions also include source restarts and
+out-of-order runs, which the relay counts as `ava_event_relay_source_restarts_total`
+and `outcome="out_of_order"` rather than in `ava_event_relay_interruptions_total`, which
+counts Redis outages only), so after a gap a
 call may look active until its idle timeout. Reading `stream.gap`: one Redis outage
 usually gives two messages (an interruption at once, then the counted
 `upstream_missing` when the next event arrives), so do not add them up as separate
 losses; a gap is sent at the start of the batch in which it became known, so a few
-events after it may predate it (order by `seq`). Not detectable: a scorer restart whose
-first events were also lost reads as an ordinary gap with too small a count, and two
-scorers on one channel look like constant restarts (needs a source epoch; one scorer
-per channel). `/metrics` then adds
-`ava_event_relay_messages_total{outcome=relayed|invalid|hub_errors}`,
+events after it may predate it (order by `seq`). Since 17 Nov each message carries the
+scorer hub's random epoch (`source`), so a scorer restart is detected even when its
+first events were lost (see `services/events/README.md`, "Source epoch"); two scorers
+on one channel still look like constant restarts (one scorer per channel). Update this
+API before the scorer: a relay from before 17 Nov refuses the new messages. `/metrics`
+then adds
+`ava_event_relay_messages_total{outcome=relayed|invalid|hub_errors|out_of_order}`,
 `ava_event_relay_missing_events_total`, `ava_event_relay_gaps_total`,
 `ava_event_relay_source_restarts_total`, `ava_event_relay_connection_errors_total`,
 `ava_event_relay_interruptions_total`, `ava_event_relay_loss_report_errors_total`,

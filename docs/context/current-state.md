@@ -91,7 +91,11 @@ and about 50,000 original clips, excluding codec copies.
   forced by the PBX per endpoint (A-law or GSM agent behind a mu-law caller). Lab tests
   show the forced SDP offer and native format, and sample-identical audio both ways
   through Asterisk's transcoding; an unreachable agent rings out (`NOANSWER`). SIPp
-  stands in for softphones; plumbing evidence only.
+  stands in for softphones; plumbing evidence only. `python -m lab.preflight` checks a
+  host for the lab without changing anything (8 PASS on this host). Redis events now
+  carry the scorer hub's random epoch, so the API detects a scorer restart exactly.
+  Scorer resume (FR-I11) awaits a topology decision: tap and scorer share one process
+  here, and a restart ends open calls `monitor_lost`.
 - **16 Nov daily run (details in `daily-runs/2026-11-16.md`).** Room impulse responses
   for FR-D7 (3.4): `data/prepare/reverb.py` (first-arrival aligned, level-preserving
   convolution with DRR and energy lineage) and an optional `reverb` spec in
