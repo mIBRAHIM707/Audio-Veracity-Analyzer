@@ -49,15 +49,21 @@ class _CallStream:
 
 
 class TapScoringSink:
-    def __init__(self, live, feed, pipeline, clock, *, hub=None, end_grace_s=10.0, resampler_factory=_resampler):
+    def __init__(self, live, feed, pipeline, clock, *, hub=None, end_grace_s=10.0, resampler_factory=_resampler,
+                 recorder=None):
+        """`recorder` (optional, `services/live/retention.SnippetRecorder`, FR-O5) gets
+        `started(call_id)` for admitted calls and their raw 8 kHz audio; its faults are
+        counted in `recorder_errors`, never raised into the tap."""
         self.live, self.feed, self.pipeline, self.clock, self.hub = live, feed, pipeline, clock, hub
+        self.recorder = recorder
         self.end_grace_s = end_grace_s
         self._resampler_factory = resampler_factory
         self._streams = {}
         self._ending = {}  # call_id -> (reason, deadline)
         self.counts = {'started': 0, 'refused': 0, 'audio_chunks': 0, 'audio_unfed': 0, 'ended': 0,
                        'ended_elsewhere': 0, 'end_retries': 0, 'ends_forced': 0, 'end_cancelled_tail': 0,
-                       'health_published': 0, 'health_failures': 0, 'pump_errors': 0, 'errors': 0}
+                       'health_published': 0, 'health_failures': 0, 'pump_errors': 0, 'errors': 0,
+                       'recorder_errors': 0}
 
     # -- TapApp sink -------------------------------------------------------------------
     def started(self, call):
@@ -72,12 +78,14 @@ class TapScoringSink:
             return
         self._streams[call.call_id] = _CallStream(self._resampler_factory())
         self.counts['started'] += 1
+        self._record('started', call.call_id, getattr(call, 'started', None))  # PBX creation time
 
     def audio(self, call_id, pcm, concealment):
         stream = self._streams.get(call_id)
         if stream is None:
             self.counts['audio_unfed'] += 1
             return
+        self._record('audio', call_id, pcm)
         samples = np.frombuffer(pcm, dtype='<i2').astype(np.float64)
         flags = np.concatenate([np.full(n, c > 0) for n, c in concealment]) if concealment else np.zeros(0, bool)
         if len(flags) != len(samples):
@@ -173,6 +181,14 @@ class TapScoringSink:
         return True
 
     # -- internals -----------------------------------------------------------------------
+    def _record(self, method, *args):
+        if self.recorder is None:
+            return
+        try:
+            getattr(self.recorder, method)(*args)
+        except Exception:  # retention is advisory: never into the tap or scoring
+            self.counts['recorder_errors'] += 1
+
     def _push(self, call_id, stream, out, flags):
         stream.flags = np.concatenate([stream.flags, flags])
         if not len(out):

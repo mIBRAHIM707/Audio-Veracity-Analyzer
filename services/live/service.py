@@ -104,7 +104,10 @@ def load_detector(card_path, onnx_path, scoring_document, *, threads=1, per_wind
 class LiveService:
     def __init__(self, ari, detector, config, vad_factory, *, receiver_host, bind_host='0.0.0.0', max_calls=8,
                  capacity_windows_per_s=4.0, tap_extensions=None, rtp_source=None, hub=None, clock=time.monotonic,
-                 tick_hooks=(), sleep=time.sleep):
+                 tick_hooks=(), sleep=time.sleep, recorder_factory=None):
+        """`recorder_factory(hub, live)` (optional, FR-O5) builds the alert-snippet
+        recorder (`services/live/retention.SnippetRecorder`): fed by the sink, pumped
+        once per loop turn, closed after the final ends."""
         self.ari, self.clock, self._sleep = ari, clock, sleep
         self.hub = hub or EventHub()
         self.configs = ConfigStore(config)
@@ -117,7 +120,8 @@ class LiveService:
         self.pipeline_stats = PipelineStats(clock)
         self.detector_failure_run, self._seen_batches, self._seen_failures = 0, 0, 0
         self.feed = SpeechFeed(self.pipeline, vad_factory)
-        self.sink = TapScoringSink(self.live, self.feed, self.pipeline, clock, hub=self.hub)
+        self.recorder = recorder_factory(self.hub, self.live) if recorder_factory is not None else None
+        self.sink = TapScoringSink(self.live, self.feed, self.pipeline, clock, hub=self.hub, recorder=self.recorder)
         # The tap admits no more calls than scoring can take (CallGate = max_calls).
         self.tap = TapApp(ari, self.sink, receiver_host=receiver_host, bind_host=bind_host, max_calls=max_calls,
                           tap_extensions=tap_extensions, rtp_source=rtp_source, clock=clock)
@@ -130,6 +134,11 @@ class LiveService:
             self.sink.pump()
         except Exception:  # the sink contains its own faults; this is a last guard
             self.counts['loop_errors'] += 1
+        if self.recorder is not None:
+            try:
+                self.recorder.pump_events()  # snippets for alerts published this turn (FR-O5)
+            except Exception:  # it never raises; a last guard
+                self.counts['loop_errors'] += 1
         self.pipeline.publish_metrics(self.pipeline_stats)  # never raises (counted)
         self._track_detector()
         for hook in self.tick_hooks:
@@ -194,6 +203,9 @@ class LiveService:
             # monitor_lost (architecture §2.4).
             self._guarded(self.sink.flush_ends)
             self._guarded(lambda: self.live.end_all('monitor_lost', speech_seconds_for=self.feed.speech_seconds_for))
+            if self.recorder is not None:  # alerts of the last turns, then release every ring
+                self._guarded(self.recorder.pump_events)
+                self._guarded(self.recorder.close)
 
     def _guarded(self, action):
         try:

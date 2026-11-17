@@ -198,8 +198,12 @@ class StoreTests(TempRoot):
         store.put('old', call_id='c', direction='caller', pcm=ramp(10), sample_rate=8000)
         self.clock.t = 1050.0
         store.put('new', call_id='c', direction='caller', pcm=ramp(10), sample_rate=8000)
-        (self.root / 'corrupt.snip').write_bytes(b'garbage')
-        (self.root / 'UPPER.SNIP').write_bytes(b'garbage too')
+        # 17 Nov (review M3): unreadable files with snippet names are still deleted (fail
+        # closed); files whose names this store never creates are now left alone.
+        corrupt, upper = 'd' * 64 + '.snip', 'E' * 64 + '.SNIP'
+        (self.root / corrupt).write_bytes(b'garbage')
+        (self.root / upper).write_bytes(b'garbage too')
+        (self.root / 'corrupt.snip').write_bytes(b'not a store name')
         crash = self.root / 'snip-crash.tmp'
         crash.write_bytes(b'partial')
         old = time.time() - 3600
@@ -210,13 +214,13 @@ class StoreTests(TempRoot):
         self.assertEqual(store.cleanup(on), 3)  # 'old' (100 s) and both unreadable snippets
         old_key, new_key = (hashlib.sha256(name).hexdigest() for name in (b'old', b'new'))
         remaining = [p for p in self.root.iterdir()
-                     if not leftover_tmp_is_os_artifact(p, [old_key, 'corrupt', 'UPPER'])]
+                     if not leftover_tmp_is_os_artifact(p, [old_key, 'd' * 64, 'E' * 64])]
         self.assertEqual(sorted(p.name for p in remaining),
-                         sorted([new_key + '.snip', 'notes.txt', 'snip-writing.tmp']))
+                         sorted([new_key + '.snip', 'notes.txt', 'snip-writing.tmp', 'corrupt.snip']))
         self.assertEqual(store.cleanup(RetentionPolicy(False)), 1, 'switching off purges in one run')
         remaining = [p.name for p in self.root.iterdir()
-                     if not leftover_tmp_is_os_artifact(p, [old_key, new_key, 'corrupt', 'UPPER'])]
-        self.assertEqual(sorted(remaining), ['notes.txt', 'snip-writing.tmp'])
+                     if not leftover_tmp_is_os_artifact(p, [old_key, new_key, 'd' * 64, 'E' * 64])]
+        self.assertEqual(sorted(remaining), ['corrupt.snip', 'notes.txt', 'snip-writing.tmp'])
 
 
 class CallRetentionTests(TempRoot):

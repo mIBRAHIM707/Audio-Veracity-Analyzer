@@ -59,7 +59,7 @@ TAP_COUNTERS = ('events', 'bad_events', 'tapped', 'tap_failures', 'refused_capac
                 'cleanup_errors', 'swept')
 SINK_COUNTERS = ('started', 'refused', 'audio_chunks', 'audio_unfed', 'ended', 'ended_elsewhere', 'end_retries',
                  'ends_forced', 'end_cancelled_tail', 'health_published', 'health_failures', 'pump_errors',
-                 'errors')
+                 'errors', 'recorder_errors')
 # services/tap/rtp_receiver.py RtpSession.stats and services/tap/jitter.py JitterBuffer.stats
 # (prefixed `jitter_`), summed over ended calls; a key never seen is exported as 0.
 RECEIVER_COUNTERS = ('packets', 'malformed', 'other_payload', 'other_source', 'gaps', 'missing', 'late_or_duplicate',
@@ -253,6 +253,7 @@ class HealthServer:
         alive, stuck, faults, moved = [], [], [], []
         stored, waits, backlog, failures, hub_dropped = [], [], [], [], []
         forwarded, publish_failures, no_receivers = [], [], []
+        snippets, snippets_queued = [], []
         for pump in self.pumps:
             thread = pump['thread']
             label = (('pump', thread.name),)
@@ -262,6 +263,10 @@ class HealthServer:
             faults.append((label, snap['faults']))
             moved.append((label, snap['moved']))
             report = pump['report']()
+            if 'snippets' in report:  # FR-O5 snippet recorder (services/live/retention.py)
+                snippets += [((('outcome', key),), value) for key, value in sorted(report['snippets'].items())]
+                snippets_queued.append(((), report['queued']))
+                continue
             counts = report['counts']
             hub_dropped.append((label, counts.get('hub_dropped', 0)))
             if 'backlog' in report:
@@ -286,6 +291,12 @@ class HealthServer:
                       + _family('gauge', 'ava_live_store_backlog', 'Events waiting to be stored.', backlog)
                       + _family('gauge', 'ava_live_store_consecutive_failures',
                                 'Store attempts failed in a row (> 0: storage is stalled).', failures))
+        if snippets:
+            lines += (_family('counter', 'ava_live_snippets_total',
+                              'Alert snippet recorder counts (FR-O5): captured, written, write_failed, no_audio, '
+                              'queue_full, cleanup runs/deleted, ...; kinds differ, do not sum.', snippets)
+                      + _family('gauge', 'ava_live_snippets_queued', 'Snippets waiting to be written.',
+                                snippets_queued))
         if forwarded:
             lines += (_family('counter', 'ava_live_redis_forwarded_total', 'Events published on Redis.', forwarded)
                       + _family('counter', 'ava_live_redis_publish_failures_total',

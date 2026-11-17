@@ -43,6 +43,16 @@ Health (16 Nov; PRD FR-A8, FR-O6): `--health-port N` serves `/healthz`, `/readyz
 authentication). The port is bound during start-up, so a port in use refuses the start.
 `/readyz` is 200 only while the ARI stream is connected, the scoring loop is turning and
 the detector is not failing batch after batch; the start record adds `health`.
+
+Alert snippets (17 Nov; PRD FR-O5): off by default, so no raw audio is stored.
+`--retention on --retention-dir DIR --retention-key-file FILE [--retention-ttl-days 7]`
+keeps a 30 s ring of each admitted call's tapped audio and writes one AES-256-GCM
+snippet per `alert.raised` (`services/live/retention.py`; writing and TTL cleanup run
+on their own `retention` pump thread). The key file holds 32 raw bytes, outside the
+repository (provisioning and rotation are the operator's). `--retention off` with
+`--retention-dir` purges that folder's snippets (FR-O5 "switching off purges"). A bad
+key, a folder inside the repository or a missing cryptography package refuses the
+start; the start record says `retention: off` or its mode and TTL, never a path or key.
 """
 import argparse
 import ipaddress
@@ -160,7 +170,22 @@ def build_parser():
                         help='local IPv4 address for the health endpoint (default 127.0.0.1; no authentication)')
     parser.add_argument('--drain-timeout', type=_drain_seconds, default=5.0,
                         help='seconds the storage/publish pumps may drain on stop (above 0, at most 300; default 5)')
+    parser.add_argument('--retention', choices=('off', 'on'), default='off',
+                        help='alert audio snippets (FR-O5); default off: no raw audio is stored')
+    parser.add_argument('--retention-dir', help='snippet folder outside the repository; with --retention off, '
+                                                'existing snippets there are purged')
+    parser.add_argument('--retention-key-file', help='raw 32-byte AES-256-GCM key file outside the repository '
+                                                     '(needed with --retention on)')
+    parser.add_argument('--retention-ttl-days', type=_ttl_days, default=7.0,
+                        help='days a snippet is kept (above 0, at most 365; default 7)')
     return parser
+
+
+def _ttl_days(text):
+    value = _positive_float(text)
+    if value > 365:
+        raise argparse.ArgumentTypeError('must be at most 365 days')
+    return value
 
 
 def _check_bind(host):
@@ -410,12 +435,20 @@ def _prepare(args, environ, factories, stderr, opened):
         if error.status in (401, 403):
             return refuse(f'ARI refused the credentials (HTTP {error.status})')
         reachable = False  # Asterisk down or restarting: the loop keeps reconnecting
+    retention = _retention(args)
+    if isinstance(retention, str):
+        return refuse(retention)
     vad_model = args.vad_model
+    extra = {}
+    if retention is not None:
+        snippet_store, policy = retention
+        from services.live.retention import SnippetRecorder
+        extra['recorder_factory'] = lambda hub, live: SnippetRecorder(snippet_store, policy, hub, live)
     try:
         service = made['service'](ari, detector, config, lambda: made['vad'](vad_model),
                                   receiver_host=args.receiver_host, bind_host=args.bind_host,
                                   max_calls=args.max_calls, capacity_windows_per_s=args.capacity_windows_per_s,
-                                  tap_extensions=set(args.tap_extensions) if args.tap_extensions else None)
+                                  tap_extensions=set(args.tap_extensions) if args.tap_extensions else None, **extra)
     except (ValueError, TypeError) as error:
         return refuse(f'service: {error}')
     # Subscribed before `run`, so no event is published before the pumps listen.
@@ -438,6 +471,11 @@ def _prepare(args, environ, factories, stderr, opened):
         forwarder = RedisForwarder(channel_feed, redis_client)
         pumps.append({'thread': PumpThread('redis', forwarder.pump, pending=channel_feed.buffered),
                       'resource': redis_client, 'report': lambda: {'counts': dict(forwarder.stats)}})
+    recorder = getattr(service, 'recorder', None)
+    if retention is not None and recorder is not None:
+        # Seals/writes snippets and runs the TTL/purge cleanup off the scoring thread.
+        pumps.append({'thread': PumpThread('retention', recorder.write_pending, pending=recorder.pending),
+                      'resource': None, 'report': recorder.report})
     health = None
     if args.health_port is not None:
         try:
@@ -457,8 +495,33 @@ def _prepare(args, environ, factories, stderr, opened):
     if health is not None:
         host, port = health.address
         record['health'] = {'host': host, 'port': port}
+    record['retention'] = ('off' if retention is None else
+                           {'mode': 'on' if retention[1].enabled else 'purge', 'ttl_days': args.retention_ttl_days})
     _say(stderr, record)
     return service, pumps, health
+
+
+def _retention(args):
+    """(SnippetStore, RetentionPolicy), None when retention is off and no folder is
+    given (nothing stored, nothing to purge), or a refusal message. Paths and key bytes
+    are never printed."""
+    if args.retention == 'off' and args.retention_key_file:
+        return '--retention-key-file is only used with --retention on'
+    if args.retention == 'on' and not (args.retention_dir and args.retention_key_file):
+        return '--retention on needs --retention-dir and --retention-key-file'
+    if not args.retention_dir:
+        return None
+    try:
+        from services.retention.snippets import AesGcmSealer, RetentionPolicy, SnippetStore
+        policy = RetentionPolicy(args.retention == 'on', ttl_s=args.retention_ttl_days * 86400.0)
+        if args.retention == 'off':  # FR-O5: switching off purges existing snippets
+            return SnippetStore.for_cleanup(args.retention_dir, clock=time.time), policy
+        sealer = AesGcmSealer.from_key_file(args.retention_key_file)
+        return SnippetStore(args.retention_dir, sealer, clock=time.time), policy
+    except RuntimeError as error:  # the cryptography package is missing
+        return f'retention: {error}'
+    except (OSError, ValueError) as error:  # messages name the rule, never the key or path
+        return f'retention: {type(error).__name__}: {error if isinstance(error, ValueError) else error.strerror}'
 
 
 def _health_server(service, pumps, host, port):

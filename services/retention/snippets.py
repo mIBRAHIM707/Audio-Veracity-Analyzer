@@ -30,6 +30,7 @@ import json
 import math
 import os
 from pathlib import Path
+import re
 import stat
 import struct
 import tempfile
@@ -48,6 +49,8 @@ SUFFIX = '.snip'
 TEMP_PREFIX = 'snip-'
 DIRECTIONS = ('caller', 'agent')
 REPO_ROOT = Path(__file__).resolve().parents[2]
+OWN_SNIPPET = re.compile(r'[0-9a-f]{64}\.snip', re.IGNORECASE)
+OWN_TEMP = re.compile(r'(snip-[A-Za-z0-9_]+\.tmp|[0-9a-f]{64}\.snip\.tmp)', re.IGNORECASE)
 
 
 KEY_BYTES = 32   # AES-256
@@ -188,17 +191,28 @@ class SnippetStore:
     """Sealed snippet files with TTL and purge. Methods never raise for I/O or sealer
     faults; they return False/counts and record `failures`."""
 
-    def __init__(self, root, sealer, *, clock, _insecure_test_sealer=False):
+    def __init__(self, root, sealer, *, clock, _insecure_test_sealer=False, _cleanup_only=False):
         root = Path(root).resolve()
         if root == REPO_ROOT or REPO_ROOT in root.parents:
             raise ValueError('the retention root must be outside the repository')
-        if type(sealer) is not AesGcmSealer and not _insecure_test_sealer:  # no subclasses
+        if _cleanup_only:
+            if sealer is not None:
+                raise ValueError('a cleanup-only store takes no sealer')
+        elif type(sealer) is not AesGcmSealer and not _insecure_test_sealer:  # no subclasses
             raise ValueError(f'snippets need an {AES_GCM} sealer (AesGcmSealer); none is installed (FR-O5)')
         self.root, self._sealer, self._clock = root, sealer, clock
-        self.algorithm = str(getattr(sealer, 'algorithm', 'unknown'))
+        self.cleanup_only = _cleanup_only
+        self.algorithm = 'none' if _cleanup_only else str(getattr(sealer, 'algorithm', 'unknown'))
         self._lock = threading.Lock()
         self.failures = {}
         self.stored = 0
+
+    @classmethod
+    def for_cleanup(cls, root, *, clock):
+        """A store that only runs `cleanup` (no key needed): with retention off it purges
+        existing snippets (FR-O5 "switching off purges ... within one cleanup run");
+        `put` always fails (counted as `cleanup_only`)."""
+        return cls(root, None, clock=clock, _cleanup_only=True)
 
     def _fail(self, name):
         with self._lock:
@@ -207,6 +221,9 @@ class SnippetStore:
     def put(self, alert_id, *, call_id, direction, pcm, sample_rate):
         """Persist one snippet for `alert_id`; False if one already exists or on any
         failure (counted). Never raises."""
+        if self.cleanup_only:
+            self._fail('cleanup_only')
+            return False
         tmp = None
         try:
             if not isinstance(alert_id, str) or not alert_id:
@@ -278,12 +295,14 @@ class SnippetStore:
         deleted = 0
         for path in list(self.root.iterdir()):
             try:
-                suffix = path.suffix.lower()
-                if suffix == '.tmp':
+                # 17 Nov review M3: only names this store creates are ever touched, so a
+                # mistyped folder cannot lose foreign files: `snip-*.tmp` temps, the OS's
+                # `<sha256>.snip.tmp` delete-pending copies, and `<sha256>.snip` snippets.
+                if OWN_TEMP.fullmatch(path.name):
                     if time.time() - path.stat().st_mtime >= TEMP_GRACE_S:
                         path.unlink()
                     continue
-                if suffix != SUFFIX:
+                if not OWN_SNIPPET.fullmatch(path.name) or not path.is_file():
                     continue
                 expired = not policy.enabled
                 if not expired:
@@ -369,6 +388,18 @@ class CallRetention:
         except Exception:
             self.feed_errors += 1
             return False
+
+    def capture(self, direction):
+        """A copy of the buffered audio of `direction` (oldest first), or None when
+        retention is off, the direction is not buffered, nothing was buffered yet, or on
+        a fault. Never raises; writing is left to the caller (e.g. another thread)."""
+        if not self.enabled:
+            return None
+        try:
+            pcm = self._buffers[direction].snapshot()
+        except Exception:
+            return None
+        return pcm if len(pcm) else None
 
     def on_alert_raised(self, alert_id, direction):
         """Persist the ring ending now; True if stored. Never raises (the alert must

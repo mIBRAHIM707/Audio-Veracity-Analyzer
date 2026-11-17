@@ -267,6 +267,83 @@ command line: port in the start record, served while running, closed after, a bu
 refused, bad ports usage errors); the storage lab case above also reads `/readyz` (200)
 and `/metrics` (`ava_live_calls_active 1`) while SIPp holds the real call.
 
+## Alert snippets (17 Nov 2026; PRD FR-O5, §6.3; architecture §2.4)
+
+Off by default: without `--retention on` no audio is buffered and the recorder does not
+even subscribe to the hub. With
+`--retention on --retention-dir DIR --retention-key-file FILE [--retention-ttl-days 7]`:
+
+- `SnippetRecorder` (`retention.py`) gets each admitted call from the sink
+  (`TapScoringSink(recorder=)`) and its tapped caller audio, 8 kHz PCM16 as the PBX
+  carried it, before resampling and VAD, into a 30 s ring per call. A call refused for
+  capacity is not buffered. The policy is fixed per run, and only calls whose PBX
+  channel was created (ARI `creationtime`) at or after the policy took effect are
+  buffered. Calls already in progress when a restart turned retention on, which
+  `TapApp.resume()` re-taps, are not buffered (FR-O5 "calls started after the change").
+  Neither is a call with a missing or unreadable creation time (fail closed). If an
+  Asterisk version omitted or reformatted `creationtime`, nothing would be buffered,
+  and the only sign would be `ava_live_snippets_total{outcome="start_time_unknown"}`.
+  Only Asterisk 20.6 was checked. Clock skew moves the boundary in both directions: a
+  PBX clock ahead of this host by s seconds lets calls created up to s seconds before
+  the start be buffered. Keep the PBX and the AVA host on NTP. A crash-restart with
+  retention still on also stops buffering calls already in progress, which is the
+  conservative reading.
+- Once per loop turn, `pump_events()` reads its own hub subscription. Each
+  `alert.raised` of a buffered call queues a copy of the ring, which is the 30 s ending
+  shortly after the window that raised the alert. Rings are then released for calls no
+  longer active, so an alert published in the call's last turn still gets its audio. The
+  alert is already published, so retention cannot delay it.
+- A `retention` pump thread writes the queued snippets (`SnippetStore.put`: AES-256-GCM,
+  one file per alert ID, exclusive create). It runs the TTL cleanup every 10 minutes and
+  once at start. The loop thread never writes to disk or encrypts.
+- `--retention off --retention-dir DIR` runs only that cleanup thread, which deletes
+  every snippet in DIR (FR-O5 "switching off purges ... within one cleanup run"). No key
+  is needed. Cleanup only ever touches names the store creates: `<sha256>.snip`,
+  `snip-*.tmp` and `<sha256>.snip.tmp`. So a mistyped folder loses no other file, and
+  an unreadable file with a snippet name is still deleted (fail closed).
+- Open FR-O5 decisions (for the PRD; not decided here):
+  - Turning retention off by simply dropping the flags (no `--retention-dir`) purges
+    nothing and stops TTL deletion, so the operator must pass the folder again. A fixed
+    snippet folder in deployment configuration, or a refusal while an earlier run's
+    folder exists, would close this.
+  - Snippets are deleted only while the service runs, so a service stopped for longer
+    than the TTL keeps them past it.
+  - The snippet ends when the alert is seen, a moment after the window that raised it.
+    Under a scoring backlog the evidence can fall partly outside the 30 s.
+- Start-up refusals: `--retention on` without both paths, a key file that is not 32
+  raw bytes (or is group/other-readable on POSIX), a folder inside the repository, a
+  missing `cryptography` (`requirements-retention.txt`), or `--retention-key-file`
+  without `--retention on`. No path or key appears in any record.
+- Limits:
+  - one ring per admitted call (480 kB);
+  - at most 16 queued snippets (more alerts count `queue_full`);
+  - agent-direction alerts get none (`no_audio`: only the caller is tapped);
+  - an alert lost to hub overflow gets none (`hub_dropped`).
+  Counts are exported as `ava_live_snippets_total{outcome}` and
+  `ava_live_snippets_queued`, with the pump's alive/stuck/faults, and appear in the
+  `stopped` record. Faults in the recorder are counted in the sink's `recorder_errors`.
+  Key provisioning and rotation, and FR-U5 playback, remain open.
+
+Evidence (Claude-authored, 17 Nov):
+- `tests/unit/test_live_retention.py`, 25 cases: off/purge, the stored audio equal to
+  what was fed, the 30 s ending at the alert, no-audio cases, release after the end with
+  tail alerts kept, re-tap, calls created before the policy or without a creation time,
+  the queue bound, write and cleanup faults (a raising store included), the cleanup
+  interval and TTL, foreign files never deleted, hub overflow, validation, a real
+  AES-256-GCM round trip (skips without cryptography), sink hooks (admitted only,
+  creation time passed, faults counted), command-line rules, `main()` wiring (on: a
+  snippet queued during the run is written by the retention pump before the process
+  exits, by its running loop or its stop drain, with nothing left queued; off with a
+  folder: purged at start; default: no recorder; no path or key printed), and the
+  metrics families.
+- `tests/lab/test_snippet_retention_lab.py`: a real Asterisk 20.6 call with three public
+  CSALT clips, real Silero VAD and a stand-in detector that calls every window synthetic.
+  On the final run (after the review fixes), one alert was raised after 8.9 s of
+  13.9 s played (9.0 s on the first run). The one stored snippet decrypts with the key
+  to 8.8 s of caller audio at 8 kHz, sample-identical to the decode of the
+  injected packets over its whole length and not in the clear on disk. The call
+  completed normally.
+
 ## Detector faults on a real call (6.QA)
 
 `tests/lab/test_detector_fault_lab.py` (Claude-authored, 15 Nov): with a detector that

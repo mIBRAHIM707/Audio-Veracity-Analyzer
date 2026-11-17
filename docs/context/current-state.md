@@ -95,7 +95,12 @@ and about 50,000 original clips, excluding codec copies.
   host for the lab without changing anything (8 PASS on this host). Redis events now
   carry the scorer hub's random epoch, so the API detects a scorer restart exactly.
   Scorer resume (FR-I11) awaits a topology decision: tap and scorer share one process
-  here, and a restart ends open calls `monitor_lost`.
+  here, and a restart ends open calls `monitor_lost`. FR-O5 alert snippets now work in
+  the live service: off by default; `--retention on` stores one AES-256-GCM snippet of
+  the tapped caller audio per alert, written off the scoring thread; a real lab call
+  produced one, and it decrypted to the exact tapped audio. Open FR-O5 decisions are in
+  `services/live/README.md` (purge when the folder is not given again, deletion only
+  while running, snippet end vs alert window). Key provisioning stays with the operator.
 - **16 Nov daily run (details in `daily-runs/2026-11-16.md`).** Room impulse responses
   for FR-D7 (3.4): `data/prepare/reverb.py` (first-arrival aligned, level-preserving
   convolution with DRR and energy lineage) and an optional `reverb` spec in

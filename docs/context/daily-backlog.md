@@ -248,8 +248,14 @@ items needing that data are listed at the end and stay out of the queue.
   tests. 14 Nov (catch-up, after the owner's install decision): AES-256-GCM on pinned
   `cryptography==50.0.2` (`requirements-retention.txt`), key file outside the repo,
   `open_snippet` authentication, fail-closed TTL headers; 11 Claude-authored tests incl.
-  NIST GCM known answers; review fixed. Remaining: key provisioning/rotation (operator
-  decision), wiring to tap audio and `alert.raised`, config setting, scheduled cleanup.
+  NIST GCM known answers; review fixed. 17 Nov: wired into the live service
+  (`services/live/retention.py` SnippetRecorder: 30 s ring of tapped caller audio per
+  admitted call, one sealed snippet per `alert.raised` written on its own pump thread,
+  TTL/purge cleanup every 10 min, `--retention off|on`, `--retention-dir`,
+  `--retention-key-file`, `--retention-ttl-days`, live metrics); 20 Claude-authored unit
+  tests + 1 lab case (real call, encrypted snippet sample-identical to the injected
+  audio); review fixed. Remaining: key provisioning/rotation (operator decision),
+  restart recovery and in-flight handling (scope, see 5.1 note).
 - [ ] 5.QA Real service integration, disconnects, failures and state recovery.
   Progress (14 Nov): in-process live-path integration test
   (`tests/unit/test_live_path_integration.py`: pipeline -> LiveCalls -> hub -> API
