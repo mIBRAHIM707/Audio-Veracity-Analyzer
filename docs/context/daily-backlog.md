@@ -263,8 +263,12 @@ items needing that data are listed at the end and stay out of the queue.
   `rtp_pcap.py` (PCM/WAV -> G.711/GSM RTP pcap, CLI), `harness.py` disposable container;
   `.pcap`/raw telephony extensions blocked by the guard. Claude-authored tests: 5 pure +
   2 guard (CI) and 4 Docker lab cases (mu-law/A-law sample-identical, GSM > 0.99, G.722
-  refused 488); review conditional pass, M1-M4 and lows fixed. Remaining: two endpoints
-  with a bridged call, per-endpoint codec forcing, a real WAV call, preflight script.
+  refused 488); review conditional pass, M1-M4 and lows fixed. 17 Nov: two SIPp endpoints
+  in a bridged call with PBX-forced codecs (`agent_alaw`/`agent_gsm`, extensions 810/811,
+  `sipp/uas_agent.xml` echo UAS, MixMonitor on both legs); 3 Claude-authored lab cases
+  (forced offer and native format, sample-identical A-law and GSM paths both ways,
+  unreachable agent `NOANSWER`); review fixed. Remaining: a real WAV call, preflight
+  script, Compose file, a softphone endpoint.
 - [ ] 6.2 ARI passive tap, lifecycle and RTP G.711/GSM decoder.
   Progress (15 Nov): `services/tap/` ARI client, per-call RTP receiver (source lock,
   bounded hand-off) and `TapApp`: calls never enter Stasis (review H1: a Stasis hand-off

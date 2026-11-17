@@ -87,6 +87,11 @@ and about 50,000 original clips, excluding codec copies.
   read when the audio chunk is fed, so it includes that chunk's VAD/windowing; the
   jitter buffer, resampling and WebSocket delivery are not timed on their own.
   Measurements of this host's loop only, not an A1 latency result.
+  Telephony lab (6.1, FR-T1): two SIPp endpoints in a bridged call with the codec
+  forced by the PBX per endpoint (A-law or GSM agent behind a mu-law caller). Lab tests
+  show the forced SDP offer and native format, and sample-identical audio both ways
+  through Asterisk's transcoding; an unreachable agent rings out (`NOANSWER`). SIPp
+  stands in for softphones; plumbing evidence only.
 - **16 Nov daily run (details in `daily-runs/2026-11-16.md`).** Room impulse responses
   for FR-D7 (3.4): `data/prepare/reverb.py` (first-arrival aligned, level-preserving
   convolution with DRR and energy lineage) and an optional `reverb` spec in

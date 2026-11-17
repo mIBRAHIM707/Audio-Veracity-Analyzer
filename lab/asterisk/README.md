@@ -61,18 +61,69 @@ band-limited signals only; this is lab plumbing evidence, not detector evidence,
 the lab tests never run in CI (the pure capture tests in
 `tests/unit/test_lab_rtp_pcap.py` do).
 
-Limits: calls are capped at 60 s by `Record` and SIPp's `-timeout 60s` although the
+Limits: calls are capped at 60 s by `Record` (or `Dial`'s `L(60000)` for 810/811)
+and SIPp's `-timeout 60s` although the
 capture builder accepts up to 600 s; ACK and BYE use the original Request-URI rather
 than the 200 OK Contact (fine on loopback).
 
+## Bridged calls with PBX-forced codecs (17 Nov 2026; FR-T1)
+
+Two more endpoints, `agent_alaw` (A-law only, SIPp UAS on 127.0.0.1:5071) and
+`agent_gsm` (GSM 06.10 only, 5072). They are SIPp processes, not softphones. Extension
+810 or 811 bridges the caller to one of them (`Dial` with `L(60000)`, so calls are
+capped at 60 s like `Record`), and the PBX transcodes between a mu-law caller and the
+agent's forced codec. `sipp/uas_agent.xml` answers with one codec (`-key pt`,
+`-key codec`) and, run with `-rtp_echo`, sends the audio it receives back. Recordings
+in `/lab/io`:
+- `bridge-<caller>-to-agent.wav` and `bridge-<caller>-from-agent.wav`: MixMonitor on
+  the agent leg, started by a pre-dial handler (what the PBX sent the agent, and the
+  echo).
+- `bridge-<caller>-to-caller.wav`: MixMonitor on the caller leg (what the PBX sends
+  back towards the caller).
+- `bridge-<caller>-format.txt`: the agent leg's `CHANNEL(audionativeformat)`, written
+  by a `U()` hook on answer.
+- `bridge-<caller>-dialstatus.txt`: `DIALSTATUS`, written only when `Dial` returns
+  with the caller still up.
+
+Results (Claude-authored `tests/lab/test_bridged_call_lab.py`, 17 Nov, 3 cases):
+- **Codec forcing.** The INVITE to the agent offers only the forced audio codec (PCMA
+  pt 8, or GSM pt 3), plus telephone-event 101 (DTMF, allowed at most once). The SDP is
+  read from that INVITE only. The leg's native format is `(alaw)` / `(gsm)`.
+  Mutation check: allowing `ulaw,alaw` on `agent_alaw` fails the case.
+- **A-law path.** Asterisk 20.6 translates mu-law to A-law directly (`codec_a_mu`), so
+  the agent-leg recording is A-law quantised: sample-identical to the project encoder's
+  A-law round trip of the caller's mu-law decode, and different from the mu-law audio
+  itself. The echo equals it exactly. The caller leg gets the mu-law round
+  trip of the echo, also sample-identical. Which format a recording shows depends on
+  Asterisk's translation path, so another version may need these checks updated.
+- **GSM path.** The agent leg sees the mu-law decode exactly (signed linear) before the
+  encoder. The echo is sample-identical to a libgsm encode (pinned ffmpeg) of exactly
+  what the encoder received, so Asterisk's `codec_gsm` and libgsm made the same frames.
+  The caller leg gets that GSM decode exactly (no direct GSM to mu-law translator).
+- **Echo timing.** Each echo recording starts with one silent 20 ms block and then
+  carries every echoed frame, starting with the first frame the agent leg sent (offset
+  asserted). No sample is skipped in any comparison.
+- **Agent not running.** Over UDP nothing reports the missing agent, so `Dial` rings it
+  out for its 30 s timeout. `DIALSTATUS` is `NOANSWER`, the caller is never answered
+  (it fails after 25-45 s), and the answer hook never runs.
+- **Cleanup.** Each case first checks that no agent is bound to its port. It waits
+  until the agent is listening, and after the call until the agent has exited. It
+  kills the agent at cleanup (`pkill`, present in the image).
+
+Existing lab cases (`test_asterisk_lab` 4, `test_ari_tap` 6) still pass with the new
+configuration. Synthetic signals only.
+
+Security: like `agent`, the two agent endpoints have no `identify` section and no
+authentication. On Docker's default bridge network (used only by the ARI tap tests),
+another container could therefore call 810/811 through `anonymous`, or match an agent
+endpoint by its From user. Each such call records up to 60 s into the mounted I/O
+folder. The bridged-call tests themselves run with `--network none`.
+
 ## Not done (6.1 remaining, 6.x)
 
-- 6.1: two SIP endpoints with a bridged call (FR-T1 "two or more SIP softphone
-  endpoints"); codec forcing on the PBX side per endpoint (here the caller's
-  single-codec offer forces it; the endpoint allows ulaw, alaw and gsm); a real
-  genuine/synthetic WAV played through a call (the command exists, only synthetic
-  signals were run); asserting the negotiated codec from the answer SDP; Docker/WSL
-  preflight script; Compose file.
+- 6.1: a real genuine/synthetic WAV played through a call (the command exists, only
+  synthetic signals were run); Docker/WSL preflight script; Compose file. A softphone
+  (rather than SIPp) as an endpoint was not tried.
 - 6.3 RTP jitter/loss handling and AMR-NB replay; 6.QA end to end with AVA.
 
 ## ARI tap (6.2, 15 Nov 2026)
