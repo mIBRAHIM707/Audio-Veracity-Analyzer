@@ -39,7 +39,10 @@ loop (queue, batch, apply, offer to result) and counts alerts raised (FR-O6).
 17 Nov (attempt 2): no data change — the analysis API and dashboard now have a Docker
 image and run in the Compose stack (internal only; not reachable from a host browser
 until an authentication/publishing decision is made). The live `/metrics` also times
-resampling and VAD/windowing per chunk (FR-O6).
+resampling and VAD/windowing per chunk (FR-O6). Data-relevant: issue #28. AMR-NB
+augmented copies (`amr_nb_*` codecs) may not match real AMR coding: the waveform SNR is
+about 3 dB in every mode. Do not rely on AMR-augmented results until a human checks the
+codec path against the 3GPP reference vectors.
 
 Updated 4 October 2026. This is the active sequence; evidence lives in
 `current-state.md` and `handoffs/`. Check marks mean the stated bounded task passed

@@ -311,7 +311,13 @@ items needing that data are listed at the end and stay out of the queue.
   (`tests/unit/test_tap_hostile_rtp.py`: seeded parser fuzzing, RTCP/DTMF/garbage on a
   real socket, output bounds). Found and fixed a ~124x concealed-audio amplification
   through resync hand-overs (a real-time budget for concealment only; received frames
-  always played); review H1 fixed; Asterisk lab 7 OK. Remaining: AMR replay; whether
+  always played); review H1 fixed; Asterisk lab 7 OK. 17 Nov (attempt 2): AMR-NB
+  file/replay through the lab (`tests/lab/test_amr_replay_lab.py`: public clip ->
+  pinned-ffmpeg AMR round trip at 4.75/7.4/12.2 -> mu-law call -> ARI tap,
+  sample-identical to the decode, impairment present); Claude-authored; review
+  conditional pass fixed. Suspected AMR codec-path defect, issue #28: about 3 dB
+  waveform SNR in every mode at any level. Do not report AMR-augmented results until it
+  is resolved. Remaining: live AMR over RTP (P2, no open Asterisk codec); whether
   skipped holes count as FR-I2 loss (PRD); malformed SDP is Asterisk's (the tap parses
   none).
 - [ ] 6.QA End-to-end public audio through lab; detector failure never drops calls.

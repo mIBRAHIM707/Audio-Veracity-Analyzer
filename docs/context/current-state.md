@@ -89,7 +89,11 @@ and about 50,000 original clips, excluding codec copies.
   `/metrics` now times the tap side per delivered chunk: `resample` (8 to 16 kHz) and
   `speech_feed` (VAD, windowing, offer). It also counts the audio seconds each stage
   processed, which gives the cost per audio second. The jitter buffer and WebSocket delivery
-  are still untimed.
+  are still untimed. AMR-NB replay through the lab now works: a public clip is AMR
+  round-tripped with the pinned ffmpeg, then played as a mu-law call. It reaches the
+  tap sample-identical to the decode in all three modes. Suspected defect in the AMR
+  augmentation path (issue #28): waveform SNR is about 3 dB in every mode at any input
+  level. Do not report AMR-augmented results until it is resolved.
 - **17 Nov daily run (details in `daily-runs/2026-11-17.md`).** FR-O6 per-stage latency
   for the live loop (7.2/8.1): `ava_live_stage_seconds{stage}` with `queue_wait`,
   `batch_wait`, `apply` (scorer and hub publish) and `window_to_result` (offer to

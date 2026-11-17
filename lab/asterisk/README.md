@@ -149,13 +149,46 @@ another container could therefore call 810/811 through `anonymous`, or match an 
 endpoint by its From user. Each such call records up to 60 s into the mounted I/O
 folder. The bridged-call tests themselves run with `--network none`.
 
+## AMR-NB file/replay (17 Nov 2026; backlog 6.3, PRD FR-D6)
+
+Asterisk 20 has no open AMR codec, so AMR-NB enters the lab as replay, which is what
+the architecture plans first ("AMR-NB is file/replay first"; live AMR is a P2 stretch).
+The audio takes this path:
+1. it is taken to 8 kHz with the shared conditioning;
+2. it is encoded and decoded through the pinned ffmpeg 9.0.2 (libopencore_amrnb),
+   using `data/prepare/ffmpeg_codecs.Ffmpeg.roundtrip`, the same call the training
+   augmentation uses;
+3. it is placed as a mu-law call (`rtp_pcap`, `sipp/uac_inject.xml`) to extension 700,
+   where the ARI tap spies on it.
+
+`tests/lab/test_amr_replay_lab.py` (Claude-authored, opt-in; needs the pinned ffmpeg
+and the public QA clips) runs one public CSALT genuine clip per mode: 4.75, 7.4 and
+12.2 kbit/s. Results on 17 Nov, 3 OK in 27 s:
+- the tapped audio was sample-identical to the mu-law of the AMR-decoded audio, with
+  0 start-up frames lost, over about 37,000 samples per mode;
+- every tapped 20 ms frame differed from the mu-law of the unimpaired clip, so the
+  impairment reached the scorer's input;
+- the decode stayed correlated with the clip (0.80-0.81) at a lag of 1 sample;
+- the lineage record named the codec, the rate and the ffmpeg build;
+- the call's own recording matched what was sent.
+
+Suspected defect, issue #28 (not a test claim): the waveform SNR of the decode against
+the clip was about 3-4 dB in all three modes, at 0, -12 and -24 dB input level and on
+three clips. Segmental SNR on active frames was 2-3 dB. The best fractional alignment
+and gain raised it only to about 4.4 dB. Energy below 100 Hz is about 0, so the
+high-pass filter is ruled out, and the clips peak near -21 dBFS, so saturation is ruled
+out. The best alignment was 1 sample off the 40-sample delay measured with noise on
+14 Nov. AMR at 12.2 kbit/s would be expected to clearly beat 4.75 on speech. Until #28
+is resolved, results that depend on AMR augmentation should not be reported. The
+replay plumbing above is unaffected.
+
 ## Not done (6.1 remaining, 6.x)
 
 - 6.1: a real genuine/synthetic WAV played through a call (the command exists, only
   synthetic signals were run here; the 6.QA tap tests play public CSALT clips through a
-  call); Compose file. A softphone
-  (rather than SIPp) as an endpoint was not tried.
-- 6.3 RTP jitter/loss handling and AMR-NB replay; 6.QA end to end with AVA.
+  call). A softphone (rather than SIPp) as an endpoint was not tried.
+- 6.3: live AMR-NB over RTP (RFC 4867 payloads; no open Asterisk codec, P2); 6.QA end
+  to end with AVA on codecs other than mu-law (the AMR replay above stops at the tap).
 
 ## ARI tap (6.2, 15 Nov 2026)
 
