@@ -202,9 +202,50 @@ at stop; the start record adds `health`. At most 8 connections are served at onc
   faults), backlog and consecutive failures, Redis forwarded, failed and unheard; health
   requests and refused connections. No call IDs, numbers or audio; label values are
   checked identifiers. A family with an invalid value is dropped and counted
-  (`ava_live_metrics_render_errors_total`); the endpoint stays up. FR-O6 is partial
-  here: only inference latency is measured live, not per stage (tap/jitter, resample,
-  VAD, queue wait, end to end), and there is no alerts-per-minute family.
+  (`ava_live_metrics_render_errors_total`); the endpoint stays up. Since 17 Nov the
+  shared families also carry `ava_live_stage_seconds{stage}` and
+  `ava_live_alerts_raised_total` (see "Per-stage latency" below). FR-O6 is still
+  partial: the stages before `offer` (RTP arrival to frame, resampling, VAD,
+  windowing) are not timed on their own, and WebSocket delivery is not timed.
+
+### Per-stage latency and alerts per minute (17 Nov 2026; PRD FR-O6, architecture §2.3)
+
+`LivePipeline` times each window through the stages it owns, in one histogram
+`ava_live_stage_seconds{stage}` (bounds 1 ms to 30 s, including the architecture's
+per-hop budgets 20 ms, 100 ms, 1.2 s and 1.6 s):
+
+| `stage` | From → to | Clock |
+|---|---|---|
+| `queue_wait` | `offer` → handed to the micro-batcher | loop `now` |
+| `batch_wait` | handed to the batcher → its batch taken by `step` | loop `now` |
+| `apply` | `LiveCalls.result` for one window (scorer + FR-A4 events to the hub) | `timer` |
+| `window_to_result` | `offer` → this window's result applied | loop `now` passed to `step`, then `timer` |
+
+The `offer` time is the loop `now` the sink read when it fed the audio chunk that
+completed the window, before VAD and windowing ran on it, so `queue_wait` and
+`window_to_result` include that chunk's VAD/windowing time (part of the architecture's
+"resample + VAD + windowing" row). The time spent in `schedule` and batching before the
+detector call is not counted, since one `now` serves both. In `LiveService` the loop clock is
+`time.monotonic`; on Windows with Python 3.11 it ticks in about 15.6 ms steps, so the
+loop-clock stages there read as 0 or a multiple of ~15.6 ms (the `timer` stages use
+`perf_counter`). Trust the millisecond loop-clock buckets only on a host with a fine
+monotonic clock (for example Linux); the serving OS is not yet fixed in the architecture.
+
+`apply` is the architecture's "scorer + flush + publish" row without the flush: storage
+and Redis run on the pump threads, so their delay shows in the pump/store families, not
+here. Windows of one batch apply in turn, so a later window's `window_to_result`
+includes the earlier windows' `apply`. Only applied results get a `window_to_result`;
+dropped, cancelled, skipped, detector-lost, failed and not-applied windows do not (their
+outcome is in `ava_live_windows_resolved_total`). A failed or backwards `timer` reading
+is counted in `ava_live_stage_timer_failures_total` and never affects scoring. A
+`LiveCalls.result` that raises is not timed (it is in `result_errors`).
+`ava_live_alerts_raised_total` counts `alert.raised` events the loop published (alerts
+per minute = `rate(...[5m]) * 60`); an alert whose publication failed is not counted
+(publish failures are in `LiveCalls.counters`). This is the FR-O6 alerts-per-minute
+counter for the scoring process. The analysis API's `ava_alerts_raised_total` counts
+what reached its call registry (through Redis when the scorer runs elsewhere) and can
+differ. These measure this host's loop, not a product latency result (8.QA measures on
+box A1).
 
 `LiveService` now keeps its `CallGate` as `gate` and hands a `PipelineStats` snapshot to
 other threads after each loop turn (`pipeline_stats`), also while reconnecting.
@@ -239,7 +280,7 @@ was counted as a disconnect (fixed, unit-tested).
 
 ## Not done
 
-A deployment configuration file (beyond the scoring JSON); FR-O6 per-stage live latency,
-alerts per minute, live (in-call) RTP metrics (receiver/jitter counts are exported only
+A deployment configuration file (beyond the scoring JSON); FR-O6 timing of the stages
+before `offer` (jitter buffer, resampling, VAD, windowing), live (in-call) RTP metrics (receiver/jitter counts are exported only
 when a call ends), JSON logs and a Grafana dashboard (P1); scorer resume from stored state (FR-I11); agent direction; capacity measurement on box A1 (8.QA); file-mode jobs through the same
 batcher.

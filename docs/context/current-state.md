@@ -78,6 +78,15 @@ and about 50,000 original clips, excluding codec copies.
 
 ## Implemented locally
 
+- **17 Nov daily run (details in `daily-runs/2026-11-17.md`).** FR-O6 per-stage latency
+  for the live loop (7.2/8.1): `ava_live_stage_seconds{stage}` with `queue_wait`,
+  `batch_wait`, `apply` (scorer and hub publish) and `window_to_result` (offer to
+  result applied), bounds including the architecture §2.3 budgets, plus
+  `ava_live_alerts_raised_total` (alerts per minute by `rate`) and a stage timer
+  failure counter, on both the live and the analysis API `/metrics`. The offer time is
+  read when the audio chunk is fed, so it includes that chunk's VAD/windowing; the
+  jitter buffer, resampling and WebSocket delivery are not timed on their own.
+  Measurements of this host's loop only, not an A1 latency result.
 - **16 Nov daily run (details in `daily-runs/2026-11-16.md`).** Room impulse responses
   for FR-D7 (3.4): `data/prepare/reverb.py` (first-arrival aligned, level-preserving
   convolution with DRR and energy lineage) and an optional `reverb` spec in

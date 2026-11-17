@@ -34,6 +34,8 @@ choose which RIRs count as handset vs speakerphone.
 16 Nov: backlog 7.1 done — the dashboard has a live call board at `#live` (cards,
 alert feed with banner and optional tone, per-call timeline), fed by the API's REST
 snapshot and event stream. Infrastructure only; no detector accuracy implied.
+17 Nov: no data change — live `/metrics` now times each window through the scoring
+loop (queue, batch, apply, offer to result) and counts alerts raised (FR-O6).
 
 Updated 4 October 2026. This is the active sequence; evidence lives in
 `current-state.md` and `handoffs/`. Check marks mean the stated bounded task passed

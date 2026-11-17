@@ -198,11 +198,15 @@ class AccountingTests(unittest.TestCase):
 class InferenceTimingTests(unittest.TestCase):
     """Claude-authored, 14 Nov 2026: FR-O6 live detector-call histogram."""
 
-    def make_timed(self, durations):
+    def make_timed(self, durations, fails=None):
         """Timer returning (0.0, d) pairs, so each measured duration is exactly d
-        (review: offsets like 1000 + d round below d and hid an off-by-one)."""
+        (review: offsets like 1000 + d round below d and hid an off-by-one). Since
+        17 Nov a successful one-window batch also reads the timer once after applying
+        its result (stage `apply`), given here as d again (apply time 0)."""
         from services.scorer.pipeline import LivePipeline
-        reads = iter([value for d in durations for value in (0.0, d)])
+        fails = fails or [None] * len(durations)
+        reads = iter([value for d, fail in zip(durations, fails)
+                      for value in ((0.0, d) if fail else (0.0, d, d))])
         pipe, live, detector, sub = make()
         timed = LivePipeline(live, pipe.batcher, detector, pipe.config, timer=lambda: next(reads))
         return timed, live, detector
@@ -218,8 +222,9 @@ class InferenceTimingTests(unittest.TestCase):
     def test_buckets_are_cumulative_inclusive_and_split_by_outcome(self):
         from services.scorer.pipeline import INFERENCE_BUCKETS_S
         durations = [0.005, 0.0051, 0.3, 45.0, 0.05]
-        pipe, live, detector = self.make_timed(durations)
-        self.run_batches(pipe, live, detector, [None, None, None, None, 'raise'])
+        fails = [None, None, None, None, 'raise']
+        pipe, live, detector = self.make_timed(durations, fails)
+        self.run_batches(pipe, live, detector, fails)
         hist = pipe.metrics_snapshot()['inference_seconds']
         self.assertEqual(hist['bounds'], list(INFERENCE_BUCKETS_S))
         ok, failed = hist['series']['ok'], hist['series']['failed']

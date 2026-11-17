@@ -56,6 +56,25 @@ from .pending import PendingWindows
 # Live detector-call duration buckets (seconds, inclusive upper bounds) for FR-O6.
 INFERENCE_BUCKETS_S = (0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1.0, 2.0, 5.0, 10.0, 30.0)
 INFERENCE_OUTCOMES = ('ok', 'failed')
+# FR-O6 "latency per stage" for the stages this loop owns (architecture §2.3 latency
+# budget per hop: micro-batch wait <= 100 ms, scorer + flush + publish 20 ms, window end
+# -> UI <= 1.6 s). Bounds include those budgets so a p95 against them can be read off.
+#   queue_wait        offer -> handed to the batcher (loop clock `now`; grows when behind)
+#   batch_wait        handed to the batcher -> its batch is taken by `step` (loop clock)
+#   apply             LiveCalls.result for one window: scorer, FR-A4 events to the hub
+#                     (`timer`; PostgreSQL/Redis flush runs on the pump threads, not here)
+#   window_to_result  offer -> this window's result applied (loop clock to the `now`
+#                     passed to `step`, then `timer` through inference and the batch's
+#                     applies)
+# "Offer" is the caller's `now`. On the tap path (services/tap/scoring_sink.py) the sink
+# reads it when an audio chunk is fed, before SpeechFeed runs VAD and windowing on that
+# chunk, so queue_wait and window_to_result also include that chunk's VAD/windowing
+# time (review M1, 17 Nov). Not covered: RTP arrival -> frame (jitter buffer),
+# resampling, and WebSocket delivery to the browser. A failed `LiveCalls.result` is not
+# timed (it is counted in `result_errors`), and an alert raised by the scorer whose
+# publication then failed is not in `alerts_raised` (review L3).
+STAGE_BUCKETS_S = (0.001, 0.0025, 0.005, 0.01, 0.02, 0.05, 0.1, 0.25, 0.5, 1.0, 1.2, 1.6, 2.0, 5.0, 10.0, 30.0)
+STAGES = ('queue_wait', 'batch_wait', 'apply', 'window_to_result')
 
 
 class LivePipeline:
@@ -69,6 +88,8 @@ class LivePipeline:
         self._timer = timer
         self._inference = {outcome: {'buckets': [0] * len(INFERENCE_BUCKETS_S), 'sum': 0.0, 'count': 0}
                            for outcome in INFERENCE_OUTCOMES}
+        self._stages = {stage: {'buckets': [0] * len(STAGE_BUCKETS_S), 'sum': 0.0, 'count': 0} for stage in STAGES}
+        self._offered = {}  # ((call_id, direction), index) -> loop `now` at offer, accepted windows only
         StrideController(config)  # validate the degraded-mode settings now, not at first offer
         self.live, self.batcher, self.detector, self.config = live, batcher, detector, config
         self.max_pending = max_pending
@@ -84,7 +105,7 @@ class LivePipeline:
                        'windows_lost_to_detector': 0, 'result_errors': 0, 'file_batches_not_run': 0,
                        'accepted': 0, 'stride_skipped': 0, 'result_not_applied': 0,
                        'unmonitored_entered': 0, 'metrics_publish_failures': 0, 'status_publish_failures': 0,
-                       'timer_failures': 0}
+                       'timer_failures': 0, 'stage_timer_failures': 0, 'alerts_raised': 0}
 
     def check_clock(self, now):
         """Raise ValueError if `now` is invalid or earlier than the last one; no change."""
@@ -135,11 +156,14 @@ class LivePipeline:
             self._directions[key], self._tokens[key] = pending, token
         self._last_now = now
         self.counts['accepted' if outcome['accepted'] else 'stride_skipped'] += 1
-        if outcome['accepted'] and concealed_fraction > 0:
-            self._concealed[(key, index)] = float(concealed_fraction)
+        if outcome['accepted']:
+            self._offered[(key, index)] = now
+            if concealed_fraction > 0:
+                self._concealed[(key, index)] = float(concealed_fraction)
         if outcome['dropped_index'] is not None:
             self.counts['dropped_pending'] += 1
             self._concealed.pop((key, outcome['dropped_index']), None)
+            self._offered.pop((key, outcome['dropped_index']), None)
         controller = pending.controller
         if controller.unmonitored and key not in self._unmonitored:
             self._unmonitored.add(key)
@@ -172,18 +196,22 @@ class LivePipeline:
                 break
             index, window = pending.take()
             try:
-                self.batcher.submit((key, pending, index, window), kind='live', now=now)
+                self.batcher.submit((key, pending, index, window, now), kind='live', now=now)
             except Exception:  # e.g. the batcher's clock is ahead: the window waits, not lost
                 pending.put_back((index, window))
                 raise
             self._in_flight.add(key)
             moved += 1
+            offered = self._offered.get((key, index))
+            if offered is not None:
+                self._observe_stage('queue_wait', now - offered)
         return moved
 
     # --- inference -----------------------------------------------------------------------
     def step(self, now):
         """Run one due live batch, if any. Returns the number of results applied."""
-        due = self.batcher.next_batch(self._clock(now))
+        now = self._clock(now)
+        due = self.batcher.next_batch(now)
         if due is None:
             return 0
         if due[0] != 'live':
@@ -195,6 +223,7 @@ class LivePipeline:
             if self._directions.get(key) is pending and self.live.token(key[0]) is self._tokens[key]:
                 items.append(item)
                 self._in_flight.discard(key)  # its result is applied below
+                self._observe_stage('batch_wait', now - item[4])
             else:  # call ended (or replaced by a new call with the same ID)
                 self.counts['skipped_ended'] += 1
         if not items:
@@ -209,15 +238,17 @@ class LivePipeline:
         except Exception:  # AVA fault: lose this batch's scores, never the calls
             for item in items:
                 self._concealed.pop((item[0], item[2]), None)
+                self._offered.pop((item[0], item[2]), None)
             self._observe_inference(started, 'failed')
             self.counts['detector_failures'] += 1
             self.counts['windows_lost_to_detector'] += len(items)
             return 0
-        self._observe_inference(started, 'ok')
+        previous = self._observe_inference(started, 'ok')  # timer read at inference end, or None
         applied = 0
-        for ((call_id, direction), pending, index, _), score in zip(items, scores):
+        for ((call_id, direction), pending, index, _, _), score in zip(items, scores):
             status = pending.controller.status()
             concealed = self._concealed.pop(((call_id, direction), index), 0.0)
+            offered = self._offered.pop(((call_id, direction), index), None)
             try:
                 outcome = self.live.result(call_id, direction, index, score, degraded=status['degraded'],
                                            effective_stride_s=status['effective_stride_s'],
@@ -225,13 +256,48 @@ class LivePipeline:
                 was_applied = bool(outcome.applied)
             except Exception:  # one bad result must not stop the rest of the batch
                 self.counts['result_errors'] += 1
+                previous = self._read_timer()  # the next window's apply starts here
                 continue
+            after = self._read_timer()
+            timed_ok = previous is not None and after is not None and after >= previous
+            if timed_ok:
+                self._observe_stage('apply', after - previous)
+            else:
+                self.counts['stage_timer_failures'] += 1
             if was_applied:
                 applied += 1
                 self.counts['scored'] += 1
+                self._count_alerts(outcome)
+                if offered is not None:  # a backwards reading voids this window's total too
+                    if timed_ok and started is not None and after >= started:
+                        self._observe_stage('window_to_result', (now - offered) + (after - started))
+                    else:
+                        self.counts['stage_timer_failures'] += 1
             else:
                 self.counts['result_not_applied'] += 1
+            previous = after
         return applied
+
+    def _count_alerts(self, outcome):
+        """FR-O6 alerts per minute: `alert.raised` envelopes published for an applied
+        result (the hub accepted them). A malformed outcome counts nothing."""
+        try:
+            self.counts['alerts_raised'] += sum(1 for e in outcome.envelopes if e.type == 'alert.raised')
+        except Exception:
+            pass
+
+    def _observe_stage(self, stage, seconds):
+        """Record one stage duration; negative or non-finite values (never expected: the
+        loop clock is checked monotonic) are counted as timer failures, not recorded."""
+        if not math.isfinite(seconds) or seconds < 0:
+            self.counts['stage_timer_failures'] += 1
+            return
+        series = self._stages[stage]
+        for i, bound in enumerate(STAGE_BUCKETS_S):
+            if seconds <= bound:
+                series['buckets'][i] += 1
+        series['sum'] += seconds
+        series['count'] += 1
 
     def _read_timer(self):
         try:
@@ -243,17 +309,19 @@ class LivePipeline:
 
     def _observe_inference(self, started, outcome):
         """Record one detector call (including output conversion) in the FR-O6 histogram;
-        a broken or backwards timer is counted and never affects scoring."""
+        a broken or backwards timer is counted and never affects scoring. Returns the end
+        reading (the start of the batch's first apply) or None when it is unusable."""
         ended = self._read_timer()
         if started is None or ended is None or ended < started:
             self.counts['timer_failures'] += 1
-            return
+            return ended if started is None else None
         seconds, series = ended - started, self._inference[outcome]
         for i, bound in enumerate(INFERENCE_BUCKETS_S):
             if seconds <= bound:
                 series['buckets'][i] += 1
         series['sum'] += seconds
         series['count'] += 1
+        return ended
 
     # --- lifecycle -----------------------------------------------------------------------
     def end_call(self, call_id, reason, *, speech_seconds):
@@ -273,6 +341,8 @@ class LivePipeline:
         self._in_flight.discard(key)  # a batched item from it is skipped in step
         for entry in [e for e in self._concealed if e[0] == key]:
             del self._concealed[entry]
+        for entry in [e for e in self._offered if e[0] == key]:
+            del self._offered[entry]
 
     def has_work(self, call_id):
         """True while a window of this call is waiting, batched or in inference."""
@@ -305,7 +375,10 @@ class LivePipeline:
                 'inference_seconds': {'bounds': list(INFERENCE_BUCKETS_S),
                                       'series': {outcome: {'buckets': list(s['buckets']), 'sum': s['sum'],
                                                            'count': s['count']}
-                                                 for outcome, s in self._inference.items()}}}
+                                                 for outcome, s in self._inference.items()}},
+                'stage_seconds': {'bounds': list(STAGE_BUCKETS_S),
+                                  'series': {stage: {'buckets': list(s['buckets']), 'sum': s['sum'], 'count': s['count']}
+                                             for stage, s in self._stages.items()}}}
 
     def publish_metrics(self, stats):
         """Hand the current aggregate to a `PipelineStats` read by other threads. Call it

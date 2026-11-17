@@ -38,7 +38,12 @@ publish or for a malformed snapshot, which never breaks `/metrics`), and the his
 `ava_live_inference_seconds{outcome=ok|failed}` (time of each live detector call per
 batch, measured by the pipeline's monotonic `timer`; buckets 5 ms to 30 s travel with
 the snapshot and are validated; untimed calls counted in
-`ava_live_inference_timer_failures_total`). FR-O6 is still partial: telephony
+`ava_live_inference_timer_failures_total`). Since 17 Nov also the histogram
+`ava_live_stage_seconds{stage=queue_wait|batch_wait|apply|window_to_result}`, with
+`ava_live_stage_timer_failures_total` and `ava_live_alerts_raised_total` (defined in
+`services/live/README.md`, "Per-stage latency"; `ava_live_alerts_raised_total` is what
+the scoring loop published, while `ava_alerts_raised_total` above is what reached this
+registry, and the two can differ). FR-O6 is still partial: telephony
 metrics, structured JSON logs and Grafana remain.
 
 The calls and events routes need `create_app(service, hub=EventHub())`: the in-process
