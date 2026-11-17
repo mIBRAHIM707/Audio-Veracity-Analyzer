@@ -1,0 +1,125 @@
+# AVA live stack (backlog 10.2; PRD FR-O4, FR-O7 partial, FR-O8 partial; architecture
+# §2.4, §2.7, ADR-7). A LAB stack: the live scorer with its storage and the Asterisk lab
+# PBX (`lab` profile) on one internal network. A PBX outside this network cannot reach
+# it as written (see deploy/compose/README.md, "Scope").
+#
+#   docker build -f deploy/live/Dockerfile -t ava-live:dev .
+#   docker build -t ava-lab-asterisk:dev lab/asterisk          # lab profile only
+#   docker compose --env-file <your stack.env> -f deploy/compose/compose.yaml --profile lab up -d
+#
+# Images are pinned by digest (public) or built locally (`pull_policy: never`). Every
+# service sits on one internal network: no container can reach the internet (no
+# telemetry, no runtime downloads); nothing is published on the host. Secrets and paths
+# come from an env file that is never committed (see stack.env.example).
+name: ava
+
+services:
+  postgres:
+    image: postgres:16-alpine@sha256:f377d590e5474681d4d7838635031a2b50647923b7abfa803ce9b5ff35d5c663
+    environment:
+      POSTGRES_USER: ava
+      POSTGRES_DB: ava
+      POSTGRES_PASSWORD: ${AVA_DB_PASSWORD:?set AVA_DB_PASSWORD in the env file}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    networks: [backend]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ava -d ava"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+    restart: unless-stopped
+
+  redis:
+    image: redis:7-alpine@sha256:7f7d30b7fdd09467bac58198a1f166dd69789d348d4fe859cccb20e0cf287fbe
+    command: ["redis-server", "--appendonly", "yes"]  # architecture: Redis AOF on
+    volumes:
+      - redisdata:/data
+    networks: [backend]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+    restart: unless-stopped
+
+  asterisk:
+    profiles: [lab]
+    image: ava-lab-asterisk:dev
+    pull_policy: never
+    environment:
+      AVA_ARI_PASSWORD: ${AVA_ARI_PASSWORD:?set AVA_ARI_PASSWORD in the env file}
+    volumes:
+      - labio:/lab/io
+    networks: [backend]
+
+  live:
+    image: ava-live:dev
+    pull_policy: never
+    depends_on:
+      postgres: {condition: service_healthy}
+      redis: {condition: service_healthy}
+    environment:
+      AVA_ARI_PASSWORD: ${AVA_ARI_PASSWORD:?set AVA_ARI_PASSWORD in the env file}
+      # Review M1: the password travels in PGPASSWORD (libpq), never inside the URL, so
+      # any character works (a URL would break on / @ # % + and the like).
+      AVA_DATABASE_URL: postgresql://ava@postgres:5432/ava
+      PGPASSWORD: ${AVA_DB_PASSWORD:?set AVA_DB_PASSWORD in the env file}
+      AVA_REDIS_URL: redis://redis:6379/0
+    command:
+      - --card
+      - /models/card/${AVA_CARD_FILE:-model_card.json}
+      - --onnx
+      - /models/onnx/${AVA_ONNX_FILE:?set AVA_ONNX_FILE (the exported model file name)}
+      - --vad-model
+      - /models/vad/silero_vad.onnx
+      - --threads
+      - "${AVA_THREADS:-4}"
+      - --ari-url
+      - ${AVA_ARI_URL:-http://asterisk:8088}
+      - --ari-user
+      - ${AVA_ARI_USER:-ava}
+      - --receiver-host
+      - ${AVA_RECEIVER_HOST:-live}  # where the PBX sends tapped RTP: this container's name in the lab
+      - --tap-extension
+      - "${AVA_TAP_EXTENSION:-700}"
+      - --database-url-env
+      - AVA_DATABASE_URL
+      - --redis-url-env
+      - AVA_REDIS_URL
+      - --health-port
+      - "9100"
+      - --health-host
+      - 127.0.0.1  # review L2: only the container's own health check reads it
+    volumes:
+      - ${AVA_ONNX_DIR:?set AVA_ONNX_DIR}:/models/onnx:ro
+      - ${AVA_CARD_DIR:?set AVA_CARD_DIR}:/models/card:ro
+      - ${AVA_VAD_DIR:?set AVA_VAD_DIR}:/models/vad:ro
+    networks: [backend]
+    read_only: true
+    tmpfs:
+      - /tmp:size=64m,noexec,nosuid,nodev
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    init: true  # review L4: signals reach Python even during model load
+    pids_limit: 256
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request,sys; sys.exit(urllib.request.urlopen('http://127.0.0.1:9100/readyz', timeout=2).status != 200)"]
+      interval: 5s
+      timeout: 4s
+      retries: 12
+      start_period: 20s
+    stop_grace_period: 20s
+    # Re-review N1: `on-failure` would leave the scorer down after a host or Docker
+    # restart (a signalled stop exits 0). A refused start (FR-O4, exit 2) then shows as
+    # a restarting container with one `refused` JSON line per attempt in its log.
+    restart: unless-stopped
+
+networks:
+  backend:
+    internal: true  # no route to the internet for any service
+
+volumes:
+  pgdata:
+  redisdata:
+  labio:

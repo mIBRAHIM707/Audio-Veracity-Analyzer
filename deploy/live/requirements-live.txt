@@ -1,0 +1,8 @@
+# Everything the live service process imports (python -m services.live; backlog 10.2).
+# Composed from the pinned component files, so each pin lives in one place. Serving
+# needs no torch: models/export imports it only for exporting. Python 3.11.
+-r requirements-export.txt
+-r requirements-tap.txt
+-r requirements-store.txt
+-r requirements-redis.txt
+-r requirements-retention.txt

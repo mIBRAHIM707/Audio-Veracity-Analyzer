@@ -470,7 +470,13 @@ items needing that data are listed at the end and stay out of the queue.
   `not_measured` metrics, uncalibrated by default, contract from `onnx_export`), JSON
   and Markdown writers (no overwrite) and `check_card` start-up check (hash, size, file
   name, schema, scoring window); Claude-authored tests, review fixed; used by the live
-  service gate. Remaining: container/Compose and deployment manifests.
+  service gate. 17 Nov: live service image (`deploy/live/Dockerfile`, digest-pinned base,
+  non-root, read-only, allowlist `.dockerignore`) and Compose stack (`deploy/compose/`:
+  PostgreSQL 16, Redis 7 AOF, live, lab Asterisk; internal network with no egress);
+  ONNX Runtime telemetry found ON by default in official builds and forced off
+  (`services/inference/ort_runtime.py`, image env); Claude-authored lab test (real call
+  stored and logged, egress blocked) and unit tests; review fixed. Remaining: API/
+  dashboard image, Kubernetes manifests and NetworkPolicy, hashed requirements/SBOM.
 - [ ] 10.QA Reproducible startup, CPU parity where measurable, rollback/readiness.
 
 ## 11 — Final software integration

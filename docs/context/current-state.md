@@ -101,6 +101,14 @@ and about 50,000 original clips, excluding codec copies.
   produced one, and it decrypted to the exact tapped audio. Open FR-O5 decisions are in
   `services/live/README.md` (purge when the folder is not given again, deletion only
   while running, snippet end vs alert window). Key provisioning stays with the operator.
+  Deployment (10.2, lab scope): `deploy/live/Dockerfile` builds a non-root live-service
+  image, and `deploy/compose/` runs it with PostgreSQL 16, Redis 7 and the lab Asterisk
+  on an internal network with no internet; a real call through the stack was stored
+  and logged. Important finding: ONNX Runtime's official builds send telemetry by
+  default (1DS on Linux). All imports now go through `services/inference/ort_runtime.py`,
+  which forces `ORT_DISABLE_TELEMETRY=1`; this is verified on Linux only, and the
+  Windows ETW backend was not checked. FR-O7 is partial (no hashed lock: `uv pip
+  compile` needs a human).
 - **16 Nov daily run (details in `daily-runs/2026-11-16.md`).** Room impulse responses
   for FR-D7 (3.4): `data/prepare/reverb.py` (first-arrival aligned, level-preserving
   convolution with DRR and energy lineage) and an optional `reverb` spec in

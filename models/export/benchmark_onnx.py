@@ -112,8 +112,8 @@ def benchmark(models, *, threads=4, batch=1, warmup=2, repeats=20, rounds=1, see
             row['median_throughput_seconds_per_audio_second'] = median / audio_seconds
         rows.append(row)
     try:
-        import onnxruntime
-        runtime_version = onnxruntime.__version__
+        from services.inference import ort_runtime
+        runtime_version = ort_runtime.onnxruntime().__version__  # telemetry off (17 Nov)
     except ImportError:  # injected sessions in tests
         runtime_version = None
     return {'schema_version': 1, 'rows': rows, 'round_orders': orders,

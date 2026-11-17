@@ -17,6 +17,8 @@ from pathlib import Path
 
 import numpy as np
 
+from services.inference import ort_runtime
+
 RATE = 16000
 FRAME_SAMPLES = 512
 CONTEXT_SAMPLES = 64
@@ -27,7 +29,7 @@ MAX_MODEL_BYTES = 16_000_000
 
 
 def _cpu_session(model_bytes, threads):
-    import onnxruntime
+    onnxruntime = ort_runtime.onnxruntime()  # telemetry off (17 Nov)
     options = onnxruntime.SessionOptions()
     options.intra_op_num_threads = threads
     options.inter_op_num_threads = 1
@@ -53,7 +55,7 @@ class SileroVad:
         self.model_sha256 = digest
         self._session = session_factory(model, threads)
         try:  # recorded in augmentation lineage: VAD decisions can differ across runtimes
-            import onnxruntime
+            onnxruntime = ort_runtime.onnxruntime()
             self.runtime_version = f'onnxruntime {onnxruntime.__version__}'
         except ImportError:
             self.runtime_version = None

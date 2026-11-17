@@ -16,7 +16,8 @@ import numpy as np
 MODEL = Path(os.environ.get('AVA_SILERO_VAD_MODEL', 'D:/AVA-Data/models/silero-vad/6.2.3/silero_vad.onnx'))
 
 try:
-    import onnxruntime  # noqa: F401
+    from services.inference import ort_runtime
+    ort_runtime.onnxruntime()  # telemetry off before the first import (17 Nov)
     HAVE_ORT = True
 except ImportError:
     HAVE_ORT = False

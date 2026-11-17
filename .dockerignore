@@ -1,0 +1,13 @@
+# Repository-root build context (deploy/live/Dockerfile). Allowlist by file type: only
+# the code, SQL migrations and pinned requirement files the live image needs are sent to
+# the builder, so audio, models, keys, .local/, data/ and any stray file never reach an
+# image layer.
+*
+!requirements-*.txt
+!deploy/live/requirements-live.txt
+!services/**/*.py
+!services/store/migrations/*.sql
+!models/export/*.py
+!data/prepare/*.py
+**/__pycache__
+**/*.pyc

@@ -198,8 +198,8 @@ class ExportParityTests(unittest.TestCase):
         self.assertEqual(row['timings'], 3)
         self.assertTrue(all(t > 0 for t in row['timings_seconds']))
         self.assertIn('median_rtf', row)
-        import onnxruntime
-        self.assertEqual(report['environment']['onnxruntime'], onnxruntime.__version__)
+        from services.inference import ort_runtime
+        self.assertEqual(report['environment']['onnxruntime'], ort_runtime.onnxruntime().__version__)
         with self.assertRaises(ValueError):  # the hash pin is enforced
             bo.benchmark({'tiny': dict(spec, sha256='0' * 64)}, threads=1, repeats=2)
 
@@ -315,7 +315,8 @@ class QuantizeTests(unittest.TestCase):
 
     def test_quantizer_failure_and_no_op_leave_nothing(self):
         import shutil
-        from onnxruntime import quantization
+        from services.inference import ort_runtime
+        quantization = ort_runtime.quantization()
 
         def writes_then_fails(source, target, **kwargs):
             Path(target).write_bytes(b'half')
@@ -337,7 +338,8 @@ class QuantizeTests(unittest.TestCase):
 
     def test_contract_breaking_quantization_leaves_nothing(self):
         import onnx
-        from onnxruntime import quantization
+        from services.inference import ort_runtime
+        quantization = ort_runtime.quantization()
         real = quantization.quantize_dynamic
 
         def renames_input(source, target, **kwargs):
@@ -434,7 +436,8 @@ class StaticQuantizeTests(unittest.TestCase):
         self.assertEqual(sorted(p.name for p in self.dir.iterdir()), before)
 
     def test_quantizer_failure_leaves_nothing(self):
-        from onnxruntime import quantization
+        from services.inference import ort_runtime
+        quantization = ort_runtime.quantization()
 
         def writes_then_fails(source, target, reader, **kwargs):
             Path(target).write_bytes(b'half')

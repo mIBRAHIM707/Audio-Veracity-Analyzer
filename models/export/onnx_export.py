@@ -23,6 +23,8 @@ from pathlib import Path
 
 import numpy as np
 
+from services.inference import ort_runtime
+
 # Equal to models.ava.model.WINDOW_SAMPLES (pinned by a model test); not imported so the
 # pure rules here load without torch.
 WINDOW_SAMPLES = 64_000
@@ -133,7 +135,7 @@ def quantize_int8_dynamic(source, path, *, source_sha256):
     ``choose_quantization`` on measured EERs.
     """
     import onnx
-    import onnxruntime as ort
+    ort = ort_runtime.onnxruntime()  # telemetry off before the first import (17 Nov)
     from onnxruntime.quantization import QuantType, quantize_dynamic
     source = Path(source)
     if not source.is_file():
@@ -168,7 +170,7 @@ def quantize_int8_dynamic(source, path, *, source_sha256):
 
 def open_session(path, *, threads=1, expected_sha256=None):
     """CPU-only onnxruntime session with bounded threads; refuses a hash mismatch."""
-    import onnxruntime as ort
+    ort = ort_runtime.onnxruntime()  # telemetry off (17 Nov)
     if type(threads) is not int or threads < 1:
         raise ValueError('threads must be a positive integer')
     path = Path(path)
@@ -308,7 +310,7 @@ def quantize_int8_static(source, path, calibration_windows, *, source_sha256):
     SHA-256 of its float32 bytes.
     """
     import onnx
-    import onnxruntime as ort
+    ort = ort_runtime.onnxruntime()  # telemetry off (17 Nov)
     from onnxruntime.quantization import CalibrationMethod, QuantFormat, QuantType, quantize_static
     source = Path(source)
     if not source.is_file():
