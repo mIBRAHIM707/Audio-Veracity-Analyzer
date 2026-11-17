@@ -267,8 +267,10 @@ items needing that data are listed at the end and stay out of the queue.
   in a bridged call with PBX-forced codecs (`agent_alaw`/`agent_gsm`, extensions 810/811,
   `sipp/uas_agent.xml` echo UAS, MixMonitor on both legs); 3 Claude-authored lab cases
   (forced offer and native format, sample-identical A-law and GSM paths both ways,
-  unreachable agent `NOANSWER`); review fixed. Remaining: a real WAV call, preflight
-  script, Compose file, a softphone endpoint.
+  unreachable agent `NOANSWER`); review fixed. 17 Nov: read-only Docker/WSL preflight
+  `python -m lab.preflight` (8 checks incl. the lab test env, `AVA_LAB_IMAGE` and the
+  ffmpeg pin; exit 1 on failure); 19 Claude-authored unit tests with fakes; review fixed;
+  8 PASS on this host. Remaining: Compose file, a softphone endpoint.
 - [ ] 6.2 ARI passive tap, lifecycle and RTP G.711/GSM decoder.
   Progress (15 Nov): `services/tap/` ARI client, per-call RTP receiver (source lock,
   bounded hand-off) and `TapApp`: calls never enter Stasis (review H1: a Stasis hand-off

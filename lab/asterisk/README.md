@@ -38,6 +38,36 @@ later use on a shared network must restrict it.
 
 ## Build and test
 
+Check the host first (17 Nov 2026, `lab/preflight.py`; read-only: it never pulls,
+builds, starts or removes anything):
+
+```text
+uv run --no-project --python 3.11 python -m lab.preflight [--json] [--image TAG] [--min-free-gib 10]
+```
+
+It reads the environment the lab tests get: `.local/lab-test.env` under the shell's
+variables. That shell variables win is assumed from the dotenv convention, not checked
+against uv. No value is printed except the image tag. It reports
+`pass`/`warn`/`fail`/`skip` for eight checks, the same eight on every run:
+- the docker CLI;
+- a running Linux-containers engine;
+- the WSL 2 backend and engine CPU/memory (warn below 2 CPUs or 4 GiB);
+- the lab image: `--image`, else `AVA_LAB_IMAGE`, else `ava-lab-asterisk:dev`. It fails
+  if the image is not built, and prints the build command below as the fix;
+- leftover `ava-lab-test=1` containers;
+- free GiB on the repository drive and the temporary folder;
+- `AVA_TEST_DOCKER_LAB=1`;
+- the ffmpeg the GSM cases use, run with `-version` and held to the exact pin, and
+  listing every encoder and decoder `data/prepare/ffmpeg_codecs.Ffmpeg` requires.
+
+It exits 1 on any failure and 2 on bad arguments. Only selected fields are printed (no
+`docker info` proxies, registries or labels).
+
+On this host on 17 Nov all eight checks passed: Docker Desktop 29.9.3, WSL 2 kernel
+6.18.33.2, 8 CPUs, 7.6 GiB, 182.0/67.2 GiB free, ffmpeg 9.0.2. The unit tests with a fake
+docker are in `tests/unit/test_lab_preflight.py` (Claude-authored; part of the unit
+suite CI runs).
+
 ```text
 docker build -t ava-lab-asterisk:dev lab/asterisk
 uv run --no-project --python 3.11 --env-file .local/lab-test.env --with-requirements requirements-audio.txt python -m unittest tests.lab.test_asterisk_lab -v
@@ -122,7 +152,8 @@ folder. The bridged-call tests themselves run with `--network none`.
 ## Not done (6.1 remaining, 6.x)
 
 - 6.1: a real genuine/synthetic WAV played through a call (the command exists, only
-  synthetic signals were run); Docker/WSL preflight script; Compose file. A softphone
+  synthetic signals were run here; the 6.QA tap tests play public CSALT clips through a
+  call); Compose file. A softphone
   (rather than SIPp) as an endpoint was not tried.
 - 6.3 RTP jitter/loss handling and AMR-NB replay; 6.QA end to end with AVA.
 
