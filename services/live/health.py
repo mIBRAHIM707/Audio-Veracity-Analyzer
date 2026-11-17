@@ -43,7 +43,8 @@ import re
 import socket
 import threading
 
-from services.scorer.metrics_text import number, pipeline_lines, snapshot_valid_lines
+from services.scorer.metrics_text import histogram_lines, number, pipeline_lines, snapshot_valid_lines
+from services.tap.scoring_sink import TAP_STAGES
 
 DEFAULT_STALE_AFTER_S = 10.0
 FAILING_AFTER = 3  # detector batches failed in a row before /readyz says detector_failing
@@ -59,7 +60,7 @@ TAP_COUNTERS = ('events', 'bad_events', 'tapped', 'tap_failures', 'refused_capac
                 'cleanup_errors', 'swept')
 SINK_COUNTERS = ('started', 'refused', 'audio_chunks', 'audio_unfed', 'ended', 'ended_elsewhere', 'end_retries',
                  'ends_forced', 'end_cancelled_tail', 'health_published', 'health_failures', 'pump_errors',
-                 'errors', 'recorder_errors')
+                 'errors', 'recorder_errors', 'timer_failures')
 # services/tap/rtp_receiver.py RtpSession.stats and services/tap/jitter.py JitterBuffer.stats
 # (prefixed `jitter_`), summed over ended calls; a key never seen is exported as 0.
 RECEIVER_COUNTERS = ('packets', 'malformed', 'other_payload', 'other_source', 'gaps', 'missing', 'late_or_duplicate',
@@ -182,8 +183,8 @@ class HealthServer:
     def metrics(self):
         ready, _, _ = self.readiness()
         lines = _family('gauge', 'ava_live_ready', '1 when /readyz would answer 200.', [((), int(ready))])
-        sections = (self._service_lines, self._call_lines, self._tap_lines, self._receiver_lines, self._pipeline_lines,
-                    self._pump_lines)
+        sections = (self._service_lines, self._call_lines, self._tap_lines, self._tap_stage_lines,
+                    self._receiver_lines, self._pipeline_lines, self._pump_lines)
         for section in sections:
             try:
                 lines += section()
@@ -225,6 +226,24 @@ class HealthServer:
                         [((('kind', key),), tap[key]) for key in TAP_COUNTERS])
                 + _family('counter', 'ava_live_sink_events_total', 'Tap-to-scoring sink counters by kind.',
                           [((('kind', key),), sink[key]) for key in SINK_COUNTERS]))
+
+    def _tap_stage_lines(self):
+        """Its own section (review L3): a malformed histogram drops only these families."""
+        stage_times = getattr(self.service.sink, 'stage_times', None)
+        if stage_times is None:
+            return []
+        snapshot = stage_times.snapshot()
+        audio = snapshot['audio_seconds']
+        if set(audio) != set(TAP_STAGES):
+            raise ValueError('tap stage audio seconds are malformed')
+        return (histogram_lines('ava_live_tap_stage_seconds',
+                                'Tap-to-scoring processing time per delivered chunk (one or more 20 ms frames) by '
+                                'stage (FR-O6): resample (8 to 16 kHz, flags, PCM16), speech_feed (VAD, windowing, '
+                                'offer). Divide by ava_live_tap_audio_seconds_total for the cost per audio second.',
+                                'stage', TAP_STAGES, snapshot)
+                + _family('counter', 'ava_live_tap_audio_seconds_total',
+                          'Seconds of tapped 8 kHz audio each tap stage processed (for the cost per audio second).',
+                          [((('stage', stage),), float(audio[stage])) for stage in TAP_STAGES]))
 
     def _receiver_lines(self):
         totals = dict(getattr(self.service.tap, 'receiver_totals', None) or {})  # replaced, never mutated

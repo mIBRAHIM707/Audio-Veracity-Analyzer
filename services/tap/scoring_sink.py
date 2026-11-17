@@ -23,12 +23,66 @@ architecture §2.1-§2.4): a `TapApp` sink that feeds tapped caller audio into
 
 Single owner: the thread that runs the TapApp also calls `pump`. Faults in scoring never
 reach the tap (the TapApp counts sink exceptions); this sink also counts its own.
+
+Stage timing (17 Nov 2026; PRD FR-O6 "latency per stage", backlog 7.2): `stage_times`
+holds the wall time per delivered chunk (`timer`, perf_counter by default) of
+- `resample`: 8 -> 16 kHz (`resample_chunk`), the concealment flags at 16 kHz and the
+  PCM16 conversion;
+- `speech_feed`: `SpeechFeed.audio` for the chunk: VAD, windowing and the offer of any
+  window it completes to the pipeline.
+A delivered chunk is every 20 ms frame the tap had due at that loop turn (usually a few,
+many after a long detector batch), so a chunk's time is not compared with 20 ms. Instead
+`stage_times` also sums the 8 kHz audio seconds each stage processed: processing seconds
+/ audio seconds is the cost per audio second. With N calls on the one loop thread, the
+busy share is about N times that; see services/live/README.md "Tap stages". The
+end-of-call flush is timed too (no new audio). An unusable timer reading (raising,
+non-finite, backwards) is counted in `timer_failures` and never affects the audio; a
+`resample_chunk` that raises is not timed. The jitter buffer (in the RTP receiver) is not
+timed: it delays audio by its playout setting (60 ms) by design.
 """
+import math
+import numbers
+import threading
+import time
+
 import numpy as np
 
 from services.scorer.speech_windows import MAX_FEED_SAMPLES
 
 END_REASONS = {'bye': 'bye', 'timeout': 'timeout', 'monitor_lost': 'monitor_lost'}
+TAP_STAGES = ('resample', 'speech_feed')
+# Sub-millisecond resolution (one 20 ms frame resamples in tens of microseconds) up to 1 s.
+TAP_STAGE_BUCKETS_S = (0.00005, 0.0001, 0.00025, 0.0005, 0.001, 0.0025, 0.005, 0.01, 0.02, 0.05, 0.1, 0.25, 1.0)
+TAP_RATE = 8000
+
+
+class StageTimes:
+    """Cumulative-ready histograms per stage plus the audio seconds each stage processed,
+    written by the owner thread and read by the health thread (`snapshot`), so both go
+    through one lock."""
+
+    def __init__(self, stages, bounds):
+        self._lock = threading.Lock()
+        self._bounds = tuple(bounds)
+        self._series = {stage: {'buckets': [0] * len(self._bounds), 'sum': 0.0, 'count': 0} for stage in stages}
+        self._audio = {stage: 0.0 for stage in stages}
+
+    def observe(self, stage, seconds, audio_seconds=0.0):
+        with self._lock:
+            series = self._series[stage]
+            for i, bound in enumerate(self._bounds):
+                if seconds <= bound:
+                    series['buckets'][i] += 1
+            series['sum'] += seconds
+            series['count'] += 1
+            self._audio[stage] += audio_seconds
+
+    def snapshot(self):
+        with self._lock:
+            return {'bounds': list(self._bounds),
+                    'series': {stage: {'buckets': list(s['buckets']), 'sum': s['sum'], 'count': s['count']}
+                               for stage, s in self._series.items()},
+                    'audio_seconds': dict(self._audio)}
 
 
 def _resampler():
@@ -50,10 +104,15 @@ class _CallStream:
 
 class TapScoringSink:
     def __init__(self, live, feed, pipeline, clock, *, hub=None, end_grace_s=10.0, resampler_factory=_resampler,
-                 recorder=None):
+                 recorder=None, timer=time.perf_counter):
         """`recorder` (optional, `services/live/retention.SnippetRecorder`, FR-O5) gets
         `started(call_id)` for admitted calls and their raw 8 kHz audio; its faults are
-        counted in `recorder_errors`, never raised into the tap."""
+        counted in `recorder_errors`, never raised into the tap. `timer` measures the
+        stage times only (module docstring)."""
+        if not callable(timer):
+            raise ValueError('timer must be callable')
+        self._timer = timer
+        self.stage_times = StageTimes(TAP_STAGES, TAP_STAGE_BUCKETS_S)
         self.live, self.feed, self.pipeline, self.clock, self.hub = live, feed, pipeline, clock, hub
         self.recorder = recorder
         self.end_grace_s = end_grace_s
@@ -63,7 +122,7 @@ class TapScoringSink:
         self.counts = {'started': 0, 'refused': 0, 'audio_chunks': 0, 'audio_unfed': 0, 'ended': 0,
                        'ended_elsewhere': 0, 'end_retries': 0, 'ends_forced': 0, 'end_cancelled_tail': 0,
                        'health_published': 0, 'health_failures': 0, 'pump_errors': 0, 'errors': 0,
-                       'recorder_errors': 0}
+                       'recorder_errors': 0, 'timer_failures': 0}
 
     # -- TapApp sink -------------------------------------------------------------------
     def started(self, call):
@@ -91,7 +150,7 @@ class TapScoringSink:
         if len(flags) != len(samples):
             self.counts['errors'] += 1
             flags = np.zeros(len(samples), bool)
-        self._push(call_id, stream, stream.resampler.resample_chunk(samples), flags)
+        self._push(call_id, stream, samples, flags)
         self.counts['audio_chunks'] += 1
 
     def quality(self, call_id, change):
@@ -115,7 +174,7 @@ class TapScoringSink:
         except Exception:
             deadline = float('-inf')  # no usable clock: end at the next pump
         self._ending[call_id] = (END_REASONS.get(reason, 'monitor_lost'), deadline)
-        self._push(call_id, stream, stream.resampler.resample_chunk(np.zeros(0), last=True), np.zeros(0, bool))
+        self._push(call_id, stream, np.zeros(0), np.zeros(0, bool), last=True)
         self.feed.finish(call_id, self.clock())
 
     def failed(self, call_id, error):
@@ -189,9 +248,31 @@ class TapScoringSink:
         except Exception:  # retention is advisory: never into the tap or scoring
             self.counts['recorder_errors'] += 1
 
-    def _push(self, call_id, stream, out, flags):
+    def _read_timer(self):
+        """A finite reading, or None (counted in `timer_failures`)."""
+        try:
+            value = self._timer()
+        except Exception:
+            value = None
+        if isinstance(value, numbers.Real) and not isinstance(value, bool) and math.isfinite(value):
+            return float(value)
+        self.counts['timer_failures'] += 1
+        return None
+
+    def _observe(self, stage, start, end, audio_seconds):
+        if start is None or end is None:
+            return  # the failed reading is already counted
+        if end < start:
+            self.counts['timer_failures'] += 1
+            return
+        self.stage_times.observe(stage, end - start, audio_seconds)
+
+    def _push(self, call_id, stream, samples, flags, *, last=False):
+        started = self._read_timer()
+        out = stream.resampler.resample_chunk(samples, last=last)
         stream.flags = np.concatenate([stream.flags, flags])
         if not len(out):
+            self._observe('resample', started, self._read_timer(), len(samples) / TAP_RATE)
             return
         # Output sample j of the whole stream covers input sample j // 2.
         positions = (stream.out_total + np.arange(len(out))) // 2 - stream.flag_base
@@ -203,6 +284,10 @@ class TapScoringSink:
         done = max(0, stream.out_total // 2 - stream.flag_base)  # inputs whose outputs are all out
         stream.flags, stream.flag_base = stream.flags[done:], stream.flag_base + done
         pcm16 = _pcm16(out)
+        resampled = self._read_timer()
+        self._observe('resample', started, resampled, len(samples) / TAP_RATE)
         for begin in range(0, len(pcm16), MAX_FEED_SAMPLES):
             self.feed.audio(call_id, 'caller', pcm16[begin:begin + MAX_FEED_SAMPLES], self.clock(),
                             concealed=concealed[begin:begin + MAX_FEED_SAMPLES])
+        # The feed's audio in 8 kHz seconds (16 kHz samples / 2), so the two stages compare.
+        self._observe('speech_feed', resampled, self._read_timer(), len(pcm16) / (2 * TAP_RATE))

@@ -204,9 +204,10 @@ at stop; the start record adds `health`. At most 8 connections are served at onc
   checked identifiers. A family with an invalid value is dropped and counted
   (`ava_live_metrics_render_errors_total`); the endpoint stays up. Since 17 Nov the
   shared families also carry `ava_live_stage_seconds{stage}` and
-  `ava_live_alerts_raised_total` (see "Per-stage latency" below). FR-O6 is still
-  partial: the stages before `offer` (RTP arrival to frame, resampling, VAD,
-  windowing) are not timed on their own, and WebSocket delivery is not timed.
+  `ava_live_alerts_raised_total` (see "Per-stage latency" below). Since 17 Nov
+  (attempt 2), `ava_live_tap_stage_seconds{stage=resample|speech_feed}` also times the
+  tap side per chunk (see "Tap stages" below). FR-O6 is still partial: RTP arrival to
+  frame (the jitter buffer) and WebSocket delivery are not timed.
 
 ### Per-stage latency and alerts per minute (17 Nov 2026; PRD FR-O6, architecture §2.3)
 
@@ -239,6 +240,38 @@ dropped, cancelled, skipped, detector-lost, failed and not-applied windows do no
 outcome is in `ava_live_windows_resolved_total`). A failed or backwards `timer` reading
 is counted in `ava_live_stage_timer_failures_total` and never affects scoring. A
 `LiveCalls.result` that raises is not timed (it is in `result_errors`).
+**Tap stages (17 Nov, attempt 2).** `TapScoringSink` times each delivered audio chunk
+with `perf_counter`, in `ava_live_tap_stage_seconds{stage}` (bounds 50 µs to 1 s). A
+delivered chunk is every 20 ms frame the tap had due at that loop turn. That is usually
+a few frames, since the loop waits up to 50 ms on ARI per turn, and many after a long
+detector batch. A chunk's time is therefore not compared with 20 ms (review M1).
+`ava_live_tap_audio_seconds_total{stage}` counts the seconds of tapped audio each stage
+processed. `rate(ava_live_tap_stage_seconds_sum[5m]) /
+rate(ava_live_tap_audio_seconds_total[5m])` is the stage's cost per audio second
+(re-review N1). It is not a "keeps up below 1" test. One loop thread serves every call
+in turn, and also runs the detector batches and ARI. With N calls, the tap stages alone
+use about N times that cost per wall second. The measure of keeping up is
+`rate(ava_live_tap_stage_seconds_sum[5m])`, the share of each wall second the thread
+spends in the stage, read together with the loop stages and inference time.
+
+| `stage` | What |
+|---|---|
+| `resample` | 8 -> 16 kHz `resample_chunk`, concealment flags at 16 kHz, PCM16 conversion |
+| `speech_feed` | `SpeechFeed.audio` for the chunk: VAD, windowing, and `offer` of any window it completes |
+
+These are processing times per chunk, not per window. The end-of-call flush is timed
+too; it adds no audio seconds to `resample`, since held audio is counted when it
+arrives. A chunk that the resampler holds back entirely (no output) has a `resample` time
+and no `speech_feed` time. A `resample_chunk` that raises is not timed (the tap counts it
+in `sink_errors`). The tap stage families are their own `/metrics` section, so a
+malformed value drops only them. An unusable timer reading is counted in
+`ava_live_sink_events_total{kind="timer_failures"}` and never changes the audio. The
+jitter buffer is not timed: it holds audio for its playout delay (60 ms) by design, and
+its counts are in `ava_live_jitter_buffer_total`. Together with the loop stages above,
+this covers the architecture §2.3 row "resample + VAD + windowing", except that the
+`speech_feed` time of the chunk that completes a window also falls inside that window's
+`queue_wait` (the offer time is read before the chunk is fed).
+
 `ava_live_alerts_raised_total` counts `alert.raised` events the loop published (alerts
 per minute = `rate(...[5m]) * 60`); an alert whose publication failed is not counted
 (publish failures are in `LiveCalls.counters`). This is the FR-O6 alerts-per-minute
@@ -416,7 +449,7 @@ was counted as a disconnect (fixed, unit-tested).
 
 ## Not done
 
-A deployment configuration file (beyond the scoring JSON); FR-O6 timing of the stages
-before `offer` (jitter buffer, resampling, VAD, windowing), live (in-call) RTP metrics (receiver/jitter counts are exported only
+A deployment configuration file (beyond the scoring JSON); FR-O6 timing of RTP arrival
+to frame (jitter buffer) and WebSocket delivery, live (in-call) RTP metrics (receiver/jitter counts are exported only
 when a call ends), JSON logs and a Grafana dashboard (P1); scorer resume from stored state (FR-I11); agent direction; capacity measurement on box A1 (8.QA); file-mode jobs through the same
 batcher.

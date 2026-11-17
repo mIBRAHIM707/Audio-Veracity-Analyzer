@@ -38,7 +38,8 @@ snapshot and event stream. Infrastructure only; no detector accuracy implied.
 loop (queue, batch, apply, offer to result) and counts alerts raised (FR-O6).
 17 Nov (attempt 2): no data change — the analysis API and dashboard now have a Docker
 image and run in the Compose stack (internal only; not reachable from a host browser
-until an authentication/publishing decision is made).
+until an authentication/publishing decision is made). The live `/metrics` also times
+resampling and VAD/windowing per chunk (FR-O6).
 
 Updated 4 October 2026. This is the active sequence; evidence lives in
 `current-state.md` and `handoffs/`. Check marks mean the stated bounded task passed

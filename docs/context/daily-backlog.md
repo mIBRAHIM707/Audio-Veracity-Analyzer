@@ -362,8 +362,12 @@ items needing that data are listed at the end and stay out of the queue.
   Claude-authored tests, review conditional pass fixed. 17 Nov: structured JSON
   operations log of the live process (`services/live/eventlog.py`, `--event-log`,
   allowlisted fields, rate limit, merged counter lines); 14 Claude-authored tests and a
-  real-call lab check; two review rounds fixed. Remaining FR-O6: in-call RTP metrics, timing of jitter/resample/VAD on
-  their own, JSON logs for the analysis API, Grafana.
+  real-call lab check; two review rounds fixed. 17 Nov (attempt 2): tap-side stage
+  timing per delivered chunk, `ava_live_tap_stage_seconds{stage=resample|speech_feed}`
+  plus `ava_live_tap_audio_seconds_total` for the cost per audio second
+  (`services/tap/scoring_sink.py`, `services/live/health.py`); Claude-authored tests;
+  review conditional pass fixed. Remaining FR-O6: in-call RTP metrics, jitter-buffer and
+  WebSocket delivery timing, JSON logs for the analysis API, Grafana.
 - [ ] 7.3 P1 history/search/local authentication/audit and feedback after P0.
 - [ ] 7.QA Astra-designed Playwright suite, offline assets, failures/reconnects.
 

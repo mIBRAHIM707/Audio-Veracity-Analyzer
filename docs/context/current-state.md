@@ -85,7 +85,11 @@ and about 50,000 original clips, excluding codec copies.
   limited to 2 CPUs and 3 GB, with `/readyz` health on the real checkpoint. The lab
   test shows a real call reaching the API WebSocket via Redis, the dashboard assets
   served, a file analysed by the real checkpoint (uncalibrated) and egress blocked.
-  The FR-I9 25 % file cap is not enforced between the two containers.
+  The FR-I9 25 % file cap is not enforced between the two containers. Also, the live
+  `/metrics` now times the tap side per delivered chunk: `resample` (8 to 16 kHz) and
+  `speech_feed` (VAD, windowing, offer). It also counts the audio seconds each stage
+  processed, which gives the cost per audio second. The jitter buffer and WebSocket delivery
+  are still untimed.
 - **17 Nov daily run (details in `daily-runs/2026-11-17.md`).** FR-O6 per-stage latency
   for the live loop (7.2/8.1): `ava_live_stage_seconds{stage}` with `queue_wait`,
   `batch_wait`, `apply` (scorer and hub publish) and `window_to_result` (offer to

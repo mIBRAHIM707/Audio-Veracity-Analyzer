@@ -69,8 +69,9 @@ INFERENCE_OUTCOMES = ('ok', 'failed')
 # "Offer" is the caller's `now`. On the tap path (services/tap/scoring_sink.py) the sink
 # reads it when an audio chunk is fed, before SpeechFeed runs VAD and windowing on that
 # chunk, so queue_wait and window_to_result also include that chunk's VAD/windowing
-# time (review M1, 17 Nov). Not covered: RTP arrival -> frame (jitter buffer),
-# resampling, and WebSocket delivery to the browser. A failed `LiveCalls.result` is not
+# time (review M1, 17 Nov). Resampling and SpeechFeed per chunk are timed by the sink
+# (`ava_live_tap_stage_seconds`, services/tap/scoring_sink.py). Not covered: RTP
+# arrival -> frame (jitter buffer) and WebSocket delivery to the browser. A failed `LiveCalls.result` is not
 # timed (it is counted in `result_errors`), and an alert raised by the scorer whose
 # publication then failed is not in `alerts_raised` (review L3).
 STAGE_BUCKETS_S = (0.001, 0.0025, 0.005, 0.01, 0.02, 0.05, 0.1, 0.25, 0.5, 1.0, 1.2, 1.6, 2.0, 5.0, 10.0, 30.0)
