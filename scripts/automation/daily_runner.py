@@ -31,16 +31,20 @@ MIN_PRODUCTIVE_SECONDS = 300  # 10 Nov 2026: four idle relaunches in a row each 
 API_HOST = "api.anthropic.com"
 MAX_TRANSIENT_FAILURES = 3   # Network/login failures retried per session before the day is failed.
 TRANSIENT_RETRY_SECONDS = 120
+LIMIT_RESUME_MARGIN_SECONDS = 120  # Relaunch this long after the plan limit's stated reset.
 MODELS = {"opus", "sonnet", "claude-opus-5-5", "claude-fable-5-1", "claude-sonnet-5"}
 
 
-def session_window(now: datetime, hours: int = 2) -> tuple[datetime, datetime, datetime]:
-    """Noon start; `hours` long (owner decision 14 Nov 2026: configurable, 2 to 10); launches stop 15 min early."""
+def session_window(now: datetime, hours: int = 2, start_hour: int = 12) -> tuple[datetime, datetime, datetime]:
+    """Starts at `start_hour` (6 to 12; owner set 8 on 18 Nov 2026), `hours` long (2 to 10, owner
+    decision 14 Nov 2026); launches stop 15 min before the end."""
     if now.tzinfo is None:
         raise ValueError("Timezone-aware time required")
     if type(hours) is not int or not 2 <= hours <= 10:
         raise ValueError("window_hours must be an integer from 2 to 10")
-    start = datetime.combine(now.astimezone(PKT).date(), time(12), PKT)
+    if type(start_hour) is not int or not 6 <= start_hour <= 12:
+        raise ValueError("start_hour must be an integer from 6 to 12")
+    start = datetime.combine(now.astimezone(PKT).date(), time(start_hour), PKT)
     deadline = start + timedelta(hours=hours)
     return start, deadline - timedelta(minutes=15), deadline
 
@@ -91,6 +95,10 @@ def load_config(path: Path) -> dict:
     if type(hours) is not int or not 2 <= hours <= 10:
         raise ValueError("window_hours must be an integer from 2 to 10")
     config["window_hours"] = hours
+    start_hour = config.get("start_hour", 12)
+    if type(start_hour) is not int or not 6 <= start_hour <= 12:
+        raise ValueError("start_hour must be an integer from 6 to 12")
+    config["start_hour"] = start_hour
     config["remote_url"] = REMOTE
     state = Path(config["state_dir"])
     worktree = Path(config["worktree"])
@@ -282,6 +290,46 @@ def transient_failure(log_path: Path) -> bool:
     return isinstance(final, dict) and final.get("terminal_reason") == "api_error"
 
 
+def usage_limit_reset(log_path: Path) -> datetime | None:
+    """Reset time when the session's last rate-limit event says the plan limit is reached (18 Nov 2026).
+
+    On 15-17 Nov the 5-hour plan limit ended each day mid-afternoon: three two-minute retries failed and
+    the rest of the window was lost although the limit reset before the cutoff."""
+    last = None
+    try:
+        with log_path.open(encoding="utf-8", errors="replace") as stream:
+            for line in stream:
+                if '"rate_limit_event"' not in line:
+                    continue
+                try:
+                    event = json.loads(line)
+                except ValueError:
+                    continue
+                if isinstance(event, dict) and event.get("type") == "rate_limit_event":
+                    last = event.get("rate_limit_info")
+    except OSError:
+        return None
+    if not isinstance(last, dict) or last.get("status") != "rejected":
+        return None
+    resets = last.get("resetsAt")
+    if type(resets) not in (int, float) or isinstance(resets, bool):
+        return None
+    try:
+        return datetime.fromtimestamp(resets, PKT)
+    except (OverflowError, OSError, ValueError):
+        return None
+
+
+def wait_until(when: datetime, stop_path: Path, poll: float = 30.0) -> bool:
+    """Sleep until `when`; False if PAUSED appears first."""
+    while not stop_path.exists():
+        left = (when - datetime.now(PKT)).total_seconds()
+        if left <= 0:
+            return True
+        clock.sleep(min(poll, left))
+    return False
+
+
 def network_ready(host: str = API_HOST) -> bool:
     try:
         socket.getaddrinfo(host, 443)
@@ -408,7 +456,7 @@ def main(argv=None) -> int:
         config = load_config(args.config)
         workspace = validate_workspace(config)
         now = datetime.now(PKT)
-        start, soft, deadline = catch_up_window(now) if args.catch_up else session_window(now, config["window_hours"])
+        start, soft, deadline = catch_up_window(now) if args.catch_up else session_window(now, config["window_hours"], config["start_hour"])
         if args.dry_run:
             print(json.dumps({"dry_run": True, "workspace": workspace,
                               "start": start.isoformat(), "soft_stop": soft.isoformat(),
@@ -491,6 +539,23 @@ def main(argv=None) -> int:
                                    "failed": True, "error": str(exc)})
                     atomic_json(ledger_path, ledger)
                     raise
+                reset = usage_limit_reset(state / f"{stem}.jsonl") if code not in (0, 124, 125) else None
+                if reset is not None:  # Plan limit: not a failure; wait for the reset if the window allows.
+                    resume = reset + timedelta(seconds=LIMIT_RESUME_MARGIN_SECONDS)
+                    ledger.update({"last_exit": code, "last_finished": datetime.now(PKT).isoformat(),
+                                   "failed": False, "usage_limit_resets": reset.isoformat()})
+                    ledger["usage_limit_waits"] = ledger.get("usage_limit_waits", 0) + 1
+                    if resume >= soft:
+                        ledger["stop_reason"] = f"usage limit until {reset:%H:%M}, after the launch cutoff"
+                        atomic_json(ledger_path, ledger)
+                        break
+                    ledger["stop_reason"] = f"waiting for the usage limit to reset at {reset:%H:%M}"
+                    atomic_json(ledger_path, ledger)
+                    if not wait_until(resume, state / "PAUSED"):
+                        return 0
+                    ledger.pop("stop_reason", None)
+                    atomic_json(ledger_path, ledger)
+                    continue
                 retry = (code not in (0, 124, 125) and transient_failure(state / f"{stem}.jsonl")
                          and ledger.get("transient_failures", 0) < MAX_TRANSIENT_FAILURES)
                 if retry:  # Network/login error: unfinished work stays in the worktree for the relaunch.

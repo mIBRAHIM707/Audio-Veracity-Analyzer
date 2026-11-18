@@ -230,6 +230,104 @@ class SchedulerTests(unittest.TestCase):
         result, launch = self.run_main()
         launch.assert_not_called()
 
+    # Claude-authored, 18 Nov 2026: plan usage limit waits for its reset instead of failing the day.
+    @staticmethod
+    def limit_child(outcomes, reset):
+        def child(command, prompt, log_path, *rest, **kwargs):
+            code = outcomes.pop(0)
+            lines = []
+            if code:
+                lines.append(json.dumps({"type": "rate_limit_event", "rate_limit_info": {
+                    "status": "rejected", "resetsAt": reset.timestamp(), "rateLimitType": "five_hour"}}))
+            lines.append(json.dumps({"type": "result", "terminal_reason": "api_error" if code else "completed"}))
+            log_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+            return code
+        return child
+
+    def run_with_wait(self, child, waited=True):
+        with patch.object(runner, "wait_until", return_value=waited) as wait:
+            result, launch = self.run_main(child=child)
+        return result, launch, wait
+
+    def test_usage_limit_waits_for_reset_then_relaunches_without_failing(self):
+        reset = datetime(2026, 11, 6, 13, 0, tzinfo=runner.PKT)
+        result, launch, wait = self.run_with_wait(self.limit_child([1, 0], reset))
+        self.assertEqual(result, 0)
+        self.assertEqual(launch.call_count, 2)
+        wait.assert_called_once()
+        self.assertEqual(wait.call_args.args[0], reset + timedelta(seconds=runner.LIMIT_RESUME_MARGIN_SECONDS))
+        ledger = self.ledger()
+        self.assertFalse(ledger["failed"])
+        self.assertEqual(ledger["usage_limit_waits"], 1)
+        self.assertNotIn("transient_failures", ledger)
+        self.assertNotIn("stop_reason", ledger)
+
+    def test_usage_limit_resetting_after_launch_cutoff_ends_day_without_failing(self):
+        reset = datetime(2026, 11, 6, 13, 44, tzinfo=runner.PKT)  # +2 min margin passes the 13:45 soft stop
+        result, launch, wait = self.run_with_wait(self.limit_child([1, 0], reset))
+        self.assertEqual(result, 0)
+        self.assertEqual(launch.call_count, 1)
+        wait.assert_not_called()
+        self.assertFalse(self.ledger()["failed"])
+        self.assertIn("after the launch cutoff", self.ledger()["stop_reason"])
+
+    def test_pause_during_usage_limit_wait_stops_without_relaunch(self):
+        reset = datetime(2026, 11, 6, 13, 0, tzinfo=runner.PKT)
+        result, launch, wait = self.run_with_wait(self.limit_child([1, 0], reset), waited=False)
+        self.assertEqual(result, 0)
+        self.assertEqual(launch.call_count, 1)
+        self.assertFalse(self.ledger()["failed"])
+
+    def test_repeated_usage_limits_stay_within_invocation_cap(self):
+        reset = datetime(2026, 11, 6, 12, 30, tzinfo=runner.PKT)
+        result, launch, wait = self.run_with_wait(self.limit_child([1, 1, 1], reset))
+        self.assertEqual(result, 0)
+        self.assertEqual(launch.call_count, 2)
+        self.assertEqual(self.ledger()["attempts"], 2)
+
+    def test_usage_limit_reset_parsing(self):
+        log = self.root / "limit.jsonl"
+        reset = datetime(2026, 11, 17, 15, 50, tzinfo=runner.PKT)
+        rejected = json.dumps({"type": "rate_limit_event", "rate_limit_info": {"status": "rejected",
+                                                                                "resetsAt": int(reset.timestamp())}})
+        allowed = json.dumps({"type": "rate_limit_event", "rate_limit_info": {"status": "allowed",
+                                                                               "resetsAt": int(reset.timestamp())}})
+        cases = [(f"{rejected}\n", reset), (f"{allowed}\n", None), (f"{rejected}\n{allowed}\n", None),
+                 (f"{allowed}\nnot json\n{rejected}\n", reset), ("", None),
+                 ('{"type": "rate_limit_event", "rate_limit_info": {"status": "rejected", "resetsAt": "soon"}}\n', None),
+                 ('{"type": "rate_limit_event", "rate_limit_info": {"status": "rejected", "resetsAt": true}}\n', None),
+                 ('{"type": "rate_limit_event", "rate_limit_info": {"status": "rejected", "resetsAt": 1e30}}\n', None)]
+        for text, expected in cases:
+            with self.subTest(text=text[:60]):
+                log.write_text(text, encoding="utf-8")
+                self.assertEqual(runner.usage_limit_reset(log), expected)
+        self.assertIsNone(runner.usage_limit_reset(self.root / "missing.jsonl"))
+
+    def test_wait_until_returns_for_past_time_and_stops_on_pause(self):
+        pause = self.root / "PAUSED"
+        with patch.object(runner.clock, "sleep") as sleep:
+            self.assertTrue(runner.wait_until(datetime.now(runner.PKT) - timedelta(seconds=1), pause))
+            sleep.assert_not_called()
+            pause.write_text("x")
+            self.assertFalse(runner.wait_until(datetime.now(runner.PKT) + timedelta(hours=1), pause))
+
+    def test_start_hour_moves_the_window_and_is_bounded(self):
+        self.config.update(start_hour=8, window_hours=10)
+        self.save_config()
+        FixedDateTime.value = datetime(2026, 11, 6, 7, 59, tzinfo=runner.PKT)
+        result, launch = self.run_main()
+        launch.assert_not_called()
+        FixedDateTime.value = datetime(2026, 11, 6, 8, 0, tzinfo=runner.PKT)
+        result, launch = self.run_main()
+        self.assertGreater(launch.call_count, 0)
+        for call in launch.call_args_list:
+            self.assertLessEqual(call.args[3], 10 * 3600 + 0.000001)
+        start, soft, end = runner.session_window(FixedDateTime.value, 10, 8)
+        self.assertEqual((start.hour, soft.hour, soft.minute, end.hour), (8, 17, 45, 18))
+        for bad in (5, 13, True, 8.0, "8"):
+            with self.subTest(bad=bad), self.assertRaises(ValueError):
+                runner.session_window(FixedDateTime.value, 10, bad)
+
     def test_api_error_retries_never_exceed_invocation_cap(self):
         result, launch = self.run_main(child=self.api_error_child([1, 1, 1]))
         self.assertEqual(launch.call_count, 2)
@@ -431,6 +529,7 @@ class SchedulerTests(unittest.TestCase):
         for field, value in [("branch", "main"), ("branch", "master"), ("max_invocations", True),
                              ("max_invocations", 0), ("max_invocations", 13), ("max_invocations", 1.5),
                              ("window_hours", 1), ("window_hours", 11), ("window_hours", 2.5), ("window_hours", True),
+                             ("start_hour", 5), ("start_hour", 13), ("start_hour", True),
                              ("worktree", "relative"), ("claude_path", ""), ("model", "gpt-6-astra"),
                              ("remote_url", "https://example.invalid/repo"), ("state_dir", str(self.work)),
                              ("state_dir", str(self.root / "alternate-state")),

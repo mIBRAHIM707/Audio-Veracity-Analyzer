@@ -42,7 +42,17 @@ check before new work; rerunning or editing workflows is denied.
 launches stop 15 minutes before its end and the hard cutoff is the end itself.
 `max_invocations` may now be 1 to 12. The scheduled task's own time limit is
 PT11H, a backstop only. This host is set to 6 hours (12:00 to 18:00) and 10 sessions.
-Where the text below says 13:45 or 14:00, read the configured window's cutoffs.
+**8 AM start and plan-limit waits (owner decision, 18 November 2026).** Optional config
+`start_hour` (integer, 6 to 12, default 12) moves the window's start; `register-task.ps1`
+sets the trigger from it. This host now runs 08:00 to 18:00 (`start_hour` 8,
+`window_hours` 10). On 15 to 17 November the Claude plan's five-hour usage limit was
+reached each afternoon; the runner treated it as a network error, retried three times
+two minutes apart and failed the day, although the limit reset before the cutoff. A
+session whose log ends with a rejected `rate_limit_event` is now not a failure: the
+runner waits until the stated reset time plus two minutes (PAUSED still stops it) and
+relaunches, or ends the day cleanly if the reset falls after the launch cutoff. Each
+relaunch still counts toward `max_invocations`.
+Where the text below says noon, 13:45 or 14:00, read the configured window.
 Sessions also enable Claude Code's PowerShell tool, and every Bash allow/deny rule is
 mirrored onto it, because this host's Git Bash is missing `usr\bin\bash.exe`.
 

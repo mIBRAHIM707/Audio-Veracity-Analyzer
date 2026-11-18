@@ -26,13 +26,17 @@ if ($LASTEXITCODE -ne 0) { throw 'Runner dry-run failed; task was not registered
 if (Get-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue) {
     throw 'Task already exists. Inspect it and explicitly remove before replacing.'
 }
-# UTC timestamp fixes the schedule to 07:00 UTC = noon Pakistan, independent of host timezone.
+# UTC timestamp fixes the schedule independent of host timezone (07:00 UTC = noon Pakistan).
 # StartWhenAvailable lets a late wake still start; the runner itself refuses to launch
 # outside its window and kills the session at its deadline, so late starts stay in-window.
 # The window starts at noon and lasts config `window_hours` (2 to 10, default 2). The task's
 # own limit (PT11H) is only a backstop above the longest allowed window.
+# Config `start_hour` (Pakistan, 6 to 12, default 12) sets the trigger: Pakistan is UTC+05:00.
+$startHour = 12
+if ($null -ne $config.start_hour) { $startHour = [int]$config.start_hour }
+if ($startHour -lt 6 -or $startHour -gt 12) { throw 'start_hour must be from 6 to 12' }
 $utcNow = [DateTime]::UtcNow
-$start = $utcNow.Date.AddHours(7)
+$start = $utcNow.Date.AddHours($startHour - 5)
 if ($start -le $utcNow) { $start = $start.AddDays(1) }
 $boundary = $start.ToString("yyyy-MM-dd'T'HH:mm:ss'Z'")
 $user = [Security.Principal.WindowsIdentity]::GetCurrent().Name
@@ -41,7 +45,7 @@ $arguments = '"' + $runner + '" --config "' + $resolvedConfig + '"'
 $xml = @"
 <?xml version="1.0" encoding="UTF-16"?>
 <Task version="1.4" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">
-  <RegistrationInfo><Description>AVA daily development, from noon Pakistan for the configured window; dedicated PR, never merge.</Description></RegistrationInfo>
+  <RegistrationInfo><Description>AVA daily development, configured start and window (Pakistan time); dedicated PR, never merge.</Description></RegistrationInfo>
   <Triggers><CalendarTrigger><StartBoundary>$boundary</StartBoundary><Enabled>true</Enabled><ScheduleByDay><DaysInterval>1</DaysInterval></ScheduleByDay></CalendarTrigger></Triggers>
   <Principals><Principal id="Author"><UserId>$(& $escape $user)</UserId><LogonType>InteractiveToken</LogonType><RunLevel>LeastPrivilege</RunLevel></Principal></Principals>
   <Settings><MultipleInstancesPolicy>IgnoreNew</MultipleInstancesPolicy><DisallowStartIfOnBatteries>false</DisallowStartIfOnBatteries><StopIfGoingOnBatteries>false</StopIfGoingOnBatteries><AllowHardTerminate>true</AllowHardTerminate><StartWhenAvailable>true</StartWhenAvailable><RunOnlyIfNetworkAvailable>true</RunOnlyIfNetworkAvailable><IdleSettings><StopOnIdleEnd>false</StopOnIdleEnd><RestartOnIdle>false</RestartOnIdle></IdleSettings><AllowStartOnDemand>true</AllowStartOnDemand><Enabled>true</Enabled><Hidden>true</Hidden><RunOnlyIfIdle>false</RunOnlyIfIdle><WakeToRun>true</WakeToRun><ExecutionTimeLimit>PT11H</ExecutionTimeLimit><Priority>7</Priority></Settings>
