@@ -115,6 +115,13 @@ and about 50,000 original clips, excluding codec copies.
   - the `metrics` subnet (default 10.231.250.0/24) must not clash with a host network;
   - Grafana's admin can read call metadata through its proxy;
   - Grafana is not published on the host.
+- **18 Nov (attempt 3).** FR-O6 jitter-buffer hold time: `ava_live_jitter_hold_seconds`
+  on the live `/metrics` times each received RTP frame from being read off the socket to
+  being handed to scoring (architecture §3 budget 60 ms), for ended calls plus calls in
+  progress. It is the buffer delay plus loop-turn quantisation (roughly 10-160 ms on a
+  steady stream); socket-buffer wait before a read is not measured, so it is not a
+  measurement against the 60 ms budget. The dashboard's per-stage
+  p95 panel shows it as `jitter_hold`. WebSocket delivery timing is still open.
 - **17 Nov daily run (details in `daily-runs/2026-11-17.md`).** FR-O6 per-stage latency
   for the live loop (7.2/8.1): `ava_live_stage_seconds{stage}` with `queue_wait`,
   `batch_wait`, `apply` (scorer and hub publish) and `window_to_result` (offer to

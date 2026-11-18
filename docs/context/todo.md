@@ -45,7 +45,8 @@ about 3 dB in every mode. Do not rely on AMR-augmented results until a human che
 codec path against the 3GPP reference vectors.
 18 Nov: no data change. The Compose stack has an optional `monitoring` profile with
 Prometheus and a Grafana dashboard (FR-O6), and it is internal only. The stack's env
-file now needs `AVA_GRAFANA_ADMIN_PASSWORD`.
+file now needs `AVA_GRAFANA_ADMIN_PASSWORD`. Later on 18 Nov, the live `/metrics` also
+times how long each RTP frame waits in the jitter buffer (FR-O6); no data change.
 
 Updated 4 October 2026. This is the active sequence; evidence lives in
 `current-state.md` and `handoffs/`. Check marks mean the stated bounded task passed

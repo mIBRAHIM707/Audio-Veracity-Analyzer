@@ -187,7 +187,8 @@ class RtpSession:
         sequence order (`final=True`: everything received, holes concealed); plain mode:
         one chunk in arrival order with 0 concealed."""
         if self._jitter is not None:
-            return self._jitter.flush() if final else self._jitter.pop_due(self._clock())
+            # The clock times each received frame's hold in the buffer (FR-O6, 18 Nov).
+            return self._jitter.flush(self._clock()) if final else self._jitter.pop_due(self._clock())
         chunk = b''.join(self._chunks)
         self._chunks, self._bytes = [], 0
         return [(chunk, 0)] if chunk else []

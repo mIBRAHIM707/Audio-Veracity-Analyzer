@@ -32,6 +32,21 @@ with one drift step per packet). A sender that keeps jumping its sequence can no
 multiply made-up audio. Skipped holes are not reported to `LossMonitor` or the sink
 (the timeline closes over them); whether they count as FR-I2 loss is a PRD question.
 
+Hold time (18 Nov, PRD FR-O6 "latency per stage"; architecture §3 latency budget "RTP
+arrival -> frame available", 60 ms at p95): each received frame keeps the time it was pushed, and
+when `pop_due(now)` or `flush(now)` hands it out its hold `now - arrival` is counted in
+the integer stats `hold_le_<ms>ms` (cumulative, HOLD_BUCKETS_MS), `hold_frames` and
+`hold_us_sum` (microseconds), so they add up across calls like the other counts. Only
+received frames are timed (concealed ones never arrived). A frame handed out with no
+time (`flush()` without `now`), with a negative hold (a clock that went back) or an
+unrepresentable one counts as `hold_unmeasured`; received frames lost to the hand-over
+bound are never handed out and not timed (`dropped_pending_received`, also part of
+`dropped_pending`). So once everything is handed out, `received == hold_frames +
+hold_unmeasured + dropped_pending_received`. In the receiver, "arrival" is when the
+service loop read the packet from the socket, once per loop turn, and the hand-out is
+also once per turn: the hold is the buffer's delay plus loop-turn quantisation, not the
+network arrival-to-frame time (socket-buffer wait is measured by nothing).
+
 This is the training-side G.711 `repeat_then_silence` rule (data/prepare/codecs.py)
 for mu-law, whose silence code decodes to 0; for A-law the training silence code
 decodes to +8 while this buffer inserts 0.
@@ -43,6 +58,7 @@ FR-I2) and when it falls back to or below it, so a caller can emit
 confirm in the PRD ("sustained" is not defined).
 """
 from collections import deque
+import math
 
 FRAME_SAMPLES = 160
 FRAME_S = 0.020
@@ -63,6 +79,9 @@ MAX_PENDING_FRAMES = 3000  # frames handed over at resyncs/restarts (60 s); exce
 # 20 ms of arrival/now time), at most this many; holes beyond it are skipped and counted
 # (`dropped_handover`). Received frames never spend it and are never skipped.
 HANDOVER_BURST_FRAMES = 50  # 1 s of concealment; a normal hand-over has a hole or two
+# Upper bounds (ms) of the hold-time histogram; 60 ms is the depth and the §3 budget.
+HOLD_BUCKETS_MS = (20, 40, 60, 80, 100, 150, 200, 300, 500, 1000, 2000, 5000)
+HOLD_KEYS = tuple(f'hold_le_{ms}ms' for ms in HOLD_BUCKETS_MS)
 
 
 def _check_time(value):
@@ -94,7 +113,26 @@ class JitterBuffer:
         self.stats = {'received': 0, 'played': 0, 'concealed_frames': 0, 'repeated_frames': 0,
                       'silence_frames': 0, 'late': 0, 'duplicate': 0, 'reordered': 0, 'resyncs': 0,
                       'talkspurts': 0, 'restarts': 0, 'drift_adjustments': 0, 'dropped_pending': 0,
-                      'dropped_handover': 0}
+                      'dropped_handover': 0, 'dropped_pending_received': 0, **{key: 0 for key in HOLD_KEYS}, 'hold_frames': 0,
+                      'hold_us_sum': 0, 'hold_unmeasured': 0}
+
+    def _deliver(self, entries, now):
+        """(pcm, concealed, arrival) -> (pcm, concealed), timing each received frame's
+        hold up to `now` (see the module docstring)."""
+        for _, _, arrival in entries:
+            if arrival is None:
+                continue  # concealed: never arrived
+            held = None if now is None else (now - arrival) * 1e6
+            held_us = round(held) if held is not None and math.isfinite(held) else None  # review L2: no overflow
+            if held_us is None or held_us < 0:
+                self.stats['hold_unmeasured'] += 1
+                continue
+            self.stats['hold_frames'] += 1
+            self.stats['hold_us_sum'] += held_us
+            for ms, key in zip(HOLD_BUCKETS_MS, HOLD_KEYS):
+                if held_us <= ms * 1000:
+                    self.stats[key] += 1
+        return [(pcm, concealed) for pcm, concealed, _ in entries]
 
     def _refill(self, now):
         """Hand-over budget: one frame per 20 ms of (non-decreasing) time, capped."""
@@ -173,6 +211,8 @@ class JitterBuffer:
         room = max(0, MAX_PENDING_FRAMES - len(self._pending_out))
         self._pending_out.extend(frames[:room])
         self.stats['dropped_pending'] += len(frames) - min(len(frames), room)
+        # Of those, frames that really arrived (review L3): never handed out, so never timed.
+        self.stats['dropped_pending_received'] += sum(1 for _, _, arrival in frames[room:] if arrival is not None)
 
     def _resync(self, extended, arrival):
         """Re-anchor on this packet. Frames still waiting are played out first (handed
@@ -197,7 +237,7 @@ class JitterBuffer:
         self._late_run = 0
 
     def _store(self, extended, pcm, arrival, outcome):
-        self._frames[extended] = pcm
+        self._frames[extended] = (pcm, arrival)
         self._highest = extended if self._highest is None else max(self._highest, extended)
         self.stats['received'] += 1
         self._track_drift(extended, arrival)
@@ -239,18 +279,20 @@ class JitterBuffer:
         self._refill(now)
         out = self._pending_out[:limit]
         del self._pending_out[:limit]
-        if self._next is None:
-            return out
-        last = min(self._due_index(now), self._highest if self._highest is not None else self._next - 1)
-        while self._next <= last and len(out) < limit:
-            out.append(self._play())
-        return out
+        if self._next is not None:
+            last = min(self._due_index(now), self._highest if self._highest is not None else self._next - 1)
+            while self._next <= last and len(out) < limit:
+                out.append(self._play())
+        return self._deliver(out, now)
 
-    def flush(self):
+    def flush(self, now=None):
         """Everything still pending, then every frame up to the highest received one
-        (end of call)."""
+        (end of call). `now` (the receiver's clock) times the received frames' hold;
+        without it they count as `hold_unmeasured`."""
+        if now is not None:
+            _check_time(now)
         out, self._pending_out = self._pending_out, []
-        return out + self._play_to_highest()
+        return self._deliver(out + self._play_to_highest(), now)
 
     def _play_to_highest(self):
         """Hand-over: every frame up to the highest received. Received frames are always
@@ -271,21 +313,23 @@ class JitterBuffer:
         return out
 
     def _play(self):
-        pcm = self._frames.pop(self._next, None)
+        """(pcm, concealed_samples, arrival or None for a concealed frame)."""
+        entry = self._frames.pop(self._next, None)
         self._next += 1
         self.stats['played'] += 1
         self._played_since_anchor += 1
-        if pcm is not None:
+        if entry is not None:
+            pcm, arrival = entry
             self._last_played, self._run = pcm, 0
-            return pcm, 0
+            return pcm, 0, arrival
         self._run += 1
         self.stats['concealed_frames'] += 1
         if self._run <= self.repeat_limit:
             self.stats['repeated_frames'] += 1
-            return self._last_played, FRAME_SAMPLES
+            return self._last_played, FRAME_SAMPLES, None
         self.stats['silence_frames'] += 1
         self._last_played = SILENCE
-        return SILENCE, FRAME_SAMPLES
+        return SILENCE, FRAME_SAMPLES, None
 
     @property
     def buffered(self):

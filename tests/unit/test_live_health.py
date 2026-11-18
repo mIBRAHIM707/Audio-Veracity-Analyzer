@@ -177,15 +177,18 @@ class MetricsTests(unittest.TestCase):
     def test_exported_kinds_are_exactly_the_receiver_and_jitter_stats_keys(self):
         # Claude-authored (16 Nov 2026, review finding): a renamed or new stats key must
         # fail here rather than export a stale 0 forever.
-        from services.live.health import JITTER_COUNTERS, RECEIVER_COUNTERS
+        # 18 Nov: the hold-time stats are exported by their own histogram family instead.
+        from services.live.health import HOLD_STATS, JITTER_COUNTERS, RECEIVER_COUNTERS
         from services.tap.jitter import JitterBuffer
         from services.tap.rtp_receiver import RtpSession
         session = RtpSession(host='127.0.0.1', jitter=JitterBuffer(depth_s=0.06))
         self.addCleanup(session.close)
         stats = session.receiver_stats()
         self.assertEqual(set(RECEIVER_COUNTERS), {key for key in stats if not key.startswith('jitter_')})
-        self.assertEqual({f'jitter_{key}' for key in JITTER_COUNTERS}, {key for key in stats if key.startswith('jitter_')})
-        self.assertEqual(len(RECEIVER_COUNTERS) + len(JITTER_COUNTERS), len(stats))
+        self.assertFalse(set(JITTER_COUNTERS) & set(HOLD_STATS))
+        self.assertEqual({f'jitter_{key}' for key in JITTER_COUNTERS + HOLD_STATS},
+                         {key for key in stats if key.startswith('jitter_')})
+        self.assertEqual(len(RECEIVER_COUNTERS) + len(JITTER_COUNTERS) + len(HOLD_STATS), len(stats))
 
     def test_rtp_receiver_and_jitter_totals_are_exported(self):
         # Claude-authored (16 Nov 2026): every known kind is present (0 until a call ends),

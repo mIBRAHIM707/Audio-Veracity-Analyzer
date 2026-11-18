@@ -207,8 +207,9 @@ at stop; the start record adds `health`. At most 8 connections are served at onc
   shared families also carry `ava_live_stage_seconds{stage}` and
   `ava_live_alerts_raised_total` (see "Per-stage latency" below). Since 17 Nov
   (attempt 2), `ava_live_tap_stage_seconds{stage=resample|speech_feed}` also times the
-  tap side per chunk (see "Tap stages" below). FR-O6 is still partial: RTP arrival to
-  frame (the jitter buffer) and WebSocket delivery are not timed.
+  tap side per chunk (see "Tap stages" below). Since 18 Nov (attempt 3)
+  `ava_live_jitter_hold_seconds` times the jitter buffer (see "Jitter-buffer hold time"
+  below). FR-O6 is still partial: WebSocket delivery is not timed.
 
 ### In-call RTP counts and degraded calls (18 Nov 2026; PRD FR-O6, FR-I2)
 
@@ -286,11 +287,44 @@ and no `speech_feed` time. A `resample_chunk` that raises is not timed (the tap 
 in `sink_errors`). The tap stage families are their own `/metrics` section, so a
 malformed value drops only them. An unusable timer reading is counted in
 `ava_live_sink_events_total{kind="timer_failures"}` and never changes the audio. The
-jitter buffer is not timed: it holds audio for its playout delay (60 ms) by design, and
-its counts are in `ava_live_jitter_buffer_total`. Together with the loop stages above,
+jitter buffer's hold is timed separately (next section); its counts are in
+`ava_live_jitter_buffer_total`. Together with the loop stages above,
 this covers the architecture §2.3 row "resample + VAD + windowing", except that the
 `speech_feed` time of the chunk that completes a window also falls inside that window's
 `queue_wait` (the offer time is read before the chunk is fed).
+
+### Jitter-buffer hold time (18 Nov 2026, attempt 3; PRD FR-O6, architecture §3)
+
+`ava_live_jitter_hold_seconds` (histogram, bounds 20 ms to 5 s, incl. the 60 ms depth
+that is also the architecture §3 budget for "RTP arrival -> frame available") is, for
+each received 20 ms frame, the time from the receiver pushing it into the buffer to the
+buffer handing it to the sink. The buffer keeps each frame's push time and counts the
+hold in integer stats (`hold_le_<ms>ms`, `hold_frames`, `hold_us_sum` in microseconds),
+so they travel with the other receiver counts: ended calls plus open calls read at most
+1 s ago, never decreasing. Limits:
+
+- "Arrival" is when the loop read the packet off the socket, with the tap's clock
+  (`time.monotonic`). The loop reads RTP once per turn (it waits up to `poll_s`, 50 ms,
+  for an ARI event), so every packet waits 0-50 ms in the socket buffer even in normal
+  running, longer when a detector batch or ARI request holds the loop. That wait is not
+  measured by any metric. Frames are also handed out once per turn. On Windows the
+  clock ticks in about 15.6 ms steps, as above.
+- Concealed frames never arrived and are not timed. Frames handed over at a resync,
+  SSRC change or the end of the call are timed when handed out. A frame with no usable
+  time (a clock that went back) is counted in `ava_live_jitter_hold_unmeasured_total`.
+  Received frames dropped at the 60 s hand-over bound are never timed; they are
+  `ava_live_jitter_buffer_total{kind="dropped_pending_received"}`.
+- A steady stream reads the 60 ms delay plus loop-turn quantisation, so roughly 10 to
+  160 ms with `poll_s` = 0.05 (review M1); the last frames of a call read less, a
+  backlog after a loop stall reads more. Its p95 can therefore sit above 60 ms with the
+  buffer working as designed: this is not a measurement against the architecture §3
+  budget for "RTP arrival -> frame available", which would need the network arrival
+  time (for example a kernel receive timestamp).
+
+The family is its own `/metrics` section: inconsistent counts (buckets not cumulative,
+more than the total, or a sum without frames) drop only it. The Grafana panel "Live loop latency per stage
+(p95)" shows its p95 as `jitter_hold`. Tests (Claude-authored, 18 Nov):
+`tests/unit/test_jitter_hold.py` (13).
 
 `ava_live_alerts_raised_total` counts `alert.raised` events the loop published (alerts
 per minute = `rate(...[5m]) * 60`); an alert whose publication failed is not counted

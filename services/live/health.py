@@ -44,6 +44,7 @@ import socket
 import threading
 
 from services.scorer.metrics_text import histogram_lines, number, pipeline_lines, snapshot_valid_lines
+from services.tap.jitter import HOLD_BUCKETS_MS, HOLD_KEYS
 from services.tap.scoring_sink import TAP_STAGES
 
 DEFAULT_STALE_AFTER_S = 10.0
@@ -67,7 +68,9 @@ RECEIVER_COUNTERS = ('packets', 'malformed', 'other_payload', 'other_source', 'g
                      'over_limit', 'ssrc_changes', 'other_ptime')
 JITTER_COUNTERS = ('received', 'played', 'concealed_frames', 'repeated_frames', 'silence_frames', 'late', 'duplicate',
                    'reordered', 'resyncs', 'talkspurts', 'restarts', 'drift_adjustments', 'dropped_pending',
-                   'dropped_handover')
+                   'dropped_handover', 'dropped_pending_received')
+# The jitter buffer's hold-time stats, exported as `ava_live_jitter_hold_seconds` (18 Nov).
+HOLD_STATS = (*HOLD_KEYS, 'hold_frames', 'hold_us_sum', 'hold_unmeasured')
 STORE_OUTCOMES = ('stored', 'duplicate', 'after_end', 'not_stored', 'unknown_alert', 'refused', 'skipped_faulty')
 STORE_WAITS = ('retry_waits', 'store_misconfigured', 'faults')
 
@@ -184,7 +187,7 @@ class HealthServer:
         ready, _, _ = self.readiness()
         lines = _family('gauge', 'ava_live_ready', '1 when /readyz would answer 200.', [((), int(ready))])
         sections = (self._service_lines, self._call_lines, self._tap_lines, self._tap_stage_lines,
-                    self._receiver_lines, self._pipeline_lines, self._pump_lines)
+                    self._receiver_lines, self._jitter_hold_lines, self._pipeline_lines, self._pump_lines)
         for section in sections:
             try:
                 lines += section()
@@ -257,11 +260,33 @@ class HealthServer:
                 + _family('counter', 'ava_live_jitter_buffer_total',
                           'Jitter-buffer counts of ended calls plus calls in progress (frames, packets and events; '
                           'do not sum across kinds); dropped_handover = concealment skipped by the hand-over '
-                          'budget (FR-I2).',
+                          'budget (FR-I2); dropped_pending_received = the received frames among dropped_pending.',
                           [((('kind', key),), totals.get(f'jitter_{key}', 0)) for key in JITTER_COUNTERS])
                 + _family('gauge', 'ava_live_rtp_calls_degraded',
                           'Tapped calls now in a sustained-loss episode (over 5 % of the last 10 s of frames '
                           'concealed, FR-I2 media_quality).', [((), degraded)]))
+
+    def _jitter_hold_lines(self):
+        """`ava_live_jitter_hold_seconds`, the first hop of the architecture §3 latency
+        budget (RTP arrival -> frame available, 60 ms), from the same ended-plus-open
+        totals; its own section, so inconsistent counts drop only these families."""
+        totals = dict(getattr(self.service.tap, 'receiver_live', None) or {})
+        cumulative = [number(totals.get(f'jitter_{key}', 0)) for key in HOLD_KEYS]
+        count = number(totals.get('jitter_hold_frames', 0))
+        total_us = number(totals.get('jitter_hold_us_sum', 0))
+        if cumulative != sorted(cumulative) or cumulative[-1] > count or (count == 0 and total_us != 0):
+            raise ValueError('jitter hold buckets are malformed')
+        name = 'ava_live_jitter_hold_seconds'
+        lines = [f'# HELP {name} Time each received 20 ms frame spent from the loop reading it off the RTP socket to '
+                 'the loop handing it to scoring: the 60 ms buffer delay plus loop-turn quantisation; socket wait '
+                 'before a read is not included (FR-O6). Ended calls plus calls in progress (read at most 1 s ago).',
+                 f'# TYPE {name} histogram']
+        lines += [f'{name}_bucket{{le="{ms / 1000!r}"}} {n}' for ms, n in zip(HOLD_BUCKETS_MS, cumulative)]
+        lines += [f'{name}_bucket{{le="+Inf"}} {count}', f'{name}_sum {total_us / 1e6!r}', f'{name}_count {count}']
+        return lines + _family('counter', 'ava_live_jitter_hold_unmeasured_total',
+                               'Received frames handed out without a usable hold time (no clock, it went back, or the '
+                               'hold is too large to represent).',
+                               [((), totals.get('jitter_hold_unmeasured', 0))])
 
     def _pipeline_lines(self):
         snapshot, age = self.service.pipeline_stats.read()

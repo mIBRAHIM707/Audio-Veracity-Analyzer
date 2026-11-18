@@ -63,7 +63,9 @@ owners).
   before tapping (FR-I9, architecture §2.2).
 - `jitter.py`: the jitter buffer and loss monitor (backlog 6.3; see its docstring). Only
   holes closed by a later packet are concealed; a stream that stops or pauses produces
-  no made-up audio and no loss (a resumed stream starts a new talkspurt). 16 Nov:
+  no made-up audio and no loss (a resumed stream starts a new talkspurt). 18 Nov: each
+  received frame's hold (pushed to handed out) is counted in integer `hold_*` stats for
+  `ava_live_jitter_hold_seconds` (FR-O6); `flush(now)` takes the receiver's clock. 16 Nov:
   concealment during hand-overs (resync, SSRC restart, end-of-call flush) spends a
   real-time budget (1 s burst, one frame per 20 ms). Received frames are always played,
   so a backlog after a loop stall is never lost. A sender that keeps jumping its

@@ -386,8 +386,12 @@ items needing that data are listed at the end and stay out of the queue.
   dashboard covers each FR-O6 item and the degraded, unmonitored and loss conditions,
   with every call-home setting off. A Claude-authored CI test checks each query against
   the rendered `/metrics`, and the Compose lab test has a real call reach Prometheus and
-  Grafana, with isolation probes. Remaining FR-O6: jitter-buffer and WebSocket delivery
-  timing.
+  Grafana, with isolation probes. 18 Nov (attempt 3): jitter-buffer hold time
+  `ava_live_jitter_hold_seconds` (socket read to handed to scoring, per received frame;
+  integer counts in `JitterBuffer.stats`, ended plus open calls) and its p95 on the
+  dashboard (includes loop-turn quantisation, excludes socket wait: not a §3 budget
+  measurement); 13 Claude-authored tests, review conditional pass fixed, Compose lab
+  40/40 queries with data. Remaining FR-O6: WebSocket delivery timing.
 - [ ] 7.3 P1 history/search/local authentication/audit and feedback after P0.
 - [ ] 7.QA Astra-designed Playwright suite, offline assets, failures/reconnects.
 
