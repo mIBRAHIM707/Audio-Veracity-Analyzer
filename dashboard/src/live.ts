@@ -21,6 +21,9 @@ export interface CallCard {
   status: 'active' | 'ended';
   state: CallState;
   startedTs: number;
+  /** The session's own `call.started` was seen (registry `started_seen`); false for a
+   * call created from a later event, e.g. after an API restart. */
+  startedSeen: boolean;
   endedTs: number | null;
   endReason: string | null;
   lastScore: number | null;
@@ -100,6 +103,7 @@ export function parseSummary(v: unknown): CallCard {
     status: v.status,
     state: v.state,
     startedTs: v.started_ts,
+    startedSeen: v.started_seen === true,
     endedTs: finite(v.ended_ts) ? v.ended_ts : null,
     endReason: shortText(v.end_reason, 64),
     lastScore: unit(v.last_score) ? v.last_score : null,
@@ -195,7 +199,7 @@ export function parseMessage(text: unknown): Message {
 }
 
 function newCard(callId: string, ts: number): CallCard {
-  return { callId, status: 'active', state: 'monitoring', startedTs: ts, endedTs: null, endReason: null, lastScore: null,
+  return { callId, status: 'active', state: 'monitoring', startedTs: ts, startedSeen: false, endedTs: null, endReason: null, lastScore: null,
            lastEma: null, quality: null, degraded: false, stale: false, trend: [], alertsOpen: 0, alertsTotal: 0, lastSeq: 0,
            knownAlerts: [] };
 }
@@ -223,11 +227,19 @@ export function applyEnvelope(board: Board, e: Envelope): Board {
   const finished = existing?.status === 'ended' && existing.endReason !== IDLE_END_REASON;
   const forgotten = !existing && board.forgotten.includes(callId);
   // A new monitoring session of the same call (18 Nov, 5.QA; registry `new_session`): a
-  // live-process restart ends the call monitor_lost and the new process re-taps it, its
-  // new hub restarting seq at 1. A start later than the end (or for a call this page has
+  // live-process restart ends the call monitor_lost and the new process re-taps it (seq
+  // restarts only for a consumer of the scorer's own hub; via the API it keeps rising).
+  // A start later than the end (or for a call this page has
   // forgotten) opens a fresh card.
-  const newSession = e.type === 'call.started'
-    && (forgotten || (existing !== undefined && finished && existing.endedTs !== null && e.ts > existing.endedTs));
+  // An abrupt stop (crash, SIGKILL) sends no call.ended (18 Nov, 5.QA M1; registry
+  // `superseded_session`): a newer start (higher seq) later than an active card's start
+  // replaces that session; its open alerts become ended_open.
+  // An idle-expired card is replaced the same way, not revived (review M1).
+  const superseded = e.type === 'call.started' && existing !== undefined
+    && (existing.status === 'active' || existing.endReason === IDLE_END_REASON)
+    && e.seq > existing.lastSeq && e.ts > existing.startedTs;
+  const newSession = superseded || (e.type === 'call.started'
+    && (forgotten || (existing !== undefined && finished && existing.endedTs !== null && e.ts > existing.endedTs)));
   if (!newSession && ((existing && (e.seq <= existing.lastSeq || finished)) || forgotten)) {
     return { ...board, skippedEvents: board.skippedEvents + 1 };
   }
@@ -248,7 +260,9 @@ export function applyEnvelope(board: Board, e: Envelope): Board {
         knownAlerts: existing?.knownAlerts ?? [] }
     : { ...(existing ?? newCard(callId, e.ts)), lastSeq: e.seq, stale: false };
   const stillForgotten = newSession ? board.forgotten.filter(id => id !== callId) : board.forgotten;
-  let feed = board.feed;
+  let feed = superseded
+    ? board.feed.map(a => (a.callId === callId && a.state === 'open' ? { ...a, state: 'ended_open' as const } : a))
+    : board.feed;
   if (card.status === 'ended') {
     // Revived after an idle expiry: as in the registry, its alerts open at the expiry are
     // open again.
@@ -260,6 +274,7 @@ export function applyEnvelope(board: Board, e: Envelope): Board {
   switch (e.type) {
     case 'call.started':
       card.startedTs = Math.min(card.startedTs, e.ts);
+      card.startedSeen = true;
       break;
     case 'score.updated': {
       const score = d.score as number | null;
@@ -335,6 +350,10 @@ export function applySnapshot(board: Board, cards: CallCard[]): Board {
     const call = calls[a.callId];
     if (a.state !== 'open' || !call) return a;
     if (call.status === 'ended') return { ...a, state: 'ended_open' as const };
+    // Raised before the call's current session began (a superseded session, 5.QA M1;
+    // review M2): ended_open, as in the registry. Only when the start was seen: a call
+    // recreated implicitly after an API restart has a later start but the same session.
+    if (call.startedSeen && a.raisedTs !== null && a.raisedTs < call.startedTs) return { ...a, state: 'ended_open' as const };
     return call.alertsOpen === 0 ? { ...a, state: 'cleared' as const } : a;
   });
   return { ...board, calls, feed, forgotten };

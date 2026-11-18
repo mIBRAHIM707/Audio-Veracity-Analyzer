@@ -151,6 +151,14 @@ and about 50,000 original clips, excluding codec copies.
   resubscribes within seconds and its in-memory registry picks the call up from the next
   event and ends it `bye` (the earlier part of the call is not in its memory; PostgreSQL
   has it). No defect found.
+- **18 Nov (attempt 7), 5.QA M1 (partial).** Abrupt live stop, API side. The API hub
+  renumbers relayed envelopes, so after a kill the new session was merged into the old
+  record, with the old alerts left open. It was not ignored, as the attempt 5 note said.
+  A `call.started` with a higher `seq` and a later `ts` than an active call's start now
+  replaces that session in the registry and the browser board (`superseded_session`; old
+  open alerts become `ended_open`). This is covered by unit and Playwright cases, not a
+  lab kill. Still open: the PostgreSQL store's duplicate start after a kill, and a
+  SIGKILL lab case.
 - **17 Nov daily run (details in `daily-runs/2026-11-17.md`).** FR-O6 per-stage latency
   for the live loop (7.2/8.1): `ava_live_stage_seconds{stage}` with `queue_wait`,
   `batch_wait`, `apply` (scorer and hub publish) and `window_to_result` (offer to

@@ -287,6 +287,13 @@ items needing that data are listed at the end and stay out of the queue.
   Claude-authored): live never notices; the new API resubscribes, a new WebSocket client
   gets the rest of the call, and the registry creates the call from its next event and
   ends it `bye`. No defect found. Remaining: abrupt live stop (design step above).
+  18 Nov (attempt 7): abrupt stop, API side. The API hub renumbers relayed envelopes, so
+  the new session was merged into the old record (old alerts left open), not ignored. A
+  `call.started` with a higher `seq` and a later `ts` than an active call's start now
+  supersedes that session in the registry and the browser board (`superseded_session`);
+  Claude-authored unit and Playwright cases. Remaining: the PostgreSQL store's duplicate
+  start after a kill (needs the source epoch or a start-up sweep: design step) and a
+  SIGKILL lab case.
 
 ## 6 — Asterisk laboratory (FR-T1–T5/T7, FR-I1/I2)
 - [ ] 6.1 Docker/WSL preflight; Asterisk/SIPp endpoints and WAV injection.

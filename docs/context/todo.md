@@ -55,6 +55,9 @@ call continues and is monitored again; the API's call list now shows it as such.
 18 Nov (attempt 6): no data change. A lab test restarts PostgreSQL and Redis mid-call:
 the call continues and every scored window is still stored. The same holds when the API
 is restarted mid-call.
+18 Nov (attempt 7): no data change. If the live service is killed mid-call, the API's
+call list and the browser board now show the re-tapped call as a new session; the
+database side of that case is still open.
 
 Updated 4 October 2026. This is the active sequence; evidence lives in
 `current-state.md` and `handoffs/`. Check marks mean the stated bounded task passed

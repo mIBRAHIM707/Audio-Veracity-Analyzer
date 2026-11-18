@@ -36,11 +36,17 @@ Rules (FR-A3 / architecture §2.5, with the choices made here marked):
   restart, 18 Nov), which replaces the ended record (counted in `new_session`), as the
   PostgreSQL store opens a new row; the earlier session's alerts stay listed, its
   timeline does not. Hub clocks are compared, so after a backwards clock step the
-  start stays `after_end` (as in the store). Only a graceful stop sends `call.ended`:
-  after a crash the old record stays active with a higher `seq` and the new session's
-  events are ignored as stale (known gap, see the FR-I11 note below). A new hub restarts `seq` at 1 (see `services/events`); a call that spans
-  a hub restart therefore ignores events until its `seq` passes the old value: known
-  limitation until the FR-I11 restart marker exists.
+  start stays `after_end` (as in the store). Only a graceful stop sends `call.ended`;
+  after an abrupt stop (crash, SIGKILL) the new process's `call.started` reaches a call
+  that is still active. A `call.started` with a higher `seq` and a `ts` strictly later
+  than the active call's start is a new session too (18 Nov, 5.QA M1; counted in
+  `superseded_session` and `new_session`): the old session's open alerts become
+  `ended_open` and the record is replaced. A scorer publishes one start per session,
+  before that session's other events, so a late start of the same session (after an
+  implicit creation) carries an earlier `ts` and is applied as before. In the API the
+  envelopes are renumbered by its own hub, so `seq` keeps rising across a scorer
+  restart; an in-process consumer of a restarted hub (whose `seq` restarts at 1) ignores
+  a spanning call's events until its `seq` passes the old value (known limitation).
 - Alerts: `alert.raised` opens an alert; `alert.cleared` clears it; an alert still open
   at `call.ended` becomes `ended_open` with no clear (architecture §2.4). A clear for an
   unknown alert is recorded with `raised_ts=None` (choice) and counted.
@@ -73,7 +79,7 @@ SEVERITY = {'monitoring': 0, 'no_speech': 0, 'unmonitored': 1, 'suspicious': 2, 
 COUNTERS = ('applied', 'duplicate_or_stale', 'after_end', 'refused_active_limit',
             'implicit_start', 'unknown_alert_cleared', 'ignored_system_health', 'forgotten_ended',
             'lost_events', 'apply_errors', 'idle_expired', 'revived', 'alerts_raised',
-            'upstream_missing', 'upstream_interruptions', 'new_session')
+            'upstream_missing', 'upstream_interruptions', 'new_session', 'superseded_session')
 
 
 def _positive(name, value, kind=(int, float)):
@@ -210,19 +216,21 @@ class CallRegistry:
                 # restarted, ended the call `monitor_lost`, and the new process re-tapped the
                 # still answered channel. Same rule as the PostgreSQL store (a start strictly
                 # later than the last end); the new session replaces the ended record here,
-                # PostgreSQL keeps both. Its seqs come from the new hub, so they restart.
+                # PostgreSQL keeps both. Seqs restart only for a consumer of the scorer's own
+                # hub; through the API's hub they keep rising.
                 if not self._free_slot():
                     return None
-                self._ended.pop(call_id, None)  # making room may already have forgotten it
-                self._counters['new_session'] += 1
-                call = _Call(call_id, envelope.ts, True)
-                # Review M2: the earlier session's alerts (cleared or ended_open) stay listed.
-                call.alerts, call.alerts_dropped = ended.alerts, ended.alerts_dropped
-                self._active[call_id] = call
-                return call
+                return self._new_session(ended, envelope)
             if ended.end_reason != IDLE_END_REASON:
                 self._counters['after_end'] += 1
                 return None
+            if self._supersedes(ended, envelope):
+                # Review M1: an abruptly stopped call that went quiet and was idle-expired
+                # is replaced by the new session, not revived (its alerts stay ended_open).
+                if not self._free_slot():
+                    return None
+                self._counters['superseded_session'] += 1
+                return self._new_session(ended, envelope)
             if len(self._active) >= self.max_active and not any(map(self._idle, self._active.values())):
                 self._counters['refused_active_limit'] += 1  # no room: it stays where it was
                 return None
@@ -238,6 +246,22 @@ class CallRegistry:
             return ended
         call = self._active.get(call_id)
         if call is not None:
+            if self._supersedes(call, envelope):
+                # An abrupt scorer stop (crash, SIGKILL) sends no `call.ended`; the new
+                # process re-taps the call and publishes a fresh `call.started` (18 Nov,
+                # 5.QA M1). A scorer publishes one start per session, before that session's
+                # other events, so a start later than this call's start is a new session:
+                # the old one is ended (alerts open in it become `ended_open`) and replaced
+                # as above. A late start of the same session (after implicit creation)
+                # carries an earlier ts and is applied as before.
+                # Not through `_end`: the record is replaced at once, so it must not push
+                # another ended call out of the bounded ended list.
+                for alert in call.alerts.values():
+                    if alert['state'] == 'open':
+                        alert['state'] = 'ended_open'
+                del self._active[call_id]
+                self._counters['superseded_session'] += 1
+                return self._new_session(call, envelope)
             return call
         if not self._free_slot():
             return None
@@ -245,6 +269,25 @@ class CallRegistry:
         if not started:
             self._counters['implicit_start'] += 1
         call = _Call(call_id, envelope.ts, started)
+        self._active[call_id] = call
+        return call
+
+    @staticmethod
+    def _supersedes(call, envelope):
+        """A newer `call.started` (higher `seq`) later than `call`'s start: an abrupt
+        scorer stop sent no `call.ended` and the new process re-tapped the call."""
+        return envelope.type == 'call.started' and envelope.seq > call.last_seq \
+            and envelope.ts > call.started_ts
+
+    def _new_session(self, ended, envelope):
+        """Replace the ended record `ended` with a new active session of its call that
+        starts at `envelope`. Its seqs may come from a new hub, so they may restart."""
+        call_id = ended.call_id
+        self._ended.pop(call_id, None)  # making room may already have forgotten it
+        self._counters['new_session'] += 1
+        call = _Call(call_id, envelope.ts, True)
+        # Review M2: the earlier session's alerts (cleared or ended_open) stay listed.
+        call.alerts, call.alerts_dropped = ended.alerts, ended.alerts_dropped
         self._active[call_id] = call
         return call
 

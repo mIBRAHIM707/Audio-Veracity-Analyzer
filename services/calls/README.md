@@ -27,6 +27,21 @@ Choices made here, not in the PRD:
   ended record (`new_session`). This happens when the live process restarts: it ends
   open calls `monitor_lost`, and the new process re-taps the still answered channels
   with a new hub whose `seq` restarts at 1. PostgreSQL keeps both sessions as rows.
+- Abrupt stop (18 Nov, 5.QA M1): a killed live process sends no `call.ended`, so the
+  new process's `call.started` reaches a call that is still active. A start with a
+  higher `seq` and a `ts` strictly later than the active call's start replaces that
+  session (`superseded_session`, also counted in `new_session`); its open alerts
+  become `ended_open`. A late start of the same session after an implicit creation has
+  an earlier `ts` and only sets `started_seen`. An idle-expired call is replaced the
+  same way instead of being revived. The browser live board applies the same rule, and
+  a reloaded list marks an open alert raised before the call's current start as
+  `ended_open` when that start was seen (`started_seen`; not for a call recreated from a
+  later event after an API restart). Assumptions and limits: one live process taps a call (two tapping the
+  same call would keep replacing each other); after a backwards clock step the new
+  start is merged into the old session uncounted; old alerts share the per-call
+  `max_alerts` cap across sessions; the board takes the earliest start of a session even
+  when `started_seen`, the registry keeps the first (the scorer sends one start). Not yet: the PostgreSQL store still treats the second start as a duplicate of
+  the open row, and no lab case kills the live process yet.
 - An `alert.raised` sets the call state to `alert` until the next `score.updated`.
 - A clear for an unknown alert is recorded with `raised_ts: null`.
 - The summary's `score_trend` is the last 20 full-resolution scores (null when a

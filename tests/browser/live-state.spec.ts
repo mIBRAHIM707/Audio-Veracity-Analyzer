@@ -143,6 +143,51 @@ test('LS11 a later start after monitor_lost is a new session (Claude-authored, 1
   expect(b.forgotten).toEqual([]);
 });
 
+test('LS12 a later start of an active call supersedes a session that never ended (Claude-authored, 18 Nov 2026, 5.QA M1)', () => {
+  // A killed live process sends no call.ended; the new one re-taps the call and its start
+  // reaches the page renumbered by the API hub (seq keeps rising). Registry `superseded_session`.
+  const at = (type: string, callId: string, s: number, ts: number, data: Record<string, unknown> = {}): Envelope =>
+    ({ type, call_id: callId, seq: s, ts, data });
+  let b = fold(EMPTY_BOARD, [at('call.started', 'k', 10, 100), at('alert.raised', 'k', 11, 101, { alert_id: 'a' }),
+    at('score.updated', 'k', 12, 102, scoreData(0.9, { state: 'alert' }))]);
+  const skipped = b.skippedEvents;
+  // Not a new session: same ts as the start, a late start (earlier ts), or a replay (lower seq).
+  b = fold(b, [at('call.started', 'k', 13, 100), at('call.started', 'k', 14, 99), at('call.started', 'k', 9, 150)]);
+  expect(b.calls.k).toMatchObject({ status: 'active', startedTs: 99, alertsOpen: 1, trend: [0.9], lastSeq: 14 });
+  expect(b.skippedEvents).toBe(skipped + 1);
+  b = fold(b, [at('call.started', 'k', 15, 110), at('score.updated', 'k', 16, 111, scoreData(0.2))]);
+  expect(b.calls.k).toMatchObject({ status: 'active', state: 'monitoring', startedTs: 110, alertsOpen: 0, alertsTotal: 1,
+                                    trend: [0.2], lastSeq: 16 });
+  expect(b.feed.find(f => f.alertId === 'a')?.state).toBe('ended_open');
+  // The old session's alert is not counted again if its raise is replayed in the new session.
+  b = applyEnvelope(b, at('alert.raised', 'k', 17, 112, { alert_id: 'a' }));
+  expect(b.calls.k).toMatchObject({ alertsOpen: 0, alertsTotal: 1 });
+  // Review M1: an idle-expired card is replaced, not revived; its alert stays ended_open.
+  b = fold(b, [at('call.started', 'i', 20, 200), at('alert.raised', 'i', 21, 201, { alert_id: 'b' }),
+    at('call.ended', 'i', 22, 202, { final_state: 'alert', reason: 'idle_expired' }),
+    at('call.started', 'i', 23, 300), at('score.updated', 'i', 24, 301, scoreData(0.1))]);
+  expect(b.calls.i).toMatchObject({ status: 'active', startedTs: 300, alertsOpen: 0, alertsTotal: 1, trend: [0.1] });
+  expect(b.feed.find(f => f.alertId === 'b')?.state).toBe('ended_open');
+});
+
+test('LS13 a snapshot after a supersede marks the old session\'s alert ended_open (Claude-authored, 18 Nov 2026, review M2)', () => {
+  // The page missed the new start (a gap); the reloaded list already holds the new session.
+  const at = (type: string, callId: string, s: number, ts: number, data: Record<string, unknown> = {}): Envelope =>
+    ({ type, call_id: callId, seq: s, ts, data });
+  let b = fold(EMPTY_BOARD, [at('call.started', 's', 1, 100), at('alert.raised', 's', 2, 101, { alert_id: 'old' })]);
+  expect(b.feed.find(f => f.alertId === 'old')?.state).toBe('open');
+  // Re-review low: after an API restart the call is recreated from a later event
+  // (started_seen false): same session, so the existing open/cleared rule applies.
+  const implicit = applySnapshot(b, [cardOf('s', { started_ts: 150, started_seen: false, last_seq: 9, alerts_open: 1 })]);
+  expect(implicit.feed.find(f => f.alertId === 'old')?.state).toBe('open');
+  b = applySnapshot(b, [cardOf('s', { started_ts: 150, started_seen: true, last_seq: 9, alerts_open: 1, alerts_total: 2 })]);
+  expect(b.feed.find(f => f.alertId === 'old')?.state).toBe('ended_open');
+  // An alert of the current session (raised after its start) is left open.
+  b = applyEnvelope(b, at('alert.raised', 's', 10, 160, { alert_id: 'new' }));
+  b = applySnapshot(b, [cardOf('s', { started_ts: 150, started_seen: true, last_seq: 10, alerts_open: 1, alerts_total: 2 })]);
+  expect(b.feed.find(f => f.alertId === 'new')?.state).toBe('open');
+});
+
 test('LS07 pruning keeps the newest ended calls; late events for a pruned call make no phantom card', () => {
   let b = EMPTY_BOARD;
   for (let i = 0; i <= MAX_ENDED_SHOWN; i += 1) {

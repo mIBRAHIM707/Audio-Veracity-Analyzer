@@ -148,11 +148,32 @@ class LifecycleTests(unittest.TestCase):
         r.apply(ev('call.started', 'other', 20.0))  # q idle 18 s: expired to admit this one
         self.assertEqual(r.get_call('q')['end_reason'], 'idle_expired')
         r.apply(ev.end('other', 21.0))
-        self.assertTrue(r.apply(ev('call.started', 'q', 22.0)))
+        # 18 Nov (attempt 7): a session's next event revives it; a later `call.started`
+        # would be a new session (see the abrupt-stop tests below).
+        self.assertTrue(r.apply(ev.score('q', 22.0, 0.5)))
         detail = r.get_call('q')
         self.assertEqual((detail['status'], detail['started_ts'], [p['score'] for p in detail['timeline']['full_resolution']]),
-                         ('active', 1.0, [0.4]))
+                         ('active', 1.0, [0.4, 0.5]))
         self.assertEqual((r.stats()['revived'], r.stats()['new_session']), (1, 0))
+
+    def test_an_idle_expired_call_whose_scorer_was_killed_is_replaced_not_revived(self):
+        """Claude-authored, 18 Nov 2026 (5.QA M1, review M1): the killed session went
+        quiet and was idle-expired; the new process's start replaces it, so its alert
+        stays ended_open and the timeline holds only the new session's points."""
+        r, ev = CallRegistry(max_active=1, idle_timeout_s=10), self.ev
+        r.apply(ev('call.started', 'q', 1.0))
+        r.apply(ev.score('q', 2.0, 0.9, state='alert'))
+        r.apply(ev('alert.raised', 'q', 2.0, alert_id='a1'))
+        r.apply(ev('call.started', 'other', 20.0))  # q idle 18 s: expired to admit this one
+        r.apply(ev.end('other', 21.0))
+        self.assertTrue(r.apply(ev('call.started', 'q', 22.0)))
+        r.apply(ev.score('q', 23.0, 0.1))
+        detail = r.get_call('q')
+        self.assertEqual((detail['status'], detail['started_ts'], detail['alerts_open'], detail['score_trend']),
+                         ('active', 22.0, 0, [0.1]))
+        self.assertEqual([(a['alert_id'], a['state']) for a in detail['alerts']], [('a1', 'ended_open')])
+        stats = r.stats()
+        self.assertEqual((stats['superseded_session'], stats['new_session'], stats['revived']), (1, 1, 0))
 
     def test_a_new_session_when_making_room_forgets_the_ended_record(self):
         """Claude-authored, 18 Nov 2026 (review L5): with one ended slot, admitting the new
@@ -167,6 +188,63 @@ class LifecycleTests(unittest.TestCase):
         self.assertEqual(r.get_call('idle')['end_reason'], 'idle_expired')
         stats = r.stats()
         self.assertEqual((stats['new_session'], stats['apply_errors'], stats['forgotten_ended']), (1, 0, 1))
+
+    def test_a_later_start_of_an_active_call_supersedes_a_session_that_never_ended(self):
+        """Claude-authored, 18 Nov 2026 (5.QA M1, abrupt live stop): a killed scorer sends
+        no `call.ended`; the new process re-taps the call and its `call.started` reaches
+        the API renumbered by the API hub (seq keeps rising). The old session must not
+        absorb the new one: it is closed (its open alert becomes ended_open) and replaced,
+        and no other ended call is pushed out of the bounded ended list."""
+        r, ev = CallRegistry(max_ended=1), self.ev
+        r.apply(ev('call.started', 'old', 0.5))
+        r.apply(ev.end('old', 0.8))
+        r.apply(ev('call.started', 'c1', 1.0))
+        r.apply(ev.score('c1', 2.0, 0.9, state='alert'))
+        r.apply(ev('alert.raised', 'c1', 2.0, alert_id='a1'))
+        r.apply(ev.score('c1', 3.0, 0.95, state='alert'))
+        # the process is killed here; the new one re-taps at 9.0
+        self.assertTrue(r.apply(ev('call.started', 'c1', 9.0)))
+        self.assertTrue(r.apply(ev.score('c1', 10.0, 0.1)))
+        detail = r.get_call('c1')
+        self.assertEqual((detail['status'], detail['state'], detail['started_ts'], detail['alerts_open'],
+                          detail['score_trend']), ('active', 'monitoring', 9.0, 0, [0.1]))
+        self.assertEqual([(a['alert_id'], a['state']) for a in detail['alerts']], [('a1', 'ended_open')])
+        self.assertEqual(r.get_call('old')['status'], 'ended', 'the ended list was not touched')
+        r.apply(ev.end('c1', 11.0))
+        self.assertEqual(r.get_call('c1')['end_reason'], 'bye')
+        stats = r.stats()
+        self.assertEqual((stats['superseded_session'], stats['new_session'], stats['forgotten_ended'],
+                          stats['apply_errors']), (1, 1, 1, 0))
+
+    def test_a_later_start_with_a_stale_seq_does_not_supersede(self):
+        """Claude-authored, 18 Nov 2026 (review L4): the seq condition on its own: a start
+        whose ts is later but whose seq was already passed is stale, not a new session."""
+        r = self.reg
+        r.apply(make_envelope('call.started', 'c1', {}, seq=5, ts=1.0))
+        r.apply(make_envelope('score.updated', 'c1', {'score': 0.4, 'state': 'monitoring', 'degraded': False,
+                                                      'effective_stride_s': 1.0}, seq=6, ts=2.0))
+        self.assertFalse(r.apply(make_envelope('call.started', 'c1', {}, seq=6, ts=50.0)))
+        self.assertEqual((r.get_call('c1')['started_ts'], r.stats()['duplicate_or_stale'],
+                          r.stats()['superseded_session']), (1.0, 1, 0))
+
+    def test_a_start_not_later_than_the_active_start_does_not_supersede(self):
+        """Claude-authored, 18 Nov 2026 (5.QA M1 boundaries): a repeated start with the
+        same ts, a late start of the same session after implicit creation (earlier ts) and
+        a replayed old start (lower seq) leave the session and its timeline alone."""
+        r, ev = self.reg, self.ev
+        replay = ev('call.started', 'c1', 1.0)
+        r.apply(replay)
+        r.apply(ev.score('c1', 2.0, 0.4))
+        self.assertTrue(r.apply(ev('call.started', 'c1', 1.0)), 'same ts: applied, not a new session')
+        self.assertFalse(r.apply(replay), 'lower seq: stale')
+        r.apply(ev.score('implicit', 5.0, 0.3))  # created implicitly; its start was late
+        self.assertTrue(r.apply(ev('call.started', 'implicit', 4.0)))
+        for call_id, started, trend in (('c1', 1.0, [0.4]), ('implicit', 4.0, [0.3])):
+            detail = r.get_call(call_id)
+            self.assertEqual((detail['status'], detail['started_ts'], detail['started_seen'], detail['score_trend']),
+                             ('active', started, True, trend))
+        stats = r.stats()
+        self.assertEqual((stats['superseded_session'], stats['new_session'], stats['duplicate_or_stale']), (0, 0, 1))
 
     def test_unknown_call_is_created_implicitly_and_a_late_start_is_merged(self):
         r, ev = self.reg, self.ev
