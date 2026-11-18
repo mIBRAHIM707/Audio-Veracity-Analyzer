@@ -117,6 +117,32 @@ test('LS06 a call that really ended takes no more events; an idle-expired one re
   expect(b.feed.find(f => f.alertId === 'k')?.state).toBe('open');
 });
 
+test('LS11 a later start after monitor_lost is a new session (Claude-authored, 18 Nov 2026, 5.QA)', () => {
+  // A live-process restart ends the call monitor_lost; the new process re-taps it and its
+  // new hub restarts seq at 1 (registry `new_session`).
+  const at = (type: string, callId: string, s: number, ts: number, data: Record<string, unknown> = {}): Envelope =>
+    ({ type, call_id: callId, seq: s, ts, data });
+  let b = fold(EMPTY_BOARD, [at('call.started', 'r', 40, 100), at('alert.raised', 'r', 41, 101, { alert_id: 'k' }),
+    at('call.ended', 'r', 42, 105, { final_state: 'alert', reason: 'monitor_lost' })]);
+  const skipped = b.skippedEvents;
+  b = fold(b, [at('call.started', 'r', 43, 105), at('score.updated', 'r', 1, 106, scoreData(0.3))]);
+  expect(b.calls.r).toMatchObject({ status: 'ended', endReason: 'monitor_lost' });
+  expect(b.skippedEvents).toBe(skipped + 2); // a start not later than the end, and a non-start
+  b = fold(b, [at('call.started', 'r', 1, 107), at('score.updated', 'r', 2, 108, scoreData(0.3))]);
+  expect(b.calls.r).toMatchObject({ status: 'active', endedTs: null, endReason: null, startedTs: 107, lastSeq: 2,
+                                    alertsOpen: 0, alertsTotal: 1, trend: [0.3] });
+  expect(b.feed.find(f => f.alertId === 'k')?.state).toBe('ended_open');
+  b = applyEnvelope(b, at('call.ended', 'r', 3, 110, { final_state: 'monitoring', reason: 'bye' }));
+  expect(b.calls.r).toMatchObject({ status: 'ended', endReason: 'bye' });
+  // A forgotten call that starts again is shown again.
+  b = { ...b, calls: {}, forgotten: ['r'] };
+  b = applyEnvelope(b, at('score.updated', 'r', 4, 111, scoreData(0.1)));
+  expect(b.calls.r).toBeUndefined();
+  b = applyEnvelope(b, at('call.started', 'r', 5, 112));
+  expect(b.calls.r.status).toBe('active');
+  expect(b.forgotten).toEqual([]);
+});
+
 test('LS07 pruning keeps the newest ended calls; late events for a pruned call make no phantom card', () => {
   let b = EMPTY_BOARD;
   for (let i = 0; i <= MAX_ENDED_SHOWN; i += 1) {

@@ -22,6 +22,11 @@ Choices made here, not in the PRD:
   (`started_seen=false`), so calls in progress appear after an API restart.
 - Per call, an envelope whose `seq` is not above the last applied one is ignored as a
   duplicate or stale; events after `call.ended` are ignored. Both are counted.
+- Exception (18 Nov, 5.QA): a `call.started` strictly later than the call's end (not
+  `idle_expired`) opens a new monitoring session under the same ID, replacing the
+  ended record (`new_session`). This happens when the live process restarts: it ends
+  open calls `monitor_lost`, and the new process re-taps the still answered channels
+  with a new hub whose `seq` restarts at 1. PostgreSQL keeps both sessions as rows.
 - An `alert.raised` sets the call state to `alert` until the next `score.updated`.
 - A clear for an unknown alert is recorded with `raised_ts: null`.
 - The summary's `score_trend` is the last 20 full-resolution scores (null when a
@@ -53,7 +58,8 @@ Known limits: in memory only (PostgreSQL history is backlog 5.1), so a restart
 forgets ended calls and alerts raised before it; a call spanning an event-hub
 restart ignores events until `seq` passes its old value (no restart marker yet,
 FR-I11); `system.health` is not stored; a reused call ID after `call.ended` is
-ignored until the ended call is forgotten; `score_trend` mixes directions. The
+ignored until the ended call is forgotten, unless it begins with a later
+`call.started` (a new session, above); `score_trend` mixes directions. The
 `/v1/calls` and `/v1/events` routes have no authentication yet (7.3) and expose
 call IDs: bind the API to localhost.
 

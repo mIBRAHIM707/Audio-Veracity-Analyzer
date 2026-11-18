@@ -31,7 +31,14 @@ Rules (FR-A3 / architecture §2.5, with the choices made here marked):
   call (`started_seen=False`), so a restarted API still shows calls already in progress.
 - Per call, an envelope whose `seq` is not greater than the last applied one is a
   duplicate or stale and is ignored (counted). Events after `call.ended` are ignored
-  (counted). A new hub restarts `seq` at 1 (see `services/events`); a call that spans
+  (counted), except a `call.started` strictly later than the end (not `idle_expired`):
+  that is a new monitoring session of the same call ID (a re-tap after a scorer
+  restart, 18 Nov), which replaces the ended record (counted in `new_session`), as the
+  PostgreSQL store opens a new row; the earlier session's alerts stay listed, its
+  timeline does not. Hub clocks are compared, so after a backwards clock step the
+  start stays `after_end` (as in the store). Only a graceful stop sends `call.ended`:
+  after a crash the old record stays active with a higher `seq` and the new session's
+  events are ignored as stale (known gap, see the FR-I11 note below). A new hub restarts `seq` at 1 (see `services/events`); a call that spans
   a hub restart therefore ignores events until its `seq` passes the old value: known
   limitation until the FR-I11 restart marker exists.
 - Alerts: `alert.raised` opens an alert; `alert.cleared` clears it; an alert still open
@@ -66,7 +73,7 @@ SEVERITY = {'monitoring': 0, 'no_speech': 0, 'unmonitored': 1, 'suspicious': 2, 
 COUNTERS = ('applied', 'duplicate_or_stale', 'after_end', 'refused_active_limit',
             'implicit_start', 'unknown_alert_cleared', 'ignored_system_health', 'forgotten_ended',
             'lost_events', 'apply_errors', 'idle_expired', 'revived', 'alerts_raised',
-            'upstream_missing', 'upstream_interruptions')
+            'upstream_missing', 'upstream_interruptions', 'new_session')
 
 
 def _positive(name, value, kind=(int, float)):
@@ -197,6 +204,22 @@ class CallRegistry:
         call_id = envelope.call_id
         if call_id in self._ended:
             ended = self._ended[call_id]
+            if ended.end_reason != IDLE_END_REASON and envelope.type == 'call.started' \
+                    and envelope.ts > ended.ended_ts:
+                # A new monitoring session of the same call (18 Nov, 5.QA): e.g. the scorer
+                # restarted, ended the call `monitor_lost`, and the new process re-tapped the
+                # still answered channel. Same rule as the PostgreSQL store (a start strictly
+                # later than the last end); the new session replaces the ended record here,
+                # PostgreSQL keeps both. Its seqs come from the new hub, so they restart.
+                if not self._free_slot():
+                    return None
+                self._ended.pop(call_id, None)  # making room may already have forgotten it
+                self._counters['new_session'] += 1
+                call = _Call(call_id, envelope.ts, True)
+                # Review M2: the earlier session's alerts (cleared or ended_open) stay listed.
+                call.alerts, call.alerts_dropped = ended.alerts, ended.alerts_dropped
+                self._active[call_id] = call
+                return call
             if ended.end_reason != IDLE_END_REASON:
                 self._counters['after_end'] += 1
                 return None

@@ -66,13 +66,15 @@ def _model_root():
 
 MODEL_ROOT = _model_root()
 
-# Run inside the api container (python -c SCRIPT SECONDS): subscribe to WS /v1/events,
-# say "subscribed", then print one JSON line per message until `call.ended` or the
-# deadline. Only type, call ID and seq are printed.
+# Run inside the api container (python -c SCRIPT SECONDS [ENDS]): subscribe to WS
+# /v1/events, say "subscribed", then print one JSON line per message until the ENDS-th
+# `call.ended` (default 1) or the deadline. Only type, call ID, seq, an end's reason and
+# a `stream.gap`'s counts are printed.
 WS_SUBSCRIBER = textwrap.dedent(r'''
     import json, sys, time
     from websockets.sync.client import connect
     deadline = time.monotonic() + float(sys.argv[1])
+    ends = int(sys.argv[2]) if len(sys.argv) > 2 else 1
     with connect('ws://127.0.0.1:8000/v1/events', open_timeout=10) as ws:
         print('subscribed', flush=True)
         while time.monotonic() < deadline:
@@ -81,9 +83,16 @@ WS_SUBSCRIBER = textwrap.dedent(r'''
             except TimeoutError:
                 continue
             m = json.loads(text)
-            print(json.dumps({'type': m.get('type'), 'call_id': m.get('call_id'), 'seq': m.get('seq')}), flush=True)
+            out = {'type': m.get('type'), 'call_id': m.get('call_id'), 'seq': m.get('seq')}
             if m.get('type') == 'call.ended':
-                break
+                out['reason'] = (m.get('data') or {}).get('reason')
+            if m.get('type') == 'stream.gap':
+                out.update({k: m[k] for k in ('dropped', 'upstream_missing', 'upstream_interruptions') if k in m})
+            print(json.dumps(out), flush=True)
+            if m.get('type') == 'call.ended':
+                ends -= 1
+                if ends == 0:
+                    break
 ''')
 
 # Run inside the api container (python -c SCRIPT PATH): GET PATH on the API and print
@@ -233,13 +242,14 @@ class ComposeStackLabTests(unittest.TestCase):
             time.sleep(1)
         self.fail('the API relay did not subscribe to Redis')
 
-    def start_subscriber(self, seconds):
+    def start_subscriber(self, seconds, ends=1):
         """A WebSocket subscriber inside the api container; returns a queue of its lines
         (None after the last). If the test ends first, the in-container process runs to
         its deadline or until `compose down` removes the container (review L3)."""
         errors = tempfile.TemporaryFile()
         self.addCleanup(errors.close)
-        process = subprocess.Popen(self.compose_args('exec', '-T', 'api', 'python', '-c', WS_SUBSCRIBER, str(seconds)),
+        process = subprocess.Popen(self.compose_args('exec', '-T', 'api', 'python', '-c', WS_SUBSCRIBER, str(seconds),
+                                                     str(ends)),
                                    stdout=subprocess.PIPE, stderr=errors, text=True, encoding='utf-8',
                                    errors='replace')
         lines = queue.Queue()
@@ -399,6 +409,127 @@ class ComposeStackLabTests(unittest.TestCase):
               f'WebSocket; file verdict {body["verdict"]} from {body["evidence_windows"]} windows '
               f'(uncalibrated baseline); API warm-up {json.loads(ready["body"])["warmup_seconds"]:.1f} s; '
               f'monitoring: {monitoring}')
+
+    def call_rows(self):
+        """`call_id|end_reason|windows` per calls row, oldest first."""
+        return self.compose('exec', '-T', 'postgres', 'psql', '-U', 'ava', '-d', 'ava', '-tAc',
+                            "SELECT call_id || '|' || coalesce(end_reason, '') || '|' || "
+                            '(SELECT count(*) FROM window_scores w WHERE w.call_pk = c.id) FROM calls c ORDER BY c.id',
+                            check=False).stdout.strip().splitlines()
+
+    def test_a_live_restart_mid_call_never_stops_the_call(self):
+        """5.QA process restart (Claude-authored, 18 Nov 2026; PRD "AVA failure must not
+        stop a call", FR-I11; architecture §2.4 `monitor_lost`). The live container is
+        restarted (SIGTERM, graceful) while a real call is being scored: the call itself
+        completes; the old process ends it `monitor_lost`; the new one re-taps the still
+        answered channel (`TapApp.resume`) and scores it to `bye`; PostgreSQL holds the
+        two monitoring sessions as two rows; the API's subscriber sees both through Redis
+        and the relay reports the source restart."""
+        self.compose('up', '-d', '--wait', '--wait-timeout', '360', timeout=600)
+        self.wait_healthy('live', 120)
+        self.wait_healthy('api', 240)
+        self.wait_relay_subscribed(60)
+        # Review L2: longer than the sum of every wait below, so the subscriber never ends first.
+        lines = self.start_subscriber(900, ends=2)
+
+        # About 55 s of speech: the lab dialplan's Record() hangs up at 60 s, so the call
+        # cannot be longer. Review L1: the remaining-time check after the restart below
+        # tells a slow restart apart from a re-tap defect.
+        clips = json.loads(QA_CONFIG.read_text(encoding='utf-8'))['genuine'][:3] * 4
+        payloads = rtp_pcap.rtp_payloads(b''.join(rtp_pcap.wav_to_pcm8k(path) for path in clips), 'ulaw')
+        pcap = self.folder / 'inject.pcap'
+        rtp_pcap.write_pcap(payloads, 0, pcap)
+        self.compose('cp', str(pcap), 'asterisk:/lab/io/inject.pcap')
+        caller = f'rst{secrets.token_hex(4)}'
+        call_ms = len(payloads) * 20
+        # Review M3: SIPp's screen output goes to a file, not a pipe nobody reads until the
+        # end (a full pipe would block SIPp and disturb the call's timing).
+        sipp_out = tempfile.TemporaryFile()
+        self.addCleanup(sipp_out.close)
+        sipp = subprocess.Popen(
+            self.compose_args('exec', '-T', 'asterisk', 'sipp', '127.0.0.1:5060', '-sf', '/lab/sipp/uac_inject.xml',
+                              '-s', '700', '-key', 'caller', caller, '-key', 'pt', '0', '-key', 'codec', 'PCMU',
+                              '-m', '1', '-d', str(call_ms + 1500), '-i', '127.0.0.1', '-mi', '127.0.0.1',
+                              '-min_rtp_port', '16000', '-max_rtp_port', '16100', '-timeout', '120s',
+                              '-timeout_error', '-nostdin'),
+            stdout=sipp_out, stderr=subprocess.STDOUT)
+        call_started_at = time.monotonic()
+
+        def stop_sipp():  # on failure: the docker exec client goes; the stack's `down` ends SIPp
+            if sipp.poll() is None:
+                sipp.kill()
+            sipp.wait(timeout=30)
+        self.addCleanup(stop_sipp)
+
+        seen = []
+
+        def collect(until, seconds):
+            deadline = time.monotonic() + seconds
+            while time.monotonic() < deadline:
+                try:
+                    line = lines.get(timeout=max(0.1, deadline - time.monotonic()))
+                except queue.Empty:
+                    return False
+                if line is None:
+                    return False
+                seen.append(json.loads(line))
+                if until(seen[-1]):
+                    return True
+            return False
+
+        self.assertTrue(collect(lambda e: e['type'] == 'score.updated', 60), f'no score before the restart: {seen}')
+        call_id = seen[-1]['call_id']
+        restarted_at = time.monotonic()
+        self.compose('restart', '-t', '20', 'live', timeout=120)
+        self.wait_healthy('live', 120)
+        live_back_s = time.monotonic() - restarted_at
+        remaining_s = call_ms / 1000 - (time.monotonic() - call_started_at)
+        self.assertGreater(remaining_s, 15, f'live took {live_back_s:.1f} s to come back: the call had almost '
+                                            'ended, so a missing re-tap below would not be a re-tap defect')
+
+        def rescored(event):  # a score of this call after its monitor_lost end
+            return event['type'] == 'score.updated' and event['call_id'] == call_id and any(
+                e['type'] == 'call.ended' and e['call_id'] == call_id for e in seen[:-1])
+        self.assertTrue(collect(rescored, 60), f'not scored again after the restart: {seen}')
+        # The API's call registry shows the re-tapped call as monitored again (it ignored
+        # the new session's start before the 18 Nov registry fix).
+        during = json.loads(self.api_get(f'/v1/calls/{call_id}')['body'])
+        self.assertEqual((during['status'], during['end_reason']), ('active', None), during)
+
+        returncode = sipp.wait(timeout=call_ms / 1000 + 120)
+        sipp_out.seek(0)
+        self.assertEqual(returncode, 0, f'the call did not complete: {sipp_out.read()[-1500:]!r}')
+        self.assertTrue(collect(lambda e: e['type'] == 'call.ended' and e.get('reason') == 'bye', 60),
+                        f'no bye end after the restart: {seen}')
+
+        ours = [e for e in seen if e.get('call_id') == call_id]
+        ends = [e.get('reason') for e in ours if e['type'] == 'call.ended']
+        self.assertEqual(ends, ['monitor_lost', 'bye'], f'events: {seen}')
+        first_end = next(i for i, e in enumerate(ours) if e['type'] == 'call.ended')
+        after = [e['type'] for e in ours[first_end + 1:]]
+        self.assertEqual(after[0], 'call.started', 're-tapped after the restart')
+        self.assertIn('score.updated', after, 'scored again after the restart')
+        gaps = [e for e in seen if e['type'] == 'stream.gap']
+        self.assertTrue(gaps and all(g['dropped'] == 0 for g in gaps), f'gap report: {gaps}')
+        self.assertGreaterEqual(sum(g.get('upstream_interruptions', 0) for g in gaps), 1,
+                                'the scorer restart is reported to the client')
+
+        rows, deadline = [], time.monotonic() + 60
+        while time.monotonic() < deadline:
+            rows = self.call_rows()
+            if [r.split('|')[1] for r in rows] == ['monitor_lost', 'bye']:
+                break
+            time.sleep(1)
+        self.assertEqual([r.split('|')[:2] for r in rows], [[call_id, 'monitor_lost'], [call_id, 'bye']], rows)
+        windows = [int(r.split('|')[2]) for r in rows]
+        self.assertTrue(all(n >= 1 for n in windows), f'windows stored in both sessions: {rows}')
+        detail = self.api_get(f'/v1/calls/{call_id}')
+        self.assertEqual(detail['status'], 200, detail)
+        final = json.loads(detail['body'])
+        self.assertEqual((final['status'], final['end_reason']), ('ended', 'bye'), final)
+        print(f'\nobserved: live back healthy {live_back_s:.1f} s after the restart began; call of '
+              f'{call_ms / 1000:.0f} s completed; windows before/after {windows[0]}/{windows[1]}; '
+              f'gap reports {gaps}')
 
     def check_monitoring(self, windows, ws_events):
         """Profile `monitoring` (18 Nov, FR-O6): Prometheus holds the call, every dashboard

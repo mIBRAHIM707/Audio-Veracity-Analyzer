@@ -132,6 +132,17 @@ and about 50,000 original clips, excluding codec copies.
   host). Also `ava_ws_delivery_unmeasured_total` and `ava_ws_slow_client_closes_total`,
   plus two dashboard panels. Compose lab: all 7 events of a real call timed (one run,
   mean 151 ms; not a p95 or load result).
+- **18 Nov (attempt 5), 5.QA.** The Compose lab now restarts the live container during
+  a real call. The call itself completes (AVA failure does not stop it). The old process
+  ends it `monitor_lost`, the new one re-taps the still answered channel and scores it
+  to `bye`, PostgreSQL keeps two rows, and the API's WebSocket client gets a `stream.gap`
+  reporting the scorer restart. Defect found and fixed: the API call registry and the
+  browser live board ignored the re-tapped session and showed the call as ended while
+  it was being monitored; a `call.started` later than the end now opens a new session
+  (the earlier session's alerts kept). Known gap: after an abrupt kill of the live
+  process no `call.ended` is sent, and the registry and store still ignore the new
+  session (needs the relay's source-restart signal passed on; design step). Not yet
+  tested: restarts of the API, Redis or PostgreSQL.
 - **17 Nov daily run (details in `daily-runs/2026-11-17.md`).** FR-O6 per-stage latency
   for the live loop (7.2/8.1): `ava_live_stage_seconds{stage}` with `queue_wait`,
   `batch_wait`, `apply` (scorer and hub publish) and `window_to_result` (offer to

@@ -132,7 +132,10 @@ never opens an event connection). Sources: `GET /v1/calls?status=all` and
   retried every second. A 503 (no live source) is shown. Unreadable frames are counted
   and ignored; malformed REST bodies are an error text. Late events for an ended call
   the page has already pruned are skipped (no phantom card). A call revived after
-  `idle_expired` reopens its alerts open at the expiry, as the registry does.
+  `idle_expired` reopens its alerts open at the expiry, as the registry does. A
+  `call.started` later than a call's real end (or for a pruned call) opens a new
+  monitoring session card, as the registry does since 18 Nov: the live service ends
+  calls `monitor_lost` when it restarts and re-taps them with seqs from 1 (LS11).
 - Server side: `WS /v1/events` subscribes to the hub before accepting the upgrade, so a
   snapshot read as soon as the socket opens cannot miss an event.
 

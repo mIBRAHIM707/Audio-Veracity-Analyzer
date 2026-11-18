@@ -266,6 +266,17 @@ items needing that data are listed at the end and stay out of the queue.
   16 Nov (attempt 2): the API side reading from a real Redis (forwarder -> Redis ->
   relay thread -> WebSocket; `CLIENT KILL` reaches the client as `stream.gap`).
   Remaining: process restarts and state recovery.
+  18 Nov (attempt 5): live-process restart during a real call in the Compose lab
+  (`test_a_live_restart_mid_call_never_stops_the_call`, Claude-authored): the call
+  completes; the old process ends it `monitor_lost`, the new one re-taps it and scores it
+  to `bye`; two PostgreSQL rows; the API subscriber gets a `stream.gap` with
+  `upstream_interruptions`. Defect found and fixed: the API call registry ignored the
+  re-tapped session (showed the call ended), and so did the browser live board; a later
+  `call.started` now opens a new session in both (`new_session`), as the store does,
+  keeping the earlier session's alerts. Review conditional pass fixed. Remaining: API,
+  Redis and PostgreSQL restarts; an abrupt (SIGKILL) live stop, which sends no
+  `call.ended`, so the registry and the store ignore the new session as stale or
+  duplicate (needs the relay's source epoch passed to consumers: design step).
 
 ## 6 — Asterisk laboratory (FR-T1–T5/T7, FR-I1/I2)
 - [ ] 6.1 Docker/WSL preflight; Asterisk/SIPp endpoints and WAV injection.

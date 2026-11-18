@@ -221,7 +221,14 @@ export function applyEnvelope(board: Board, e: Envelope): Board {
   // After a real end a call takes no more events; one the registry only expired for
   // being idle resumes when an event arrives (registry `revived`).
   const finished = existing?.status === 'ended' && existing.endReason !== IDLE_END_REASON;
-  if ((existing && (e.seq <= existing.lastSeq || finished)) || (!existing && board.forgotten.includes(callId))) {
+  const forgotten = !existing && board.forgotten.includes(callId);
+  // A new monitoring session of the same call (18 Nov, 5.QA; registry `new_session`): a
+  // live-process restart ends the call monitor_lost and the new process re-taps it, its
+  // new hub restarting seq at 1. A start later than the end (or for a call this page has
+  // forgotten) opens a fresh card.
+  const newSession = e.type === 'call.started'
+    && (forgotten || (existing !== undefined && finished && existing.endedTs !== null && e.ts > existing.endedTs));
+  if (!newSession && ((existing && (e.seq <= existing.lastSeq || finished)) || forgotten)) {
     return { ...board, skippedEvents: board.skippedEvents + 1 };
   }
   const d = e.data;
@@ -235,7 +242,12 @@ export function applyEnvelope(board: Board, e: Envelope): Board {
   if (e.type === 'call.ended' && !isState(d.final_state)) {
     return { ...board, invalidEvents: board.invalidEvents + 1 };
   }
-  let card: CallCard = { ...(existing ?? newCard(callId, e.ts)), lastSeq: e.seq, stale: false };
+  // A new session keeps the earlier session's alert count (its alerts stay in the feed).
+  let card: CallCard = newSession
+    ? { ...newCard(callId, e.ts), lastSeq: e.seq, alertsTotal: existing?.alertsTotal ?? 0,
+        knownAlerts: existing?.knownAlerts ?? [] }
+    : { ...(existing ?? newCard(callId, e.ts)), lastSeq: e.seq, stale: false };
+  const stillForgotten = newSession ? board.forgotten.filter(id => id !== callId) : board.forgotten;
   let feed = board.feed;
   if (card.status === 'ended') {
     // Revived after an idle expiry: as in the registry, its alerts open at the expiry are
@@ -293,7 +305,7 @@ export function applyEnvelope(board: Board, e: Envelope): Board {
     default:
       return { ...board, invalidEvents: board.invalidEvents + 1 };
   }
-  const pruned = pruneEnded({ ...board.calls, [callId]: card }, board.forgotten);
+  const pruned = pruneEnded({ ...board.calls, [callId]: card }, stillForgotten);
   return { ...board, ...pruned, feed, liveAlerts };
 }
 

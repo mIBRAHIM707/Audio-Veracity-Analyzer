@@ -50,6 +50,8 @@ times how long each RTP frame waits in the jitter buffer (FR-O6); no data change
 18 Nov (attempts 4-5): backlog 7.2 done — the API `/metrics` times each event from the
 scorer's publish to its WebSocket send (FR-O6), shown on the Grafana dashboard. No data
 change; not a browser-render or load measurement.
+18 Nov (attempt 5): no data change. A lab test restarts the live service mid-call: the
+call continues and is monitored again; the API's call list now shows it as such.
 
 Updated 4 October 2026. This is the active sequence; evidence lives in
 `current-state.md` and `handoffs/`. Check marks mean the stated bounded task passed

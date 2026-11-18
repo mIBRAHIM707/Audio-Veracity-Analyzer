@@ -96,6 +96,78 @@ class LifecycleTests(unittest.TestCase):
         stats = r.stats()
         self.assertEqual((stats['duplicate_or_stale'], stats['after_end']), (2, 1))
 
+    def test_a_later_start_after_monitor_lost_is_a_new_session(self):
+        """Claude-authored, 18 Nov 2026 (5.QA, found by the Compose restart lab): a
+        scorer restart ends a call `monitor_lost`; the new process re-taps it and its new
+        hub publishes `call.started` again with seq from 1. The registry must show the
+        call as monitored again, as PostgreSQL opens a new row, not ignore it."""
+        r, ev = self.reg, self.ev
+        r.apply(ev('call.started', 'c1', 1.0))
+        r.apply(ev.score('c1', 2.0, 0.9, state='suspicious'))
+        r.apply(ev('alert.raised', 'c1', 2.0, alert_id='a1'))
+        r.apply(ev.end('c1', 3.0, final_state='suspicious', reason='monitor_lost'))
+        self.assertFalse(r.apply(ev('call.started', 'c1', 3.0)), 'a start not later than the end is a replay')
+        self.assertFalse(r.apply(ev.score('c1', 4.0, 0.1)), 'only a start opens a new session')
+        self.assertEqual(r.get_call('c1')['end_reason'], 'monitor_lost')
+        restarted = Stream()  # the new process's hub: seq starts again at 1
+        self.assertTrue(r.apply(restarted('call.started', 'c1', 5.0)))
+        self.assertTrue(r.apply(restarted.score('c1', 6.0, 0.2)))
+        detail = r.get_call('c1')
+        self.assertEqual((detail['status'], detail['started_ts'], detail['started_seen'], detail['end_reason'],
+                          detail['last_seq'], detail['alerts_open']), ('active', 5.0, True, None, 2, 0))
+        self.assertEqual([(a['alert_id'], a['state']) for a in detail['alerts']], [('a1', 'ended_open')],
+                         'the earlier session\'s alert stays listed (review M2)')
+        self.assertEqual([p['score'] for p in detail['timeline']['full_resolution']], [0.2],
+                         'the earlier session is history in PostgreSQL, not in this read model')
+        self.assertEqual([c['call_id'] for c in r.list_calls('ended')], [])
+        self.assertTrue(r.apply(restarted.end('c1', 7.0)))
+        self.assertEqual(r.get_call('c1')['end_reason'], 'bye')
+        stats = r.stats()
+        self.assertEqual((stats['new_session'], stats['after_end']), (1, 2))
+
+    def test_a_new_session_is_refused_at_the_active_limit_and_the_ended_record_kept(self):
+        """Claude-authored, 18 Nov 2026: no free slot -> refused and counted; the ended
+        call stays as it was and a later start, once room exists, still opens it."""
+        r, ev = CallRegistry(max_active=1), self.ev
+        r.apply(ev('call.started', 'c1', 1.0))
+        r.apply(ev.end('c1', 2.0, reason='monitor_lost'))
+        r.apply(ev('call.started', 'busy', 2.5))
+        self.assertFalse(r.apply(ev('call.started', 'c1', 3.0)))
+        self.assertEqual((r.get_call('c1')['status'], r.stats()['refused_active_limit'], r.stats()['new_session']),
+                         ('ended', 1, 0))
+        r.apply(ev.end('busy', 4.0))
+        self.assertTrue(r.apply(ev('call.started', 'c1', 5.0)))
+        self.assertEqual(r.get_call('c1')['status'], 'active')
+
+    def test_an_idle_expired_call_is_revived_not_restarted(self):
+        """Claude-authored, 18 Nov 2026 (review L5): the new-session rule leaves the
+        idle-expiry revival as it was, timeline kept."""
+        r, ev = CallRegistry(max_active=1, idle_timeout_s=10), self.ev
+        r.apply(ev('call.started', 'q', 1.0))
+        r.apply(ev.score('q', 2.0, 0.4))
+        r.apply(ev('call.started', 'other', 20.0))  # q idle 18 s: expired to admit this one
+        self.assertEqual(r.get_call('q')['end_reason'], 'idle_expired')
+        r.apply(ev.end('other', 21.0))
+        self.assertTrue(r.apply(ev('call.started', 'q', 22.0)))
+        detail = r.get_call('q')
+        self.assertEqual((detail['status'], detail['started_ts'], [p['score'] for p in detail['timeline']['full_resolution']]),
+                         ('active', 1.0, [0.4]))
+        self.assertEqual((r.stats()['revived'], r.stats()['new_session']), (1, 0))
+
+    def test_a_new_session_when_making_room_forgets_the_ended_record(self):
+        """Claude-authored, 18 Nov 2026 (review L5): with one ended slot, admitting the new
+        session idle-expires another call into `_ended`, which forgets this call's ended
+        record first; the new session still opens and nothing faults."""
+        r, ev = CallRegistry(max_active=1, max_ended=1, idle_timeout_s=10), self.ev
+        r.apply(ev('call.started', 'c1', 1.0))
+        r.apply(ev.end('c1', 2.0, reason='monitor_lost'))
+        r.apply(ev('call.started', 'idle', 3.0))
+        self.assertTrue(r.apply(ev('call.started', 'c1', 30.0)))
+        self.assertEqual(r.get_call('c1')['status'], 'active')
+        self.assertEqual(r.get_call('idle')['end_reason'], 'idle_expired')
+        stats = r.stats()
+        self.assertEqual((stats['new_session'], stats['apply_errors'], stats['forgotten_ended']), (1, 0, 1))
+
     def test_unknown_call_is_created_implicitly_and_a_late_start_is_merged(self):
         r, ev = self.reg, self.ev
         r.apply(ev.score('mid', 50.0, 0.1))
