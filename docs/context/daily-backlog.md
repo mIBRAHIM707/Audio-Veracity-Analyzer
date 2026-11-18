@@ -372,8 +372,12 @@ items needing that data are listed at the end and stay out of the queue.
   timing per delivered chunk, `ava_live_tap_stage_seconds{stage=resample|speech_feed}`
   plus `ava_live_tap_audio_seconds_total` for the cost per audio second
   (`services/tap/scoring_sink.py`, `services/live/health.py`); Claude-authored tests;
-  review conditional pass fixed. Remaining FR-O6: in-call RTP metrics, jitter-buffer and
-  WebSocket delivery timing, JSON logs for the analysis API, Grafana.
+  review conditional pass fixed. 17 Nov (attempt 2): structured JSON operations log for
+  the analysis API (`services/api/oplog.py`, `--event-log stderr|off`: request lines
+  with fixed route labels, rate-limited, probes skipped; job, detector-ready and
+  relay-loss lines; bounded queue and writer thread); Claude-authored tests incl. a real
+  uvicorn child; review conditional pass fixed. Remaining FR-O6: in-call RTP metrics,
+  jitter-buffer and WebSocket delivery timing, Grafana.
 - [ ] 7.3 P1 history/search/local authentication/audit and feedback after P0.
 - [ ] 7.QA Astra-designed Playwright suite, offline assets, failures/reconnects.
 

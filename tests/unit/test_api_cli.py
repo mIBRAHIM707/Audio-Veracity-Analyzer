@@ -172,14 +172,16 @@ class ApiCliTests(unittest.TestCase):
                 seen['health'] = client.get('/healthz').json()
                 seen['page'] = client.get('/').status_code
             return 'SIGTERM'
-        code, records, _ = self.run_main(['--dashboard', str(self.dashboard)], made={'serve': serve})
+        # --event-log off (17 Nov): this case pins the exact start/stop records.
+        code, records, _ = self.run_main(['--dashboard', str(self.dashboard), '--event-log', 'off'],
+                                         made={'serve': serve})
         self.assertEqual(code, EXIT_OK)
         host, port = seen.pop('address')
         self.assertEqual((host, seen), ('127.0.0.1', {'calls': 503, 'page': 200, 'health': {
             'status': 'ok', 'detector_loaded': False, 'model_id': 'fx-model'}}))
         self.assertEqual(records, [{'event': 'starting', 'host': '127.0.0.1', 'port': port, 'pid': os.getpid(),
                                     'model_id': 'fx-model', 'threads': 4, 'dashboard': True,
-                                    'allow_non_loopback': False, 'live_events': False},
+                                    'allow_non_loopback': False, 'live_events': False, 'event_log': 'off'},
                                    {'event': 'stopped', 'signal': 'SIGTERM'}])
         self.assertGreater(port, 0, '--port 0 reports the port actually bound')
         self.assert_sockets_closed()
@@ -209,7 +211,7 @@ class ApiCliTests(unittest.TestCase):
                                             made={'redis': lambda url: (client, False), 'serve': serve})
         self.assertEqual(code, EXIT_OK)
         self.assertEqual((records[0]['live_events'], records[0]['redis_reachable']), (True, False))
-        self.assertEqual((records[1]['event'], records[1]['signal'], records[1]['relay']['relayed']),
+        self.assertEqual((records[-1]['event'], records[-1]['signal'], records[-1]['relay']['relayed']),
                          ('stopped', None, 1))
         self.assertIn('ava_event_relay_messages_total{outcome="relayed"} 1\n', seen['metrics'])
         self.assertEqual((seen['closed_while_serving'], client.closed), (0, 1))
@@ -350,7 +352,16 @@ class ApiCliProcessTests(unittest.TestCase):
             self.fail(f'no exit after {expected}: {child.records()[1]}')
         records, text = child.records()
         self.assertEqual(code, EXIT_OK, text)
-        self.assertEqual(records[-1], {'event': 'stopped', 'signal': expected}, text)
+        # 17 Nov (Claude-authored addition): the default operations log in a real uvicorn
+        # child: one request line for /v1/calls (503, warning), none for the /healthz
+        # probes, written before the stopped record, which stays last.
+        self.assertEqual(records[-1], {'event': 'stopped', 'signal': expected,
+                                       'event_log': {'lines': 1, 'dropped': 0, 'write_failures': 0,
+                                                     'stopped_in_time': True}}, text)
+        requests = [r for r in records if r.get('event') == 'request']
+        self.assertEqual([(r['route'], r['method'], r['status'], r['level']) for r in requests],
+                         [('/v1/calls', 'GET', 503, 'warning')], text)
+        self.assertEqual(starting['event_log'], 'stderr')
         self.assertTrue(child.server_gone())
 
     def test_a_port_in_use_refuses_with_exit_2_and_one_record(self):
@@ -402,7 +413,7 @@ class RealRedisApiCliTests(unittest.TestCase):
                     made={'service': fake_service, 'serve': serve})
         records = [json.loads(line) for line in stderr.getvalue().splitlines()]
         self.assertEqual(code, EXIT_OK)
-        self.assertEqual((records[0]['redis_reachable'], records[1]['relay']['relayed']), (True, 1))
+        self.assertEqual((records[0]['redis_reachable'], records[-1]['relay']['relayed']), (True, 1))
         self.assertTrue(seen['subscribed'])
         self.assertNotIn(REDIS_URL, stderr.getvalue())
 

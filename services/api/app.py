@@ -35,6 +35,7 @@ import json
 import math
 from pathlib import Path
 import threading
+import time
 import uuid
 
 from fastapi import FastAPI, File, HTTPException, UploadFile, WebSocket, WebSocketDisconnect
@@ -83,6 +84,7 @@ JOB_STATES = ('queued', 'running', 'done', 'failed')
 ROUTES = ('/healthz', '/readyz', '/metrics', '/v1/analyze', '/v1/jobs/:id', '/v1/calls',
           '/v1/calls/:id')
 STATUS_CLASSES = ('2xx', '3xx', '4xx', '5xx')
+HTTP_METHODS = frozenset({'GET', 'HEAD', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'})  # others logged as 'other'
 
 
 def route_label(path):
@@ -208,9 +210,12 @@ class Metrics:
 class JobStore:
     """Bounded in-memory jobs processed in order by one daemon worker thread."""
 
-    def __init__(self, service, max_queued=MAX_QUEUED_JOBS, max_kept=MAX_KEPT_JOBS, on_result=None):
+    def __init__(self, service, max_queued=MAX_QUEUED_JOBS, max_kept=MAX_KEPT_JOBS, on_result=None, log=None):
+        """`log` (optional `ApiLog`) gets job_queued/job_done/job_failed with the job ID
+        and, for failures, the HTTP status only; its faults never reach a job."""
         self._service, self._max_queued, self._max_kept = service, max_queued, max_kept
         self._on_result = on_result or (lambda result: None)
+        self._log = log
         self._jobs, self._pending, self._closed = OrderedDict(), [], False
         self._condition = threading.Condition()
         self._worker = threading.Thread(target=self._run, name='ava-analysis-jobs', daemon=True)
@@ -220,10 +225,13 @@ class JobStore:
         """Stop accepting work, drop queued uploads and let the worker exit after its current job."""
         with self._condition:
             self._closed = True
-            for job_id, _ in self._pending:
+            dropped = [job_id for job_id, _ in self._pending]
+            for job_id in dropped:
                 self._jobs[job_id].update(status='failed', error={'status': 503, 'detail': 'Service stopped'})
             self._pending.clear()
             self._condition.notify_all()
+        for job_id in dropped:
+            self._emit('job_failed', 'warning', job_id=job_id, status=503)
         self._worker.join(timeout)
 
     def submit(self, payload):
@@ -240,8 +248,19 @@ class JobStore:
                 if oldest is None:
                     break
                 del self._jobs[oldest]
+            # Under the lock (re-review 18 Nov, low 3), so the worker's job_done cannot be
+            # queued first; `emit` never blocks and takes no lock of ours.
+            self._emit('job_queued', 'info', job_id=job_id)
             self._condition.notify()
-            return job_id
+        return job_id
+
+    def _emit(self, event, level, **fields):
+        if self._log is None:
+            return
+        try:
+            self._log.emit(event, level, **fields)
+        except Exception:  # advisory
+            pass
 
     def get(self, job_id):
         with self._condition:
@@ -282,6 +301,10 @@ class JobStore:
             payload = None
             with self._condition:
                 self._jobs[job_id].update(update)
+            if update['status'] == 'done':
+                self._emit('job_done', 'info', job_id=job_id)
+            else:
+                self._emit('job_failed', 'warning', job_id=job_id, status=update['error']['status'])
 
 
 def gap_message(batch):
@@ -338,7 +361,8 @@ async def read_bounded(upload):
     return bytes(data)
 
 
-def create_app(service, *, hub=None, registry=None, dashboard_dir=None, pipeline_stats=None, relay=None):
+def create_app(service, *, hub=None, registry=None, dashboard_dir=None, pipeline_stats=None, relay=None,
+               oplog=None):
     """`hub` is the in-process `services.events.EventHub` carrying FR-A4 events; with it
     the app serves `/v1/calls` from a `CallRegistry` (a new one unless given) and
     `WS /v1/events`. Without it those routes answer 503: no live source is connected.
@@ -348,7 +372,9 @@ def create_app(service, *, hub=None, registry=None, dashboard_dir=None, pipeline
     `pipeline_stats` is the `services.scorer.pipeline.PipelineStats` the live loop
     publishes to; `/metrics` then adds the `ava_live_*` window/queue/stride families.
     `dashboard_dir` is the built dashboard (`dashboard/dist`, architecture §2.6): served
-    at `/` on the same origin, after every API route so it never shadows one."""
+    at `/` on the same origin, after every API route so it never shadows one.
+    `oplog` (optional, `services/api/oplog.ApiLog`, FR-O6) gets request, job,
+    detector-ready and relay-loss lines; its faults never reach a request."""
     if registry is not None and hub is None:
         raise ValueError('a call registry needs the event hub that feeds it')
     if relay is not None and (hub is None or getattr(relay, 'hub', None) is not hub):
@@ -356,7 +382,7 @@ def create_app(service, *, hub=None, registry=None, dashboard_dir=None, pipeline
     if dashboard_dir is not None and not (Path(dashboard_dir) / 'index.html').is_file():
         raise ValueError('dashboard_dir must be a built dashboard containing index.html')
     metrics = Metrics()
-    jobs = JobStore(service, on_result=metrics.observe_analysis)
+    jobs = JobStore(service, on_result=metrics.observe_analysis, log=oplog)
     in_flight = [0]
     registry = None if hub is None else (registry or CallRegistry())
     feeds = []  # the live feed; subscribed only while the app runs (lifespan)
@@ -368,6 +394,11 @@ def create_app(service, *, hub=None, registry=None, dashboard_dir=None, pipeline
             feeds[0].pump()
         except Exception:  # the read model must not take the API down; counted, retried
             pump_errors[0] += 1
+        if oplog is not None and relay is not None:
+            try:
+                oplog.relay_stats(dict(relay.stats))
+            except Exception:
+                pass
 
     async def pump_forever():
         while True:
@@ -426,6 +457,11 @@ def create_app(service, *, hub=None, registry=None, dashboard_dir=None, pipeline
         except AnalysisError as error:
             reason = 'busy' if isinstance(error, AnalyzerBusy) else str(error)
             return JSONResponse({'status': 'not_ready', 'reason': reason}, status_code=503)
+        if oplog is not None:
+            try:
+                oplog.detector_ready(service.model_id, seconds)
+            except Exception:
+                pass
         return {'status': 'ready', 'model_id': service.model_id, 'warmup_seconds': seconds}
 
     @app.get('/metrics')
@@ -462,13 +498,28 @@ def create_app(service, *, hub=None, registry=None, dashboard_dir=None, pipeline
     # Registered last, so it is the outermost middleware and also counts early refusals.
     @app.middleware('http')
     async def count_responses(request, call_next):
+        started = time.perf_counter()
+        route = route_label(request.url.path)
         try:
             response = await call_next(request)
         except Exception:  # unhandled: Starlette's outer error handler answers 500
-            metrics.count_request(route_label(request.url.path), 500)
+            metrics.count_request(route, 500)
+            log_request(route, request.method, 500, started)
             raise
-        metrics.count_request(route_label(request.url.path), response.status_code)
+        metrics.count_request(route, response.status_code)
+        log_request(route, request.method, response.status_code, started)
         return response
+
+    def log_request(route, method, status, started):
+        if oplog is None:
+            return
+        try:  # the operations log is advisory: never fails a request
+            # A streamed body (the dashboard's static files) may still be sending; the
+            # duration is to the response start.
+            oplog.request(route, method if method in HTTP_METHODS else 'other', status,
+                          time.perf_counter() - started)
+        except Exception:
+            pass
 
     @app.post('/v1/analyze')
     async def analyze(file: UploadFile = File(...)):

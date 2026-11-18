@@ -116,6 +116,35 @@ requirements-audio.txt; workflows are not edited by the daily runner). On Window
 venv `python.exe` is a launcher: stopping a child means waiting until its server stops
 answering, with the `starting` pid as a last resort.
 
+### Operations log (17 Nov 2026; PRD FR-O6 "Structured JSON logs", §6.3)
+
+`--event-log stderr` (the default) or `off`. `services/api/oplog.py` `ApiLog` writes one
+JSON object per line to stderr, between the `starting` record and the `stopped` record
+(which then carries the log's `lines`, `dropped` and `write_failures` counts). Callers
+only enqueue, into a bounded queue (1,000 lines); one writer thread writes, so a slow
+stderr never stalls a request. Each line has `ts` (UTC, ms), `level` and `event`, then
+only these fields:
+
+| event | fields | notes |
+|---|---|---|
+| `request` | `route`, `method`, `status`, `duration_ms` | Route is the fixed label (`/v1/jobs/:id`, never the ID; unknown paths `other`), method one of the standard ones or `other`. Level `warning` for 4xx and 503 (the API's deliberate load shedding or "no live source"), `error` for other 5xx. Duration runs to the response start. Probe routes (`/healthz`, `/readyz`, `/metrics`) are not logged. Rate-limited to 50 per second |
+| `job_queued`, `job_done`, `job_failed` | `job_id`; `status` (HTTP code) on failure | Never verdicts, scores, file names or error text. Queued jobs failed at shutdown are logged too |
+| `detector_ready` | `model_id`, `warmup_seconds` | The first successful warm-up only |
+| `relay_gap`, `relay_interruption`, `relay_source_restart`, `relay_connection_error` | `count` | Changes in the Redis relay's loss counters, checked with each registry pump (0.2 s) |
+| `log_dropped` | `count` | Lines lost to the rate limit, a full queue or an emit after stop. Reported at most every 0.5 s and at stop, after the lines it follows, so the log stays in `ts` order |
+
+Query strings, upload bytes, caller data, URLs and credentials are never written. A
+fault in the log never reaches a request or a job. A `job_id` is a random UUID. Anyone
+who can read the log and reach the API (which has no authentication) can fetch that job
+while it is held. The `stopped` record's `event_log.stopped_in_time` is false when a
+blocked stderr kept the writer past its 2 s stop timeout; a line may then follow
+`stopped`. The WebSocket route is not logged
+per connection (its loss reports are the relay lines and `stream.gap`). Tests
+(Claude-authored, 17 Nov): `tests/unit/test_api_oplog.py` (20 cases; one added 18 Nov), and the uvicorn
+child case in `test_api_cli.py`. That case checks one `request` line for `/v1/calls`,
+none for the `/healthz` probes, and the `stopped` record last. The cases that pin the
+exact start and stop records pass `--event-log off`.
+
 Long files are routed to a job before the analyser is touched, so they queue even
 while another analysis runs. Jobs are held in a bounded in-memory store (4 queued,
 64 records) served by one worker thread; they are lost on restart (durable jobs and

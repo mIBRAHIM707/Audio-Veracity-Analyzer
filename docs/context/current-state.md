@@ -93,7 +93,10 @@ and about 50,000 original clips, excluding codec copies.
   round-tripped with the pinned ffmpeg, then played as a mu-law call. It reaches the
   tap sample-identical to the decode in all three modes. Suspected defect in the AMR
   augmentation path (issue #28): waveform SNR is about 3 dB in every mode at any input
-  level. Do not report AMR-augmented results until it is resolved.
+  level. Do not report AMR-augmented results until it is resolved. The analysis API
+  now writes a structured JSON operations log (FR-O6), as the live service does:
+  requests by fixed route label, jobs, detector readiness and relay losses. It never
+  writes verdicts, scores, file names or query strings.
 - **17 Nov daily run (details in `daily-runs/2026-11-17.md`).** FR-O6 per-stage latency
   for the live loop (7.2/8.1): `ava_live_stage_seconds{stage}` with `queue_wait`,
   `batch_wait`, `apply` (scorer and hub publish) and `window_to_result` (offer to

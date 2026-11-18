@@ -94,6 +94,8 @@ def build_parser():
     parser.add_argument('--dashboard', help='built dashboard directory (dashboard/dist) served at /')
     parser.add_argument('--redis-url-env', type=_env_name,
                         help='environment variable with the Redis URL the live service publishes on')
+    parser.add_argument('--event-log', choices=('stderr', 'off'), default='stderr',
+                        help='structured JSON operations log (services/api/oplog.py) on stderr (default) or off')
     return parser
 
 
@@ -169,6 +171,7 @@ def main(argv=None, *, environ=None, stderr=None, made=None):
         _say(stderr, {'event': 'interrupted'})
         return EXIT_INTERRUPTED
     finally:
+        _stop_log(held)  # e.g. Ctrl+C or an unexpected error while serving
         for resource in held.values():
             if resource is not None:
                 try:
@@ -218,26 +221,43 @@ def _run(args, environ, stderr, made, held):
         from services.events.redis_bridge import RedisRelay
         hub = EventHub()
         relay = RedisRelay(lambda: redis_client, hub)
+    from services.api.oplog import ApiLog
+    oplog = ApiLog(stderr) if args.event_log == 'stderr' else None
     try:
-        app = create_app(service, hub=hub, relay=relay, dashboard_dir=args.dashboard)
+        app = create_app(service, hub=hub, relay=relay, dashboard_dir=args.dashboard, oplog=oplog)
     except ValueError as error:
         return refuse(str(error))
     record = {'event': 'starting', 'host': args.host, 'port': port, 'pid': os.getpid(),
               'model_id': service.model_id, 'threads': args.threads, 'dashboard': args.dashboard is not None,
-              'allow_non_loopback': args.allow_non_loopback, 'live_events': relay is not None}
+              'allow_non_loopback': args.allow_non_loopback, 'live_events': relay is not None,
+              'event_log': args.event_log}
     if relay is not None:
         record['redis_reachable'] = redis_reachable
     _say(stderr, record)
+    if oplog is not None:  # after the starting record, so that record stays the first line
+        oplog.start()
+        held['oplog'] = oplog  # stopped (pending lines written) on every exit path
     try:
         stop_signal = made['serve'](app, held['sock'])
     except ServeFailed as error:
+        _stop_log(held)
         _say(stderr, {'event': 'failed', 'reason': str(error)})
         return EXIT_FAILED
+    # Pending lines are written before the stopped record, which stays last unless stderr
+    # blocked the writer past its timeout (then `stopped_in_time` is false; review L1).
+    in_time = _stop_log(held)
     stopped = {'event': 'stopped', 'signal': stop_signal}
     if relay is not None:
         stopped['relay'] = dict(relay.stats)
+    if oplog is not None:
+        stopped['event_log'] = {**oplog.report(), 'stopped_in_time': in_time}
     _say(stderr, stopped)
     return EXIT_OK
+
+
+def _stop_log(held):
+    oplog = held.pop('oplog', None)
+    return None if oplog is None else oplog.stop()
 
 
 if __name__ == '__main__':
