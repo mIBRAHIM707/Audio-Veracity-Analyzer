@@ -54,6 +54,11 @@ from services.scorer.metrics_text import (PIPELINE_COUNTERS, PIPELINE_GAUGES, PI
                                           snapshot_valid_lines)
 
 LATENCY_BUCKETS_S = (0.01, 0.05, 0.1, 0.25, 0.5, 1.0, 2.5, 5.0, 10.0, 30.0, 60.0, 120.0, 300.0)
+# FR-O6 WebSocket delivery (18 Nov): finer at the low end. 0.2 s is the architecture §3
+# "WS to browser render" budget; 0.3 s is the polling floor of this span (the scorer's
+# 0.2 s Redis forwarder poll plus the API's 0.1 s socket poll), so readings up to about
+# 0.3 s are expected by design and this is not a direct check of the 0.2 s row.
+WS_DELIVERY_BUCKETS_S = (0.005, 0.01, 0.025, 0.05, 0.1, 0.2, 0.3, 0.5, 1.0, 2.5, 5.0, 10.0, 30.0)
 ANALYSIS_STAGES = ('decode', 'condition', 'inference')
 # Mutually exclusive fates of an envelope the registry received (they sum to the
 # envelopes applied or refused); sub-counts and housekeeping are exported separately.
@@ -100,8 +105,9 @@ class Histogram:
     """Cumulative Prometheus histogram with fixed buckets; one series per label value
     from a fixed list (bounded cardinality). Not locked: `Metrics` holds its lock."""
 
-    def __init__(self, labels=(None,)):
-        self.series = {label: {'buckets': [0] * len(LATENCY_BUCKETS_S), 'sum': 0.0, 'count': 0}
+    def __init__(self, labels=(None,), buckets=LATENCY_BUCKETS_S):
+        self.bounds = tuple(buckets)
+        self.series = {label: {'buckets': [0] * len(self.bounds), 'sum': 0.0, 'count': 0}
                        for label in labels}
 
     def observe(self, value, label=None):
@@ -109,7 +115,7 @@ class Histogram:
                 or not math.isfinite(value) or value < 0:
             return False
         series = self.series[label]
-        for i, bound in enumerate(LATENCY_BUCKETS_S):
+        for i, bound in enumerate(self.bounds):
             if value <= bound:
                 series['buckets'][i] += 1
         series['sum'] += value
@@ -122,7 +128,7 @@ class Histogram:
             base = '' if label is None else f'{label_name}="{label}",'
             plain = '' if label is None else f'{{{label_name}="{label}"}}'
             lines += [f'{name}_bucket{{{base}le="{bound!r}"}} {n}'
-                      for bound, n in zip(LATENCY_BUCKETS_S, series['buckets'])]
+                      for bound, n in zip(self.bounds, series['buckets'])]
             lines += [f'{name}_bucket{{{base}le="+Inf"}} {series["count"]}',
                       f'{name}_sum{plain} {series["sum"]!r}', f'{name}_count{plain} {series["count"]}']
         return lines
@@ -138,6 +144,25 @@ class Metrics:
         self.requests = {(route, cls): 0 for route in ROUTES + ('other',) for cls in STATUS_CLASSES}
         self.analysis = Histogram()
         self.stages = Histogram(ANALYSIS_STAGES)
+        self.ws_delivery = Histogram(buckets=WS_DELIVERY_BUCKETS_S)
+        self.ws_unmeasured = 0
+        self.ws_slow_closes = 0
+
+    def observe_ws_delivery(self, sent_at, event_ts):
+        """One FR-A4 envelope finished sending on a WebSocket at wall-clock `sent_at`
+        (None if the clock failed); `event_ts` is its `ts`. A negative, non-finite or
+        missing difference (another process's clock ahead of ours, a clock fault) is
+        counted as unmeasured, never observed."""
+        delay = None
+        if all(type(v) in (int, float) for v in (sent_at, event_ts)):
+            delay = sent_at - event_ts
+        with self._lock:
+            if not self.ws_delivery.observe(delay):
+                self.ws_unmeasured += 1
+
+    def count_ws_slow_close(self):
+        with self._lock:
+            self.ws_slow_closes += 1
 
     def count_request(self, route, status):
         cls = f'{status // 100}xx'
@@ -164,6 +189,8 @@ class Metrics:
             requests = dict(self.requests)
             analysis = self.analysis.render('ava_analysis_seconds')
             stages = self.stages.render('ava_analysis_stage_seconds', 'stage')
+            ws_delivery = self.ws_delivery.render('ava_ws_delivery_seconds')
+            ws_unmeasured, ws_slow_closes = self.ws_unmeasured, self.ws_slow_closes
         lines += [f'ava_api_requests_total{{route="{route}",status="{cls}"}} {value}'
                   for (route, cls), value in sorted(requests.items())]
         lines += ['# HELP ava_jobs Jobs currently held in memory by state.', '# TYPE ava_jobs gauge']
@@ -191,6 +218,20 @@ class Metrics:
             lines += ['# HELP ava_alerts_raised_total Alerts raised on calls seen by the registry.',
                       '# TYPE ava_alerts_raised_total counter',
                       f'ava_alerts_raised_total {live["counters"]["alerts_raised"]}']
+            lines += ['# HELP ava_ws_delivery_seconds Time from an event\'s ts (its publish time in the scorer, '
+                      'kept across the Redis relay) until this process handed it to the WebSocket transport (FR-O6). '
+                      'Includes the scorer\'s 0.2 s Redis forwarder poll and the API\'s 0.1 s socket poll. '
+                      'One observation per socket send (an event sent to N sockets counts N times). Excludes the '
+                      'network and browser render; compares two processes\' clocks, so valid on one host only.',
+                      '# TYPE ava_ws_delivery_seconds histogram', *ws_delivery,
+                      '# HELP ava_ws_delivery_unmeasured_total Events sent on a WebSocket whose delivery time '
+                      'could not be measured (sender clock ahead of this one, or a clock fault).',
+                      '# TYPE ava_ws_delivery_unmeasured_total counter',
+                      f'ava_ws_delivery_unmeasured_total {ws_unmeasured}',
+                      f'# HELP ava_ws_slow_client_closes_total WebSocket clients closed because a send did not '
+                      f'complete within {WS_SEND_TIMEOUT_S:g} s.',
+                      '# TYPE ava_ws_slow_client_closes_total counter',
+                      f'ava_ws_slow_client_closes_total {ws_slow_closes}']
         if relay is not None:
             lines += relay_lines(relay)
         if pipeline is not None:
@@ -344,6 +385,28 @@ def relay_lines(snapshot):
     return lines
 
 
+class _SlowClient(Exception):
+    """A WebSocket send did not complete within `WS_SEND_TIMEOUT_S`."""
+
+
+async def _send_or_slow(websocket, text):
+    """Send `text`; a client that stops reading must not hold the server, so give up
+    after the timeout with `_SlowClient`. Only this timeout is a slow client: a
+    transport error from the send (even `OSError(ETIMEDOUT)`, a `TimeoutError` on
+    Python 3.11) is re-raised as itself (review L1, 18 Nov)."""
+    send = asyncio.ensure_future(websocket.send_text(text))
+    try:
+        done, _ = await asyncio.wait({send}, timeout=WS_SEND_TIMEOUT_S)
+    except asyncio.CancelledError:  # the handler itself was cancelled: do not orphan the send
+        send.cancel()
+        raise
+    if not done:
+        send.cancel()
+        await asyncio.gather(send, return_exceptions=True)
+        raise _SlowClient
+    send.result()
+
+
 async def _close_quietly(websocket, code, reason):
     """Close without waiting on a stuck client for longer than the send timeout."""
     try:
@@ -362,7 +425,7 @@ async def read_bounded(upload):
 
 
 def create_app(service, *, hub=None, registry=None, dashboard_dir=None, pipeline_stats=None, relay=None,
-               oplog=None):
+               oplog=None, wall_clock=time.time):
     """`hub` is the in-process `services.events.EventHub` carrying FR-A4 events; with it
     the app serves `/v1/calls` from a `CallRegistry` (a new one unless given) and
     `WS /v1/events`. Without it those routes answer 503: no live source is connected.
@@ -374,7 +437,9 @@ def create_app(service, *, hub=None, registry=None, dashboard_dir=None, pipeline
     `dashboard_dir` is the built dashboard (`dashboard/dist`, architecture §2.6): served
     at `/` on the same origin, after every API route so it never shadows one.
     `oplog` (optional, `services/api/oplog.ApiLog`, FR-O6) gets request, job,
-    detector-ready and relay-loss lines; its faults never reach a request."""
+    detector-ready and relay-loss lines; its faults never reach a request.
+    `wall_clock` (seconds since the epoch, the clock of envelope `ts`) times each event's
+    WebSocket delivery for `ava_ws_delivery_seconds`; a fault in it is counted, never raised."""
     if registry is not None and hub is None:
         raise ValueError('a call registry needs the event hub that feeds it')
     if relay is not None and (hub is None or getattr(relay, 'hub', None) is not hub):
@@ -567,6 +632,12 @@ def create_app(service, *, hub=None, registry=None, dashboard_dir=None, pipeline
             raise HTTPException(404, 'Unknown call')
         return record
 
+    def read_wall_clock():
+        try:
+            return wall_clock()
+        except Exception:  # timing is advisory: the event was sent; counted as unmeasured
+            return None
+
     @app.websocket('/v1/events')
     async def events(websocket: WebSocket, call_id: str | None = None):
         if hub is None:
@@ -592,16 +663,18 @@ def create_app(service, *, hub=None, registry=None, dashboard_dir=None, pipeline
                     receiver = asyncio.create_task(websocket.receive())  # client text is ignored
                 batch = subscription.drain_batch(WS_BATCH)
                 envelopes = batch.envelopes
-                texts = [envelope.to_json() for envelope in envelopes]
+                messages = [(envelope.to_json(), envelope.ts) for envelope in envelopes]
                 gap = gap_message(batch)
                 if gap is not None:  # control message, not an FR-A4 event: the client should re-read REST
-                    texts.insert(0, gap)
-                for text in texts:
-                    # A client that stops reading must not hold the server: give up after a timeout.
-                    await asyncio.wait_for(websocket.send_text(text), WS_SEND_TIMEOUT_S)
+                    messages.insert(0, (gap, None))
+                for text, event_ts in messages:
+                    await _send_or_slow(websocket, text)
+                    if event_ts is not None:  # FR-O6: publish -> handed to the server's transport
+                        metrics.observe_ws_delivery(read_wall_clock(), event_ts)
                 if not envelopes:
                     await asyncio.wait({receiver}, timeout=WS_POLL_S)
-        except asyncio.TimeoutError:
+        except _SlowClient:
+            metrics.count_ws_slow_close()
             await _close_quietly(websocket, 1008, 'Client is not reading events')
         except (WebSocketDisconnect, OSError):
             pass  # client went away mid-send (Starlette or the server's transport)

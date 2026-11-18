@@ -40,7 +40,9 @@ LABEL = re.compile(r'([a-zA-Z_][a-zA-Z0-9_]*)="([^"]*)"')
 # PRD FR-O6 item -> a series its panel must query.
 FR_O6 = {'latency per stage': 'ava_live_stage_seconds_bucket', 'queue depth': 'ava_live_windows_waiting',
          'active calls': 'ava_live_calls_active', 'alerts per minute': 'ava_live_alerts_raised_total',
-         'dropped windows': 'ava_live_windows_resolved_total'}
+         'dropped windows': 'ava_live_windows_resolved_total',
+         # 18 Nov (attempt 4): the last stage, scorer publish -> WebSocket send.
+         'latency per stage (WebSocket delivery)': 'ava_ws_delivery_seconds_bucket'}
 
 
 def series_labels(text):

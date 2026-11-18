@@ -340,7 +340,7 @@ items needing that data are listed at the end and stay out of the queue.
   states from 12 Nov (DU03, DU11-DU13). 12 Playwright (LB01-LB12) + 10 pure (LS01-LS10)
   Claude-authored cases; review conditional pass, fixes re-reviewed. Not yet: a browser
   run against a real scorer/Redis relay (lab), Urdu/RTL text.
-- [ ] 7.2 Health/readiness/metrics and visible unmonitored/low-quality conditions.
+- [x] 7.2 Health/readiness/metrics and visible unmonitored/low-quality conditions.
   Progress (12 Nov): FR-A8 on the analysis API: `/readyz` with a validated warm-up
   inference (sticky once warmed, stays ready while busy), Prometheus `/metrics`
   without a client library (bounded route labels, job states, queue, uploads in flight,
@@ -391,7 +391,14 @@ items needing that data are listed at the end and stay out of the queue.
   integer counts in `JitterBuffer.stats`, ended plus open calls) and its p95 on the
   dashboard (includes loop-turn quantisation, excludes socket wait: not a §3 budget
   measurement); 13 Claude-authored tests, review conditional pass fixed, Compose lab
-  40/40 queries with data. Remaining FR-O6: WebSocket delivery timing.
+  40/40 queries with data. 18 Nov (attempts 4-5): WebSocket delivery timing on the API
+  `/metrics`: `ava_ws_delivery_seconds` (envelope `ts` = scorer hub publish, to handed to
+  the WebSocket transport, once per socket; includes the 0.2 s forwarder and 0.1 s socket
+  polls, excludes network and browser render, one-host clocks),
+  `ava_ws_delivery_unmeasured_total`, `ava_ws_slow_client_closes_total`; two dashboard
+  panels; 11 Claude-authored tests; Compose lab timed all 7 events of a real call (one
+  run, mean 151 ms); review conditional pass fixed. Done: every FR-O6 item has a metric
+  and a panel. Not measured: browser render time and a load-test p95 (8.QA).
 - [ ] 7.3 P1 history/search/local authentication/audit and feedback after P0.
 - [ ] 7.QA Astra-designed Playwright suite, offline assets, failures/reconnects.
 

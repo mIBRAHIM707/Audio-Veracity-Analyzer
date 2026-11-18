@@ -121,7 +121,17 @@ and about 50,000 original clips, excluding codec copies.
   progress. It is the buffer delay plus loop-turn quantisation (roughly 10-160 ms on a
   steady stream); socket-buffer wait before a read is not measured, so it is not a
   measurement against the 60 ms budget. The dashboard's per-stage
-  p95 panel shows it as `jitter_hold`. WebSocket delivery timing is still open.
+  p95 panel shows it as `jitter_hold`.
+- **18 Nov (attempts 4-5).** FR-O6 WebSocket delivery timing, the last FR-O6 latency
+  item; backlog 7.2 is now complete. The API `/metrics` has `ava_ws_delivery_seconds`:
+  from an event's `ts` (scorer hub publish, kept across Redis) until the API hands it to
+  the WebSocket transport, once per socket. It includes the scorer's 0.2 s forwarder poll
+  and the API's 0.1 s socket poll, so up to about 0.3 s is expected by design. It
+  excludes the network and browser render, so it is not a measurement of the §3
+  "WS to browser render" 200 ms row. Clocks of two processes are compared (valid on one
+  host). Also `ava_ws_delivery_unmeasured_total` and `ava_ws_slow_client_closes_total`,
+  plus two dashboard panels. Compose lab: all 7 events of a real call timed (one run,
+  mean 151 ms; not a p95 or load result).
 - **17 Nov daily run (details in `daily-runs/2026-11-17.md`).** FR-O6 per-stage latency
   for the live loop (7.2/8.1): `ava_live_stage_seconds{stage}` with `queue_wait`,
   `batch_wait`, `apply` (scorer and hub publish) and `window_to_result` (offer to

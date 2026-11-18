@@ -25,7 +25,8 @@ inside the stack, and checks:
   provisioned Grafana dashboard evaluates; Grafana (admin login) lists the dashboard and
   reads a live series through its data source; live's health endpoint is unreachable
   from `backend`; neither monitoring container reaches the internet and Grafana logs no
-  call home.
+  call home. (18 Nov, attempt 4) every event the WebSocket subscriber received was
+  timed in `ava_ws_delivery_seconds`, none unmeasured, no slow-client close.
 The project and its volumes are removed afterwards.
 """
 import base64
@@ -380,7 +381,7 @@ class ComposeStackLabTests(unittest.TestCase):
         api_start = next(json.loads(line) for line in api_logs.splitlines() if '"starting"' in line)
         self.assertEqual((api_start['live_events'], api_start['redis_reachable'], api_start['dashboard']),
                          (True, True, True))
-        monitoring = self.check_monitoring(int(windows))
+        monitoring = self.check_monitoring(int(windows), len(seen))
         all_logs = self.compose('logs', '--no-color').stdout
         for secret in (self.ari_password, self.db_password, self.grafana_password):
             self.assertNotIn(secret, all_logs, 'no password in any container log')
@@ -399,18 +400,28 @@ class ComposeStackLabTests(unittest.TestCase):
               f'(uncalibrated baseline); API warm-up {json.loads(ready["body"])["warmup_seconds"]:.1f} s; '
               f'monitoring: {monitoring}')
 
-    def check_monitoring(self, windows):
+    def check_monitoring(self, windows, ws_events):
         """Profile `monitoring` (18 Nov, FR-O6): Prometheus holds the call, every dashboard
         query evaluates, Grafana serves the dashboard and reads through its data source,
-        and the scrape network stays closed."""
+        and the scrape network stays closed. `ws_events`: events the WebSocket subscriber
+        received; each was timed by the API (`ava_ws_delivery_seconds`, 18 Nov)."""
         # The scored windows reach Prometheus at the next scrape (15 s interval).
-        scored, deadline = None, time.monotonic() + 60
+        scored, delivered, deadline = None, None, time.monotonic() + 60
         while time.monotonic() < deadline:
             scored = self.prom_value('ava_live_windows_resolved_total{outcome="scored"}')
-            if scored is not None and scored >= windows:
+            delivered = self.prom_value('ava_ws_delivery_seconds_count')
+            if scored is not None and scored >= windows and delivered is not None and delivered >= ws_events:
                 break
             time.sleep(3)
         self.assertGreaterEqual(scored or 0, windows, 'Prometheus holds the scored windows of the call')
+        self.assertGreaterEqual(delivered or 0, ws_events, 'every event the subscriber got was timed')
+        # One host, one kernel clock: the scorer's ts is never ahead of the API's clock.
+        self.assertEqual(self.prom_value('ava_ws_delivery_unmeasured_total'), 0)
+        self.assertEqual(self.prom_value('ava_ws_slow_client_closes_total'), 0)
+        self.assertGreaterEqual(ws_events, 1, 'the subscriber received events to time')
+        ws_sum = self.prom_value('ava_ws_delivery_seconds_sum')
+        self.assertIsNotNone(ws_sum, 'the delivery histogram has a sum')
+        ws_mean = ws_sum / delivered
         self.assertGreaterEqual(self.prom_value('ava_live_calls_capacity') or 0, 1)
         self.assertGreaterEqual(self.prom_value('ava_live_rtp_receiver_total{kind="packets"}') or 0, 100)
         self.assertIsNotNone(self.prom_value('ava_api_requests_total'), 'the API is scraped too')
@@ -488,7 +499,8 @@ class ComposeStackLabTests(unittest.TestCase):
         grafana_logs = self.compose('logs', '--no-color', '--no-log-prefix', 'grafana').stdout
         self.assertNotIn('grafana.com', grafana_logs, 'Grafana tried to call home')
         self.assertNotIn('stats.grafana.org', grafana_logs)
-        return f'{scored:.0f} scored windows in Prometheus; {with_data}/{len(exprs)} dashboard queries with data'
+        return (f'{scored:.0f} scored windows in Prometheus; {with_data}/{len(exprs)} dashboard queries with data; '
+                f'{delivered:.0f} WebSocket deliveries timed, mean {ws_mean * 1000:.0f} ms (publish to sent)')
 
 
 if __name__ == '__main__':

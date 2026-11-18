@@ -157,6 +157,20 @@
        {"refId": "A", "expr": "ava_event_relay_subscribed", "legendFormat": "subscribed"},
        {"refId": "B", "expr": "increase(ava_event_relay_missing_events_total[5m])", "legendFormat": "events lost (5 min)"},
        {"refId": "C", "expr": "increase(ava_event_relay_interruptions_total[5m])", "legendFormat": "Redis outages (5 min)"},
-       {"refId": "D", "expr": "ava_event_subscribers", "legendFormat": "hub subscribers"}]}
+       {"refId": "D", "expr": "ava_event_subscribers", "legendFormat": "hub subscribers"}]},
+    {"id": 25, "type": "timeseries", "title": "WebSocket event delivery (p95)",
+     "description": "FR-O6 latency of the last stage: 95th percentile over 5 minutes of the time from an event's publish in the live scorer (its ts, kept across Redis) until the API finished handing it to a WebSocket connection, once per connection (with several dashboards open, each send counts). It includes the scorer's 200 ms Redis forwarder poll, Redis transit, the relay, the hub buffer and the API's 100 ms poll, so up to about 300 ms is expected by design and it is not a direct check of the 200 ms 'WS to browser render' budget; it excludes the network and the browser's render. The two processes' clocks are compared, so it holds on one host (Compose) only.",
+     "datasource": {"type": "prometheus", "uid": "ava-prometheus"},
+     "gridPos": {"h": 8, "w": 12, "x": 0, "y": 66},
+     "fieldConfig": {"defaults": {"unit": "s", "min": 0}, "overrides": []},
+     "targets": [{"refId": "A", "expr": "histogram_quantile(0.95, sum by (le) (rate(ava_ws_delivery_seconds_bucket[5m])))", "legendFormat": "publish to sent"}]},
+    {"id": 26, "type": "timeseries", "title": "WebSocket delivery problems",
+     "description": "In the last 5 minutes: events whose delivery time could not be measured (the scorer's clock was ahead of the API's, or a clock fault) and clients closed because a send did not complete within 10 s (a client that stops reading is dropped so it cannot hold the server).",
+     "datasource": {"type": "prometheus", "uid": "ava-prometheus"},
+     "gridPos": {"h": 8, "w": 12, "x": 12, "y": 66},
+     "fieldConfig": {"defaults": {"unit": "short", "min": 0}, "overrides": []},
+     "targets": [
+       {"refId": "A", "expr": "increase(ava_ws_delivery_unmeasured_total[5m])", "legendFormat": "unmeasured (5 min)"},
+       {"refId": "B", "expr": "increase(ava_ws_slow_client_closes_total[5m])", "legendFormat": "slow clients closed (5 min)"}]}
   ]
 }

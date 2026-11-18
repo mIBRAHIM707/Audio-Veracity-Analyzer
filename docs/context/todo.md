@@ -47,6 +47,9 @@ codec path against the 3GPP reference vectors.
 Prometheus and a Grafana dashboard (FR-O6), and it is internal only. The stack's env
 file now needs `AVA_GRAFANA_ADMIN_PASSWORD`. Later on 18 Nov, the live `/metrics` also
 times how long each RTP frame waits in the jitter buffer (FR-O6); no data change.
+18 Nov (attempts 4-5): backlog 7.2 done — the API `/metrics` times each event from the
+scorer's publish to its WebSocket send (FR-O6), shown on the Grafana dashboard. No data
+change; not a browser-render or load measurement.
 
 Updated 4 October 2026. This is the active sequence; evidence lives in
 `current-state.md` and `handoffs/`. Check marks mean the stated bounded task passed

@@ -46,7 +46,25 @@ the scoring loop published, while `ava_alerts_raised_total` above is what reache
 registry, and the two can differ). The structured JSON log is described under
 "Operations log" below. Since 18 Nov the Compose profile `monitoring` scrapes this
 `/metrics` and the live process's into Prometheus, with a provisioned Grafana dashboard
-(`deploy/compose/README.md`, "Monitoring"). Still open: WebSocket delivery timing.
+(`deploy/compose/README.md`, "Monitoring").
+
+WebSocket delivery timing (FR-O6, 18 Nov), rendered with an event hub: the histogram
+`ava_ws_delivery_seconds` (buckets 5 ms to 30 s, 0.2 s and 0.3 s among them) observes,
+for each FR-A4 envelope sent on `WS /v1/events`, the wall-clock time from the envelope's
+`ts` until its send completed, once per socket. With the Redis relay `ts` is the scorer's
+hub publish time, so the span is "scorer hub publish -> API send": it includes the
+scorer's Redis forwarder poll (0.2 s), Redis transit, the relay, the hub buffer and the
+socket's 0.1 s poll. Those two polls alone put up to about 0.3 s on a healthy reading,
+so a p95 above 0.2 s is expected by design and the metric is not a direct check of the
+architecture §3 rows (it spans part of "publish" and the WS hop). "Send completed" means
+handed to the server's transport: the network and the browser's render are not
+included. The first lab reading (Compose, one call, 18 Nov) was a mean of 151 ms over 7
+events; that is one run, not a measured p95. The two processes' clocks are
+compared, which holds on one host (the Compose stack); a `ts` ahead of this clock, or
+a fault in it, is counted in `ava_ws_delivery_unmeasured_total` instead. `stream.gap`
+control messages and dropped envelopes are not timed. `ava_ws_slow_client_closes_total`
+counts clients closed because a send did not finish within 10 s. `create_app(...,
+wall_clock=)` injects the clock (tests).
 
 The calls and events routes need `create_app(service, hub=EventHub())`: the in-process
 hub the scorer publishes to. A background task drains the hub into the registry every
