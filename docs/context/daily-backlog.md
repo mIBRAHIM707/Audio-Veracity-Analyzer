@@ -376,8 +376,12 @@ items needing that data are listed at the end and stay out of the queue.
   the analysis API (`services/api/oplog.py`, `--event-log stderr|off`: request lines
   with fixed route labels, rate-limited, probes skipped; job, detector-ready and
   relay-loss lines; bounded queue and writer thread); Claude-authored tests incl. a real
-  uvicorn child; review conditional pass fixed. Remaining FR-O6: in-call RTP metrics,
-  jitter-buffer and WebSocket delivery timing, Grafana.
+  uvicorn child; review conditional pass fixed (committed 18 Nov after a re-review pass).
+  18 Nov: in-call RTP/jitter counts on the live `/metrics` (`TapApp.receiver_live`: ended
+  calls plus open calls re-read at most every 1 s, never decreasing) and
+  `ava_live_rtp_calls_degraded` (open calls in sustained loss); 9 Claude-authored tests;
+  review pass, lows fixed. Remaining FR-O6: jitter-buffer and WebSocket delivery timing,
+  Grafana.
 - [ ] 7.3 P1 history/search/local authentication/audit and feedback after P0.
 - [ ] 7.QA Astra-designed Playwright suite, offline assets, failures/reconnects.
 

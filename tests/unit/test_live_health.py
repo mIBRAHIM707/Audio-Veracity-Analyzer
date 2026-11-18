@@ -207,7 +207,9 @@ class MetricsTests(unittest.TestCase):
                           values['ava_live_jitter_buffer_total{kind="dropped_handover"}']), (520, 3, 40, 8))
         self.assertNotIn('unknown_new_key', text)  # only the fixed kinds are exported
         self.assertEqual(values['ava_live_metrics_render_errors_total'], 0)
-        service.tap.receiver_totals = {'packets': float('nan')}  # corrupted: the family alone is dropped
+        # Corrupted: the family alone is dropped. Since 18 Nov /metrics reads `receiver_live`
+        # (ended plus in-call counts; `_add_receiver_totals` republishes it).
+        service.tap.receiver_live = {'packets': float('nan')}
         values = samples(health.metrics())
         self.assertNotIn('ava_live_rtp_receiver_total{kind="packets"}', values)
         self.assertIn('ava_live_tap_events_total{kind="tapped"}', values)

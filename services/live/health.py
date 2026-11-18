@@ -246,15 +246,22 @@ class HealthServer:
                           [((('stage', stage),), float(audio[stage])) for stage in TAP_STAGES]))
 
     def _receiver_lines(self):
-        totals = dict(getattr(self.service.tap, 'receiver_totals', None) or {})  # replaced, never mutated
+        tap = self.service.tap
+        # Ended calls plus open calls as last read (<= 1 s old, 18 Nov); replaced, never mutated.
+        totals = dict(getattr(tap, 'receiver_live', None) or {})
+        degraded = getattr(tap, 'calls_degraded', 0)
         return (_family('counter', 'ava_live_rtp_receiver_total',
-                        'RTP receiver counts summed over ended calls (packets, malformed, gaps, ...); kinds have '
-                        'different units, do not sum across kinds.',
+                        'RTP receiver counts of ended calls plus calls in progress (read at most 1 s ago): '
+                        'packets, malformed, gaps, ...; kinds have different units, do not sum across kinds.',
                         [((('kind', key),), totals.get(key, 0)) for key in RECEIVER_COUNTERS])
                 + _family('counter', 'ava_live_jitter_buffer_total',
-                          'Jitter-buffer counts summed over ended calls (frames, packets and events; do not sum '
-                          'across kinds); dropped_handover = concealment skipped by the hand-over budget (FR-I2).',
-                          [((('kind', key),), totals.get(f'jitter_{key}', 0)) for key in JITTER_COUNTERS]))
+                          'Jitter-buffer counts of ended calls plus calls in progress (frames, packets and events; '
+                          'do not sum across kinds); dropped_handover = concealment skipped by the hand-over '
+                          'budget (FR-I2).',
+                          [((('kind', key),), totals.get(f'jitter_{key}', 0)) for key in JITTER_COUNTERS])
+                + _family('gauge', 'ava_live_rtp_calls_degraded',
+                          'Tapped calls now in a sustained-loss episode (over 5 % of the last 10 s of frames '
+                          'concealed, FR-I2 media_quality).', [((), degraded)]))
 
     def _pipeline_lines(self):
         snapshot, age = self.service.pipeline_stats.read()

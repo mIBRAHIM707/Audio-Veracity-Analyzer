@@ -42,6 +42,12 @@ optionally `quality(call_id, change)` after that audio (`degraded` / `recovered`
 sustained loss above 5 %, FR-I2), `ended(call_id, reason, receiver_stats)` (receiver and
 `jitter_` buffer counts) and `failed(call_id, error)`; sink faults are counted, never
 raised.
+
+For the live `/metrics` (FR-O6, 18 Nov): `receiver_totals` sums ended calls' receiver
+and `jitter_` counts; `receiver_live` adds each open call's counts as re-read by `poll`
+at most every RECEIVER_REFRESH_S (1 s), and `calls_degraded` is the number of open calls
+in a sustained-loss episode. An ending call's final counts replace its last read ones in
+one step, so `receiver_live` never decreases.
 """
 from collections import deque
 from dataclasses import dataclass
@@ -59,6 +65,14 @@ OWN_PREFIXES = ('Snoop/', 'UnicastRTP/')  # snoop and ExternalMedia channels are
 # (non-inherited) variable, so a leg created by Dial() to an agent is never marked.
 MARK_VARIABLE, MARK_VALUE = 'AVA_TAP', 'caller'
 END_DRAIN_S = 0.04
+RECEIVER_REFRESH_S = 1.0  # how often open calls' RTP/jitter counts are re-read for /metrics
+
+
+def _add_counts(totals, counts):
+    """Adds the well-formed (str key, int >= 0) entries of `counts` into `totals`."""
+    for key, value in (counts or {}).items():
+        if isinstance(key, str) and type(value) is int and value >= 0:
+            totals[key] = totals.get(key, 0) + value
 
 
 @dataclass
@@ -97,6 +111,13 @@ class TapApp:
                       'ended': 0, 'sink_errors': 0, 'cleanup_errors': 0, 'swept': 0}
         # Receiver and `jitter_` buffer counts summed over ended calls (FR-I2, FR-O6).
         self.receiver_totals = {}
+        # The same plus each open call's counts as last read (at most RECEIVER_REFRESH_S
+        # old), so loss shows while a call runs, not only after it ends (18 Nov). Both
+        # dicts are replaced, never changed in place (read by the health thread).
+        self.receiver_live = {}
+        self.calls_degraded = 0  # open calls in a sustained-loss episode (LossMonitor), same refresh
+        self._call_counts = {}  # call ID -> its counts at the last refresh (loop thread only)
+        self._refreshed_at = None
 
     # -- event dispatch ----------------------------------------------------------------
 
@@ -202,21 +223,57 @@ class TapApp:
         except OSError:
             pass
         self._drain(call, final=True)
-        receiver = call.session.receiver_stats()
-        self._add_receiver_totals(receiver)
+        try:
+            receiver = call.session.receiver_stats()
+        except (AttributeError, TypeError, ValueError):  # review L2: keep the last read counts
+            receiver = dict(self._call_counts.get(call_id, {}))
+        self._add_receiver_totals(receiver, call_id)
         self._release(call)
         self.stats['ended'] += 1
         self._emit('ended', call_id, reason, receiver)
 
-    def _add_receiver_totals(self, receiver):
-        """Adds one ended call's receiver and jitter-buffer counts to `receiver_totals`.
-        The dict is replaced, never changed in place, so another thread (the health
-        server) can copy it while the loop thread adds a call."""
+    def _add_receiver_totals(self, receiver, call_id=None):
+        """Adds one ended call's receiver and jitter-buffer counts to `receiver_totals`
+        and drops that call's in-call counts from `receiver_live` in the same step. The
+        dicts are replaced, never changed in place, so another thread (the health server)
+        can copy them while the loop thread adds a call. A call's counts only grow, so
+        its final counts are never below its last refreshed ones: `receiver_live` never
+        decreases, as a Prometheus counter must not."""
+        final = {}
+        _add_counts(final, receiver)
+        for key, value in self._call_counts.pop(call_id, {}).items():  # never below the last read
+            final[key] = max(value, final.get(key, 0))
         totals = dict(self.receiver_totals)
-        for key, value in (receiver or {}).items():
-            if isinstance(key, str) and type(value) is int and value >= 0:
-                totals[key] = totals.get(key, 0) + value
+        _add_counts(totals, final)
         self.receiver_totals = totals
+        self._publish_live()
+
+    def _refresh_live(self):
+        """Re-read every open call's counts (loop thread). A session whose counts cannot
+        be read keeps its previous ones."""
+        for call_id, call in self.calls.items():
+            try:
+                read = {}
+                _add_counts(read, call.session.receiver_stats())
+            except (AttributeError, TypeError, ValueError):
+                continue
+            # A key missing or lower than before (never from a real session) keeps its
+            # previous value, so the exported counters cannot go down (review L1).
+            counts = dict(self._call_counts.get(call_id, {}))
+            for key, value in read.items():
+                counts[key] = max(value, counts.get(key, 0))
+            self._call_counts[call_id] = counts
+        for call_id in [known for known in self._call_counts if known not in self.calls]:
+            del self._call_counts[call_id]  # defensive: ended calls are dropped in `_end`
+        self._publish_live()
+
+    def _publish_live(self):
+        live = dict(self.receiver_totals)
+        for counts in self._call_counts.values():
+            _add_counts(live, counts)
+        self.receiver_live = live
+        self.calls_degraded = sum(1 for call in self.calls.values()
+                                  if call.monitor is not None and call.monitor.degraded)
 
     def _release(self, call):
         """Free the tap's own resources; the call channel is never touched."""
@@ -246,6 +303,10 @@ class TapApp:
             self._drain(call)
             if call.session.seconds_since_packet() > self.silence_timeout_s:
                 self._end(call.call_id, 'timeout')
+        now = self._clock()
+        if self._refreshed_at is None or not 0 <= now - self._refreshed_at < RECEIVER_REFRESH_S:
+            self._refreshed_at = now  # also after a clock step back
+            self._refresh_live()
 
     def _drain(self, call, final=False):
         """Hand the frames due now (all of them at the end) to the sink with their

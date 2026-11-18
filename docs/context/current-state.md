@@ -96,7 +96,12 @@ and about 50,000 original clips, excluding codec copies.
   level. Do not report AMR-augmented results until it is resolved. The analysis API
   now writes a structured JSON operations log (FR-O6), as the live service does:
   requests by fixed route label, jobs, detector readiness and relay losses. It never
-  writes verdicts, scores, file names or query strings.
+  writes verdicts, scores, file names or query strings (committed 18 Nov, 0189ffe).
+
+- **18 Nov.** The live `/metrics` RTP receiver and jitter-buffer counters now include
+  calls in progress (re-read at most every second), not only ended calls, and never
+  decrease; `ava_live_rtp_calls_degraded` shows open calls in sustained loss (FR-I2).
+  Details in `daily-runs/2026-11-18.md`.
 - **17 Nov daily run (details in `daily-runs/2026-11-17.md`).** FR-O6 per-stage latency
   for the live loop (7.2/8.1): `ava_live_stage_seconds{stage}` with `queue_wait`,
   `batch_wait`, `apply` (scorer and hub publish) and `window_to_result` (offer to

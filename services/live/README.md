@@ -196,8 +196,9 @@ at stop; the start record adds `health`. At most 8 connections are served at onc
   (`ava_live_rtp_receiver_total{kind}`: packets, malformed, gaps, missing, ...) and
   jitter-buffer counts (`ava_live_jitter_buffer_total{kind}`: played, `concealed_frames`,
   `dropped_handover`, resyncs, ...; kinds mix frames, packets and events, so do not sum
-  across kinds), summed over ended calls only (a call in progress is counted
-  when it ends; a call ended `monitor_lost` and re-tapped later is counted per tap); per pump
+  across kinds), summed over ended calls plus calls in progress (see "In-call RTP counts"
+  below; a call ended `monitor_lost` and re-tapped later is counted per tap), and
+  `ava_live_rtp_calls_degraded` (open calls in a sustained-loss episode); per pump
   alive/stuck/faults/moved/hub drops, store outcomes, waits (retry, misconfigured,
   faults), backlog and consecutive failures, Redis forwarded, failed and unheard; health
   requests and refused connections. No call IDs, numbers or audio; label values are
@@ -208,6 +209,25 @@ at stop; the start record adds `health`. At most 8 connections are served at onc
   (attempt 2), `ava_live_tap_stage_seconds{stage=resample|speech_feed}` also times the
   tap side per chunk (see "Tap stages" below). FR-O6 is still partial: RTP arrival to
   frame (the jitter buffer) and WebSocket delivery are not timed.
+
+### In-call RTP counts and degraded calls (18 Nov 2026; PRD FR-O6, FR-I2)
+
+Until 18 Nov the RTP receiver and jitter-buffer families counted a call only when it
+ended, so loss on a long call stayed invisible while it ran. `TapApp.poll` now re-reads
+every open call's counts at most once a second (`RECEIVER_REFRESH_S`) and publishes
+`receiver_live`: the ended calls' totals plus those reads. When a call ends, its final
+counts replace its last read ones in the same step; a call's counts only grow, so the
+exported counters never go down (Prometheus would read a decrease as a reset). Values
+are therefore about 1 s old for calls in progress, plus up to one loop turn (the loop
+waits up to `poll_s` for an ARI event). `ava_live_rtp_calls_degraded` is the
+number of open calls whose `LossMonitor` is in a sustained-loss episode (over 5 % of the
+last 500 frames, about 10 s, concealed; the same rule as the `media_quality` health
+event), from the same refresh, and drops at once when such a call ends. The monitor is
+fed only when the sink has a `quality` method (`TapScoringSink` does); with another sink
+the gauge stays 0. A session whose counts cannot be read keeps its previous ones, also
+at the call's end; a malformed, missing or lower value keeps the previous one, so no
+counter goes down. No call IDs are exported: these are process totals. Tests
+(Claude-authored, 18 Nov): `tests/unit/test_tap_live_counts.py` (9).
 
 ### Per-stage latency and alerts per minute (17 Nov 2026; PRD FR-O6, architecture §2.3)
 
