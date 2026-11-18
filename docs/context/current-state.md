@@ -141,8 +141,13 @@ and about 50,000 original clips, excluding codec copies.
   it was being monitored; a `call.started` later than the end now opens a new session
   (the earlier session's alerts kept). Known gap: after an abrupt kill of the live
   process no `call.ended` is sent, and the registry and store still ignore the new
-  session (needs the relay's source-restart signal passed on; design step). Not yet
-  tested: restarts of the API, Redis or PostgreSQL.
+  session (needs the relay's source-restart signal passed on; design step).
+- **18 Nov (attempt 6), 5.QA.** A second Compose lab case restarts PostgreSQL and then
+  Redis during a real call. The call completes; live keeps monitoring it (one `bye`, no
+  re-tap); the store pump waits through the database outage and then stores every scored
+  window (one run: 24 stored = the live counter, backlog 0); the API relay resubscribes
+  and reports the Redis outage as a `stream.gap`. No defect found. Not yet tested: an
+  API restart.
 - **17 Nov daily run (details in `daily-runs/2026-11-17.md`).** FR-O6 per-stage latency
   for the live loop (7.2/8.1): `ava_live_stage_seconds{stage}` with `queue_wait`,
   `batch_wait`, `apply` (scorer and hub publish) and `window_to_result` (offer to

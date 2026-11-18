@@ -27,6 +27,9 @@ inside the stack, and checks:
   from `backend`; neither monitoring container reaches the internet and Grafana logs no
   call home. (18 Nov, attempt 4) every event the WebSocket subscriber received was
   timed in `ava_ws_delivery_seconds`, none unmeasured, no slow-client close.
+- (18 Nov, 5.QA) restarts during a real call: of the live container (re-tap, two
+  sessions), and of PostgreSQL and Redis (no window lost from the store, the Redis
+  outage reported to the client); see each case's docstring.
 The project and its volumes are removed afterwards.
 """
 import base64
@@ -417,6 +420,69 @@ class ComposeStackLabTests(unittest.TestCase):
                             '(SELECT count(*) FROM window_scores w WHERE w.call_pk = c.id) FROM calls c ORDER BY c.id',
                             check=False).stdout.strip().splitlines()
 
+    def start_long_call(self, prefix):
+        """Start a SIPp call of about 55 s of speech in the background; returns (process,
+        output file, call length in ms, start time). The lab dialplan's Record() hangs up at
+        60 s, so the call cannot be longer."""
+        clips = json.loads(QA_CONFIG.read_text(encoding='utf-8'))['genuine'][:3] * 4
+        payloads = rtp_pcap.rtp_payloads(b''.join(rtp_pcap.wav_to_pcm8k(path) for path in clips), 'ulaw')
+        pcap = self.folder / 'inject.pcap'
+        rtp_pcap.write_pcap(payloads, 0, pcap)
+        self.compose('cp', str(pcap), 'asterisk:/lab/io/inject.pcap')
+        caller = f'{prefix}{secrets.token_hex(4)}'
+        call_ms = len(payloads) * 20
+        # Review M3: SIPp's screen output goes to a file, not a pipe nobody reads until the
+        # end (a full pipe would block SIPp and disturb the call's timing).
+        sipp_out = tempfile.TemporaryFile()
+        self.addCleanup(sipp_out.close)
+        sipp = subprocess.Popen(
+            self.compose_args('exec', '-T', 'asterisk', 'sipp', '127.0.0.1:5060', '-sf', '/lab/sipp/uac_inject.xml',
+                              '-s', '700', '-key', 'caller', caller, '-key', 'pt', '0', '-key', 'codec', 'PCMU',
+                              '-m', '1', '-d', str(call_ms + 1500), '-i', '127.0.0.1', '-mi', '127.0.0.1',
+                              '-min_rtp_port', '16000', '-max_rtp_port', '16100', '-timeout', '120s',
+                              '-timeout_error', '-nostdin'),
+            stdout=sipp_out, stderr=subprocess.STDOUT)
+        started_at = time.monotonic()
+
+        def stop_sipp():  # on failure: the docker exec client goes; the stack's `down` ends SIPp
+            if sipp.poll() is None:
+                sipp.kill()
+            sipp.wait(timeout=30)
+        self.addCleanup(stop_sipp)
+        return sipp, sipp_out, call_ms, started_at
+
+    @staticmethod
+    def collector(lines, seen):
+        """collect(until, seconds): append subscriber events to `seen` until `until(event)`
+        is true (True) or the time runs out or the subscriber ends (False)."""
+        def collect(until, seconds):
+            deadline = time.monotonic() + seconds
+            while time.monotonic() < deadline:
+                try:
+                    line = lines.get(timeout=max(0.1, deadline - time.monotonic()))
+                except queue.Empty:
+                    return False
+                if line is None:
+                    return False
+                seen.append(json.loads(line))
+                if until(seen[-1]):
+                    return True
+            return False
+        return collect
+
+    def live_metrics(self):
+        """The live process's `/metrics`, read from the api container over the internal
+        `metrics` network: {'name{labels}': value}."""
+        text = self.compose('exec', '-T', 'api', 'python', '-c', 'import urllib.request,sys; sys.stdout.write('
+                            f'urllib.request.urlopen("http://{self.live_metrics_ip}:9100/metrics", timeout=10)'
+                            '.read().decode())').stdout
+        values = {}
+        for line in text.splitlines():
+            if line and not line.startswith('#'):
+                key, _, value = line.rpartition(' ')
+                values[key] = float(value)
+        return values
+
     def test_a_live_restart_mid_call_never_stops_the_call(self):
         """5.QA process restart (Claude-authored, 18 Nov 2026; PRD "AVA failure must not
         stop a call", FR-I11; architecture §2.4 `monitor_lost`). The live container is
@@ -432,50 +498,11 @@ class ComposeStackLabTests(unittest.TestCase):
         # Review L2: longer than the sum of every wait below, so the subscriber never ends first.
         lines = self.start_subscriber(900, ends=2)
 
-        # About 55 s of speech: the lab dialplan's Record() hangs up at 60 s, so the call
-        # cannot be longer. Review L1: the remaining-time check after the restart below
-        # tells a slow restart apart from a re-tap defect.
-        clips = json.loads(QA_CONFIG.read_text(encoding='utf-8'))['genuine'][:3] * 4
-        payloads = rtp_pcap.rtp_payloads(b''.join(rtp_pcap.wav_to_pcm8k(path) for path in clips), 'ulaw')
-        pcap = self.folder / 'inject.pcap'
-        rtp_pcap.write_pcap(payloads, 0, pcap)
-        self.compose('cp', str(pcap), 'asterisk:/lab/io/inject.pcap')
-        caller = f'rst{secrets.token_hex(4)}'
-        call_ms = len(payloads) * 20
-        # Review M3: SIPp's screen output goes to a file, not a pipe nobody reads until the
-        # end (a full pipe would block SIPp and disturb the call's timing).
-        sipp_out = tempfile.TemporaryFile()
-        self.addCleanup(sipp_out.close)
-        sipp = subprocess.Popen(
-            self.compose_args('exec', '-T', 'asterisk', 'sipp', '127.0.0.1:5060', '-sf', '/lab/sipp/uac_inject.xml',
-                              '-s', '700', '-key', 'caller', caller, '-key', 'pt', '0', '-key', 'codec', 'PCMU',
-                              '-m', '1', '-d', str(call_ms + 1500), '-i', '127.0.0.1', '-mi', '127.0.0.1',
-                              '-min_rtp_port', '16000', '-max_rtp_port', '16100', '-timeout', '120s',
-                              '-timeout_error', '-nostdin'),
-            stdout=sipp_out, stderr=subprocess.STDOUT)
-        call_started_at = time.monotonic()
-
-        def stop_sipp():  # on failure: the docker exec client goes; the stack's `down` ends SIPp
-            if sipp.poll() is None:
-                sipp.kill()
-            sipp.wait(timeout=30)
-        self.addCleanup(stop_sipp)
-
+        # Review L1: the remaining-time check after the restart below tells a slow restart
+        # apart from a re-tap defect.
+        sipp, sipp_out, call_ms, call_started_at = self.start_long_call('rst')
         seen = []
-
-        def collect(until, seconds):
-            deadline = time.monotonic() + seconds
-            while time.monotonic() < deadline:
-                try:
-                    line = lines.get(timeout=max(0.1, deadline - time.monotonic()))
-                except queue.Empty:
-                    return False
-                if line is None:
-                    return False
-                seen.append(json.loads(line))
-                if until(seen[-1]):
-                    return True
-            return False
+        collect = self.collector(lines, seen)
 
         self.assertTrue(collect(lambda e: e['type'] == 'score.updated', 60), f'no score before the restart: {seen}')
         call_id = seen[-1]['call_id']
@@ -530,6 +557,119 @@ class ComposeStackLabTests(unittest.TestCase):
         print(f'\nobserved: live back healthy {live_back_s:.1f} s after the restart began; call of '
               f'{call_ms / 1000:.0f} s completed; windows before/after {windows[0]}/{windows[1]}; '
               f'gap reports {gaps}')
+
+    def test_postgres_and_redis_restarts_mid_call_lose_no_stored_window(self):
+        """5.QA backing-service restarts (Claude-authored, 18 Nov 2026; PRD "AVA failure
+        must not stop a call", FR-I11, FR-A3/A4; architecture §2.5-§2.6). While a real call
+        is scored, PostgreSQL and then Redis are restarted (Compose `restart`, SIGTERM). The
+        call completes; the live process keeps the call (one `call.ended`, `bye`, no
+        `monitor_lost`, no live restart); the store pump meets the broken database
+        connection, retries, and stores every scored window (this call's scored rows equal
+        the scorer's `windows_by_direction`, backlog 0, nothing refused or skipped); the API relay resubscribes after the Redis
+        restart, reports the interruption to the client as a `stream.gap`, and the call's
+        `bye` end reaches the API registry. Events published while Redis was down are lost
+        to the API by design (pub/sub); the test asserts the loss is reported, not hidden."""
+        self.compose('up', '-d', '--wait', '--wait-timeout', '360', timeout=600)
+        self.wait_healthy('live', 120)
+        self.wait_healthy('api', 240)
+        self.wait_relay_subscribed(60)
+        lines = self.start_subscriber(900)
+        sipp, sipp_out, call_ms, call_started_at = self.start_long_call('svc')
+        seen = []
+        collect = self.collector(lines, seen)
+
+        self.assertTrue(collect(lambda e: e['type'] == 'score.updated', 60), f'no score before the restarts: {seen}')
+        call_id = seen[-1]['call_id']
+        outage_started_at = time.monotonic()
+        self.compose('restart', '-t', '10', 'postgres', timeout=120)
+        self.wait_healthy('postgres', 60)
+        self.compose('restart', '-t', '10', 'redis', timeout=120)
+        self.wait_healthy('redis', 60)
+        # Review L2: the subscribed gauge can still read 1 before the relay notices the
+        # outage; wait for the interruption to be counted first, then for resubscription.
+        deadline = time.monotonic() + 60
+        while True:
+            found = re.search(r'^ava_event_relay_interruptions_total (\S+)$', self.api_get('/metrics')['body'],
+                              re.MULTILINE)
+            self.assertIsNotNone(found, 'the API renders the relay interruption counter')
+            if float(found.group(1)) >= 1:
+                break
+            self.assertLess(time.monotonic(), deadline, 'the API relay never noticed the Redis restart')
+            time.sleep(1)
+        self.wait_relay_subscribed(60)
+        outage_s = time.monotonic() - outage_started_at
+        remaining_s = call_ms / 1000 - (time.monotonic() - call_started_at)
+        self.assertGreater(remaining_s, 10, f'the restarts took {outage_s:.1f} s: the call had almost ended, so '
+                                            'the checks after them would show nothing')
+
+        returncode = sipp.wait(timeout=call_ms / 1000 + 120)
+        sipp_out.seek(0)
+        self.assertEqual(returncode, 0, f'the call did not complete: {sipp_out.read()[-1500:]!r}')
+        self.assertTrue(collect(lambda e: e['type'] == 'call.ended' and e['call_id'] == call_id, 60),
+                        f'no end of the call after the restarts: {seen}')
+        ours = [e for e in seen if e.get('call_id') == call_id]
+        self.assertEqual([e.get('reason') for e in ours if e['type'] == 'call.ended'], ['bye'], f'events: {seen}')
+        self.assertEqual(ours[0]['type'], 'call.started', f'events: {seen}')  # review L4
+        self.assertNotIn('call.started', [e['type'] for e in ours[1:]], 'the call was never re-tapped')
+        gaps = [e for e in seen if e['type'] == 'stream.gap']
+        self.assertTrue(gaps and all(g['dropped'] == 0 for g in gaps), f'gap report: {gaps}')
+        self.assertGreaterEqual(sum(g.get('upstream_interruptions', 0) for g in gaps), 1,
+                                'the Redis outage is reported to the client')
+        final = json.loads(self.api_get(f'/v1/calls/{call_id}')['body'])
+        self.assertEqual((final['status'], final['end_reason']), ('ended', 'bye'), final)
+
+        # The store: one row, every scored window stored once the database came back.
+        metrics, rows, deadline = {}, [], time.monotonic() + 60
+        while time.monotonic() < deadline:
+            metrics, rows = self.live_metrics(), self.call_rows()
+            if metrics.get('ava_live_store_backlog') == 0 and [r.split('|')[1] for r in rows] == ['bye']:
+                break
+            time.sleep(1)
+        self.assertEqual([r.split('|')[:2] for r in rows], [[call_id, 'bye']], rows)
+        self.assertEqual(metrics.get('ava_live_store_backlog'), 0, 'the store pump caught up')
+        # Review M1: compare with the scorer's own per-call count (`windows_by_direction`
+        # in the stored end), not the pipeline counter, which also counts results the
+        # scorer ignores or quality-gates without a scored row.
+        self.assertRegex(call_id, r'^[0-9A-Za-z._-]+$', 'safe to quote in SQL')
+        stored_scored, scorer_windows = (int(value) for value in self.compose(
+            'exec', '-T', 'postgres', 'psql', '-U', 'ava', '-d', 'ava', '-tAc',
+            "SELECT (SELECT count(*) FROM window_scores w WHERE w.call_pk = c.id AND w.scored) || '|' || "
+            "(SELECT coalesce(sum(value::int), 0) FROM jsonb_each_text(c.end_data->'windows_by_direction')) "
+            f"FROM calls c WHERE c.call_id = '{call_id}'").stdout.strip().split('|'))
+        live_scored = metrics['ava_live_windows_resolved_total{outcome="scored"}']
+        self.assertGreaterEqual(scorer_windows, 10, 'the call was scored throughout')
+        self.assertEqual(stored_scored, scorer_windows, 'every scored window is in PostgreSQL')
+        for outcome in ('not_stored', 'refused', 'skipped_faulty'):
+            self.assertEqual(metrics[f'ava_live_store_events_total{{outcome="{outcome}"}}'], 0, outcome)
+        for kind in ('faults', 'store_misconfigured'):  # review L3
+            self.assertEqual(metrics[f'ava_live_store_waits_total{{kind="{kind}"}}'], 0, kind)
+        # Review L1: at least one write failed on the connection the restart broke (even
+        # with no event during the outage, so this proves the connection loss was met,
+        # not a wait through the outage), and the pump recovered.
+        self.assertGreaterEqual(metrics['ava_live_store_waits_total{kind="retry_waits"}'], 1,
+                                'the pump met the broken database connection (else the restart tested nothing)')
+        self.assertEqual(metrics['ava_live_store_consecutive_failures'], 0, 'the pump recovered')
+        # Redis-side proof of the outage is the client's `stream.gap` above; the forwarder's
+        # failure count is only reported (redis-py may retry a publish across the restart).
+        publish_failures = metrics['ava_live_redis_publish_failures_total']
+        pump_faults = {key: value for key, value in metrics.items() if key.startswith('ava_live_pump_faults_total')}
+        self.assertTrue(pump_faults and not any(pump_faults.values()), f'unexpected pump exceptions: {pump_faults}')
+
+        # The live process itself never restarted and never lost the call.
+        live_logs = self.compose('logs', '--no-color', '--no-log-prefix', 'live').stdout
+        records = []
+        for line in live_logs.splitlines():
+            try:
+                records.append(json.loads(line))
+            except ValueError:
+                continue
+        self.assertEqual([r.get('event') for r in records].count('starting'), 1, 'live started once')
+        self.assertNotIn('monitor_lost', live_logs)
+        retry_waits = metrics['ava_live_store_waits_total{kind="retry_waits"}']
+        print(f'\nobserved: restarts took {outage_s:.1f} s with {remaining_s:.0f} s of the call left; '
+              f'{stored_scored} scored windows stored = scorer count {scorer_windows} (live counter '
+              f'{live_scored:.0f}); store retry waits {retry_waits:.0f}; '
+              f'Redis publish failures {publish_failures:.0f}; gap reports {gaps}')
 
     def check_monitoring(self, windows, ws_events):
         """Profile `monitoring` (18 Nov, FR-O6): Prometheus holds the call, every dashboard

@@ -277,6 +277,13 @@ items needing that data are listed at the end and stay out of the queue.
   Redis and PostgreSQL restarts; an abrupt (SIGKILL) live stop, which sends no
   `call.ended`, so the registry and the store ignore the new session as stale or
   duplicate (needs the relay's source epoch passed to consumers: design step).
+  18 Nov (attempt 6): PostgreSQL and Redis restarted during a real call in the Compose
+  lab (`test_postgres_and_redis_restarts_mid_call_lose_no_stored_window`,
+  Claude-authored): the call completes and is never lost by live (one `bye`, no re-tap,
+  no live restart); the store pump waits through the outage and then stores every scored
+  window (rows equal the live counter, backlog 0); the API relay resubscribes and reports
+  the Redis outage as a `stream.gap`; the registry ends the call `bye`. No defect found.
+  Remaining: API restart, abrupt live stop (design step above).
 
 ## 6 — Asterisk laboratory (FR-T1–T5/T7, FR-I1/I2)
 - [ ] 6.1 Docker/WSL preflight; Asterisk/SIPp endpoints and WAV injection.
