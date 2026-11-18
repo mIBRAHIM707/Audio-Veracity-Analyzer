@@ -146,8 +146,11 @@ and about 50,000 original clips, excluding codec copies.
   Redis during a real call. The call completes; live keeps monitoring it (one `bye`, no
   re-tap); the store pump waits through the database outage and then stores every scored
   window (one run: 24 stored = the live counter, backlog 0); the API relay resubscribes
-  and reports the Redis outage as a `stream.gap`. No defect found. Not yet tested: an
-  API restart.
+  and reports the Redis outage as a `stream.gap`. No defect found. A third case restarts
+  the API during a call: live is unaffected and every window stored; the new API
+  resubscribes within seconds and its in-memory registry picks the call up from the next
+  event and ends it `bye` (the earlier part of the call is not in its memory; PostgreSQL
+  has it). No defect found.
 - **17 Nov daily run (details in `daily-runs/2026-11-17.md`).** FR-O6 per-stage latency
   for the live loop (7.2/8.1): `ava_live_stage_seconds{stage}` with `queue_wait`,
   `batch_wait`, `apply` (scorer and hub publish) and `window_to_result` (offer to

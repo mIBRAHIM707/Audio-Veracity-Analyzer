@@ -283,7 +283,10 @@ items needing that data are listed at the end and stay out of the queue.
   no live restart); the store pump waits through the outage and then stores every scored
   window (rows equal the live counter, backlog 0); the API relay resubscribes and reports
   the Redis outage as a `stream.gap`; the registry ends the call `bye`. No defect found.
-  Remaining: API restart, abrupt live stop (design step above).
+  Then an API restart during a real call (`test_an_api_restart_mid_call_never_stops_the_call`,
+  Claude-authored): live never notices; the new API resubscribes, a new WebSocket client
+  gets the rest of the call, and the registry creates the call from its next event and
+  ends it `bye`. No defect found. Remaining: abrupt live stop (design step above).
 
 ## 6 — Asterisk laboratory (FR-T1–T5/T7, FR-I1/I2)
 - [ ] 6.1 Docker/WSL preflight; Asterisk/SIPp endpoints and WAV injection.

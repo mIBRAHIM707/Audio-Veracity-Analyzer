@@ -53,7 +53,8 @@ change; not a browser-render or load measurement.
 18 Nov (attempt 5): no data change. A lab test restarts the live service mid-call: the
 call continues and is monitored again; the API's call list now shows it as such.
 18 Nov (attempt 6): no data change. A lab test restarts PostgreSQL and Redis mid-call:
-the call continues and every scored window is still stored.
+the call continues and every scored window is still stored. The same holds when the API
+is restarted mid-call.
 
 Updated 4 October 2026. This is the active sequence; evidence lives in
 `current-state.md` and `handoffs/`. Check marks mean the stated bounded task passed

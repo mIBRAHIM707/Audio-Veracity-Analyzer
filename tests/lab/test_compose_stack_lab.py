@@ -28,8 +28,9 @@ inside the stack, and checks:
   call home. (18 Nov, attempt 4) every event the WebSocket subscriber received was
   timed in `ava_ws_delivery_seconds`, none unmeasured, no slow-client close.
 - (18 Nov, 5.QA) restarts during a real call: of the live container (re-tap, two
-  sessions), and of PostgreSQL and Redis (no window lost from the store, the Redis
-  outage reported to the client); see each case's docstring.
+  sessions), of PostgreSQL and Redis (no window lost from the store, the Redis outage
+  reported to the client), and of the API (registry picks the call up again); see each
+  case's docstring.
 The project and its volumes are removed afterwards.
 """
 import base64
@@ -670,6 +671,98 @@ class ComposeStackLabTests(unittest.TestCase):
               f'{stored_scored} scored windows stored = scorer count {scorer_windows} (live counter '
               f'{live_scored:.0f}); store retry waits {retry_waits:.0f}; '
               f'Redis publish failures {publish_failures:.0f}; gap reports {gaps}')
+
+    def test_an_api_restart_mid_call_never_stops_the_call(self):
+        """5.QA API restart (Claude-authored, 18 Nov 2026; PRD "AVA failure must not stop a
+        call", FR-A3/A4; architecture §2.6). The api container is restarted (SIGTERM) while
+        a real call is scored. The call completes; live never notices (one `bye`, no
+        re-tap, started once, every scored window stored); the new API process resubscribes
+        to Redis, a new WebSocket client receives the rest of the call, and the in-memory
+        registry, which lost the call with the old process, creates it from the next event
+        (implicit start) and ends it `bye`."""
+        self.compose('up', '-d', '--wait', '--wait-timeout', '360', timeout=600)
+        self.wait_healthy('live', 120)
+        self.wait_healthy('api', 240)
+        self.wait_relay_subscribed(60)
+        before = self.start_subscriber(900)
+        sipp, sipp_out, call_ms, call_started_at = self.start_long_call('api')
+        seen = []
+        self.assertTrue(self.collector(before, seen)(lambda e: e['type'] == 'score.updated', 60),
+                        f'no score before the restart: {seen}')
+        call_id = seen[-1]['call_id']
+        restarted_at = time.monotonic()
+        self.compose('restart', '-t', '20', 'api', timeout=120)
+        # Not `api_get`: exec fails while the process starts. The relay starts with the app,
+        # before the model warm-up that the health check waits for.
+        deadline = time.monotonic() + 120
+        while True:
+            done = self.compose('exec', '-T', 'api', 'python', '-c', HTTP_GET, '/metrics', check=False)
+            try:
+                body = json.loads(done.stdout)['body'] if done.returncode == 0 else ''
+            except ValueError:
+                body = ''
+            if 'ava_event_relay_subscribed 1' in body.splitlines():
+                break
+            self.assertLess(time.monotonic(), deadline, f'the new API did not subscribe: {done.stderr[-1500:]}')
+            time.sleep(1)
+        api_back_s = time.monotonic() - restarted_at
+        after = self.start_subscriber(900)
+        remaining_s = call_ms / 1000 - (time.monotonic() - call_started_at)
+        self.assertGreater(remaining_s, 10, f'the API took {api_back_s:.1f} s to come back: the call had almost '
+                                            'ended, so the checks after it would show nothing')
+
+        returncode = sipp.wait(timeout=call_ms / 1000 + 120)
+        sipp_out.seek(0)
+        self.assertEqual(returncode, 0, f'the call did not complete: {sipp_out.read()[-1500:]!r}')
+        later = []
+        self.assertTrue(self.collector(after, later)(lambda e: e['type'] == 'call.ended' and e['call_id'] == call_id,
+                                                     60), f'the new client never saw the end: {later}')
+        ours = [e for e in later if e.get('call_id') == call_id]
+        self.assertIn('score.updated', [e['type'] for e in ours], 'the new client got the call\'s scores')
+        # Review nit: weak on its own (the client joined after the restart); the single
+        # `bye` row and live's log below are the real no-re-tap evidence.
+        self.assertNotIn('call.started', [e['type'] for e in ours], 'no new monitoring session after the restart')
+        self.assertEqual(ours[-1].get('reason'), 'bye')
+        record = json.loads(self.api_get(f'/v1/calls/{call_id}')['body'])
+        self.assertEqual((record['status'], record['end_reason']), ('ended', 'bye'), record)
+        # Review L1: the new process's registry (counters from zero) created the call from
+        # a mid-call event, applied its events, and refused none as late or failed.
+        stats = json.loads(self.api_get('/v1/calls')['body'])['registry']
+        self.assertEqual((stats['implicit_start'], stats['active'], stats['ended']), (1, 0, 1), stats)
+        metrics_text = self.api_get('/metrics')['body']
+        registry = {name: float(value) for name, value in
+                    re.findall(r'^ava_call_registry_events_total\{outcome="(\w+)"\} (\S+)$', metrics_text, re.MULTILINE)}
+        self.assertGreaterEqual(registry.get('applied', 0), 2, registry)
+        self.assertEqual((registry.get('after_end'), registry.get('apply_errors')), (0, 0), registry)
+
+        rows, deadline = [], time.monotonic() + 60
+        while time.monotonic() < deadline:
+            rows = self.call_rows()
+            if [r.split('|')[1] for r in rows] == ['bye']:
+                break
+            time.sleep(1)
+        self.assertEqual([r.split('|')[:2] for r in rows], [[call_id, 'bye']], rows)
+        self.assertRegex(call_id, r'^[0-9A-Za-z._-]+$', 'safe to quote in SQL')
+        stored_scored, scorer_windows = (int(value) for value in self.compose(
+            'exec', '-T', 'postgres', 'psql', '-U', 'ava', '-d', 'ava', '-tAc',
+            "SELECT (SELECT count(*) FROM window_scores w WHERE w.call_pk = c.id AND w.scored) || '|' || "
+            "(SELECT coalesce(sum(value::int), 0) FROM jsonb_each_text(c.end_data->'windows_by_direction')) "
+            f"FROM calls c WHERE c.call_id = '{call_id}'").stdout.strip().split('|'))
+        self.assertGreaterEqual(scorer_windows, 10, 'the call was scored throughout')
+        self.assertEqual(stored_scored, scorer_windows, 'every scored window is in PostgreSQL')
+        live_logs = self.compose('logs', '--no-color', '--no-log-prefix', 'live').stdout
+        events = []
+        for line in live_logs.splitlines():
+            try:
+                events.append(json.loads(line).get('event'))
+            except (ValueError, AttributeError):
+                continue
+        self.assertEqual(events.count('starting'), 1, 'live started once')
+        self.assertNotIn('monitor_lost', live_logs)
+        print(f'\nobserved: the new API subscribed {api_back_s:.1f} s after the restart began with '
+              f'{remaining_s:.0f} s of the call left; the new client got {len(ours)} events of the call '
+              '(not every event after the restart: it connects after the relay subscribes); '
+              f'{stored_scored} scored windows stored = scorer count {scorer_windows}')
 
     def check_monitoring(self, windows, ws_events):
         """Profile `monitoring` (18 Nov, FR-O6): Prometheus holds the call, every dashboard
