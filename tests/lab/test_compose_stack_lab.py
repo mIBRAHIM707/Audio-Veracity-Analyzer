@@ -20,8 +20,15 @@ inside the stack, and checks:
 - the API serves the built dashboard and analyses a public clip with the real model;
 - neither container can reach the internet; both run as uid 10001; no password
   appears in the logs.
+- (18 Nov, profile `monitoring`, PRD FR-O6) Prometheus scrapes both targets on the
+  internal `metrics` network and holds the call's scored windows; every query of the
+  provisioned Grafana dashboard evaluates; Grafana (admin login) lists the dashboard and
+  reads a live series through its data source; live's health endpoint is unreachable
+  from `backend`; neither monitoring container reaches the internet and Grafana logs no
+  call home.
 The project and its volumes are removed afterwards.
 """
+import base64
 import json
 import os
 from pathlib import Path
@@ -35,6 +42,7 @@ import textwrap
 import threading
 import time
 import unittest
+from urllib.parse import quote
 
 from lab.asterisk import rtp_pcap
 from models.export import model_card as mc
@@ -43,6 +51,7 @@ from tests.lab.test_live_service_lab import ONNX, QA_CONFIG, VAD_MODEL
 LAB = unittest.skipIf(os.environ.get('AVA_TEST_DOCKER_LAB') != '1', 'set AVA_TEST_DOCKER_LAB=1')
 ROOT = Path(__file__).resolve().parents[2]
 COMPOSE = ROOT / 'deploy' / 'compose' / 'compose.yaml'
+DASHBOARD = ROOT / 'deploy' / 'compose' / 'monitoring' / 'grafana' / 'dashboards' / 'ava-overview.json'
 REAL_MODEL_QA = ROOT / '.local' / 'real-model-qa.json'
 
 
@@ -118,7 +127,7 @@ EGRESS_PROBE = ('import socket,sys\n'
 class ComposeStackLabTests(unittest.TestCase):
     def compose_args(self, *args):
         return [shutil.which('docker'), 'compose', '--env-file', str(self.env_file), '-f', str(COMPOSE),
-                '-p', self.project, '--profile', 'lab', *args]
+                '-p', self.project, '--profile', 'lab', '--profile', 'monitoring', *args]
 
     def compose(self, *args, check=True, timeout=300):
         done = subprocess.run(self.compose_args(*args),
@@ -145,9 +154,17 @@ class ComposeStackLabTests(unittest.TestCase):
             licence_restriction='Research and non-commercial use only.'), card_dir / 'model_card.json')
         # Review M1: a database password with URL-hostile characters must still work.
         self.ari_password, self.db_password = secrets.token_hex(16), f'{secrets.token_hex(8)}/@+=%#x'
+        self.grafana_password = secrets.token_hex(16)
+        # Re-review: a run-specific scrape subnet, so another AVA stack on this host (with
+        # the 10.231.250.0/24 default) does not collide with the test's.
+        octet = 1 + secrets.randbelow(254)
+        self.live_metrics_ip = f'10.232.{octet}.10'
         self.env_file = folder / 'stack.env'
         self.env_file.write_text('\n'.join([
             f'AVA_ARI_PASSWORD={self.ari_password}', f'AVA_DB_PASSWORD={self.db_password}',
+            f'AVA_GRAFANA_ADMIN_PASSWORD={self.grafana_password}',
+            f'AVA_METRICS_SUBNET=10.232.{octet}.0/24', f'AVA_METRICS_DYNAMIC_RANGE=10.232.{octet}.128/25',
+            f'AVA_LIVE_METRICS_IP={self.live_metrics_ip}',
             f'AVA_ONNX_DIR={ONNX.parent.as_posix()}', f'AVA_ONNX_FILE={ONNX.name}',
             f'AVA_CARD_DIR={card_dir.as_posix()}', f'AVA_VAD_DIR={VAD_MODEL.parent.as_posix()}',
             f'AVA_MODEL_ROOT={MODEL_ROOT.as_posix()}']) + '\n')
@@ -172,6 +189,38 @@ class ComposeStackLabTests(unittest.TestCase):
             time.sleep(2)
         logs = self.compose('logs', '--no-color', service, check=False)
         self.fail(f'{service} not healthy: {logs.stdout[-3000:]}')
+
+    def prom_get(self, path):
+        """GET a Prometheus HTTP API path inside its container (busybox wget); JSON."""
+        done = self.compose('exec', '-T', 'prometheus', 'wget', '-q', '-O', '-', f'http://127.0.0.1:9090{path}')
+        return json.loads(done.stdout)
+
+    def prom_value(self, query):
+        """Sum of an instant query's sample values, or None with no samples."""
+        result = self.prom_get('/api/v1/query?query=' + quote(query, safe=''))
+        self.assertEqual(result['status'], 'success', result)
+        samples = result['data']['result']
+        return sum(float(sample['value'][1]) for sample in samples) if samples else None
+
+    def grafana(self, path, body=None):
+        """Grafana HTTP API inside its container as the admin (curl); (status, JSON)."""
+        token = base64.b64encode(f'admin:{self.grafana_password}'.encode()).decode()
+        args = ['exec', '-T', 'grafana', 'curl', '-s', '-o', '-', '-w', '\n%{http_code}', '-H',
+                f'Authorization: Basic {token}']
+        if body is not None:
+            args += ['-H', 'Content-Type: application/json', '-X', 'POST', '--data-binary', json.dumps(body)]
+        done = self.compose(*args, f'http://127.0.0.1:3000{path}')
+        text, _, status = done.stdout.rpartition('\n')
+        return int(status), json.loads(text) if text.strip() else None
+
+    def wait_targets_up(self, seconds):
+        deadline, targets = time.monotonic() + seconds, []
+        while time.monotonic() < deadline:
+            targets = self.prom_get('/api/v1/targets')['data']['activeTargets']
+            if sorted((t['labels']['job'], t['health']) for t in targets) == [('ava-api', 'up'), ('ava-live', 'up')]:
+                return
+            time.sleep(2)
+        self.fail(f'scrape targets not up: {[(t["labels"], t["health"], t.get("lastError")) for t in targets]}')
 
     def wait_relay_subscribed(self, seconds):
         """Review L1: pub/sub drops what is published before the relay subscribes, and the
@@ -222,6 +271,9 @@ class ComposeStackLabTests(unittest.TestCase):
         self.compose('up', '-d', '--wait', '--wait-timeout', '360', timeout=600)
         self.wait_healthy('live', 120)
         self.wait_healthy('api', 240)
+        self.wait_healthy('prometheus', 60)
+        self.wait_healthy('grafana', 120)
+        self.wait_targets_up(60)  # first scrape within one 15 s interval
 
         # The API: ready with the real checkpoint (the health check ran the warm-up).
         ready = self.api_get('/readyz')
@@ -328,8 +380,9 @@ class ComposeStackLabTests(unittest.TestCase):
         api_start = next(json.loads(line) for line in api_logs.splitlines() if '"starting"' in line)
         self.assertEqual((api_start['live_events'], api_start['redis_reachable'], api_start['dashboard']),
                          (True, True, True))
+        monitoring = self.check_monitoring(int(windows))
         all_logs = self.compose('logs', '--no-color').stdout
-        for secret in (self.ari_password, self.db_password):
+        for secret in (self.ari_password, self.db_password, self.grafana_password):
             self.assertNotIn(secret, all_logs, 'no password in any container log')
         # The lab PBX's own console logs caller IDs (Asterisk's business); AVA's must not.
         self.assertNotIn(caller, logs + api_logs, 'the caller number is not in the AVA service logs')
@@ -343,7 +396,99 @@ class ComposeStackLabTests(unittest.TestCase):
             self.assertEqual(user, '10001', f'{service} does not run as root')
         print(f'\nobserved: call {call_id} stored with {windows} windows; {len(ours)} events over the API '
               f'WebSocket; file verdict {body["verdict"]} from {body["evidence_windows"]} windows '
-              f'(uncalibrated baseline); API warm-up {json.loads(ready["body"])["warmup_seconds"]:.1f} s')
+              f'(uncalibrated baseline); API warm-up {json.loads(ready["body"])["warmup_seconds"]:.1f} s; '
+              f'monitoring: {monitoring}')
+
+    def check_monitoring(self, windows):
+        """Profile `monitoring` (18 Nov, FR-O6): Prometheus holds the call, every dashboard
+        query evaluates, Grafana serves the dashboard and reads through its data source,
+        and the scrape network stays closed."""
+        # The scored windows reach Prometheus at the next scrape (15 s interval).
+        scored, deadline = None, time.monotonic() + 60
+        while time.monotonic() < deadline:
+            scored = self.prom_value('ava_live_windows_resolved_total{outcome="scored"}')
+            if scored is not None and scored >= windows:
+                break
+            time.sleep(3)
+        self.assertGreaterEqual(scored or 0, windows, 'Prometheus holds the scored windows of the call')
+        self.assertGreaterEqual(self.prom_value('ava_live_calls_capacity') or 0, 1)
+        self.assertGreaterEqual(self.prom_value('ava_live_rtp_receiver_total{kind="packets"}') or 0, 100)
+        self.assertIsNotNone(self.prom_value('ava_api_requests_total'), 'the API is scraped too')
+
+        # Every query on the dashboard is valid PromQL against the live data, and the
+        # stage-latency panel has data after a call.
+        dashboard = json.loads(DASHBOARD.read_text(encoding='utf-8'))
+        exprs = [target['expr'] for panel in dashboard['panels'] for target in panel.get('targets', [])]
+        for expr in exprs:
+            result = self.prom_get('/api/v1/query?query=' + quote(expr, safe=''))
+            self.assertEqual(result['status'], 'success', (expr, result))
+        # Review L6: after a call and a file analysis, every query has data.
+        empty = [expr for expr in exprs if self.prom_value(expr) is None]
+        self.assertEqual(empty, [], 'dashboard queries without data after a call')
+        with_data = len(exprs) - len(empty)
+        self.assertIsNotNone(self.prom_value(
+            'histogram_quantile(0.95, sum by (le, stage) (rate(ava_live_stage_seconds_bucket[5m])))'))
+
+        # Grafana: health, the provisioned dashboard, and a query through the data source.
+        status, health = self.grafana('/api/health')
+        self.assertEqual((status, health.get('database')), (200, 'ok'), health)
+        status, found = self.grafana('/api/search?query=AVA')
+        self.assertEqual(status, 200, found)
+        self.assertIn('ava-overview', [item.get('uid') for item in found])
+        status, board = self.grafana('/api/dashboards/uid/ava-overview')
+        self.assertEqual(status, 200, board)
+        self.assertEqual(len(board['dashboard']['panels']), len(dashboard['panels']))
+        done = self.compose('exec', '-T', 'grafana', 'curl', '-s', '-o', '/dev/null', '-w', '%{http_code}',
+                            'http://127.0.0.1:3000/api/dashboards/uid/ava-overview')
+        self.assertEqual(done.stdout.strip(), '401', 'no anonymous access')
+        status, answer = self.grafana('/api/ds/query', {
+            'from': 'now-5m', 'to': 'now',
+            'queries': [{'refId': 'A', 'datasource': {'type': 'prometheus', 'uid': 'ava-prometheus'},
+                         'expr': 'ava_live_calls_capacity', 'instant': True}]})
+        self.assertEqual(status, 200, answer)
+        frames = answer['results']['A']['frames']
+        self.assertTrue(frames and frames[0]['data']['values'][-1], f'Grafana read no live series: {answer}')
+
+        # Isolation: live's health endpoint is closed to `backend` (Asterisk tries both
+        # live's backend name and its metrics address); Prometheus and Grafana cannot
+        # reach `backend` or the internet.
+        # Each probe has a positive control, so a missing tool cannot pass as "blocked".
+        def tcp_from_asterisk(target):
+            return self.compose('exec', '-T', 'asterisk', 'timeout', '5', 'bash', '-c',
+                                f'exec 3<>/dev/tcp/{target}', check=False).returncode
+        self.assertEqual(tcp_from_asterisk('postgres/5432'), 0, 'control: asterisk reaches backend')
+        for target in ('live/9100', f'{self.live_metrics_ip}/9100'):
+            self.assertNotEqual(tcp_from_asterisk(target), 0, f'asterisk reached live health at {target}')
+        reach = self.compose('exec', '-T', 'api', 'python', '-c', 'import urllib.request; urllib.request.urlopen('
+                             f'"http://{self.live_metrics_ip}:9100/healthz", timeout=5)', check=False)
+        self.assertEqual(reach.returncode, 0, f'control: the metrics network reaches live health {reach.stderr}')
+        # Review L6: probe `backend` by address, not by a name that only fails to resolve.
+        postgres_ip = self.compose('exec', '-T', 'postgres', 'hostname', '-i').stdout.split()[0]
+        for service, control in (('prometheus', 'http://api:8000/healthz'),
+                                 ('grafana', 'http://prometheus:9090/-/ready')):
+            def wget(url):
+                return self.compose('exec', '-T', service, 'wget', '-q', '-T', '3', '-O', '/dev/null', url,
+                                    check=False).returncode
+            self.assertEqual(wget(control), 0, f'control: {service} reaches {control}')
+            for url in ('http://1.1.1.1/', 'http://postgres:5432/'):
+                self.assertNotEqual(wget(url), 0, f'{service} reached {url}')
+        # By address: curl's connect time is 0 unless a TCP connection opened (a wget exit
+        # code cannot tell "blocked" from "PostgreSQL does not speak HTTP").
+        def connect_time(target):
+            done = self.compose('exec', '-T', 'grafana', 'curl', '-s', '-m', '3', '-o', '/dev/null', '-w',
+                                '%{time_connect}', f'telnet://{target}', check=False)
+            return float(done.stdout.strip() or 0)
+        self.assertGreater(connect_time('prometheus:9090'), 0.0, 'control: curl reports a connection')
+        opened = self.compose('exec', '-T', 'api', 'python', '-c', 'import socket; socket.create_connection('
+                              f'("{postgres_ip}", 5432), timeout=3).close()', check=False)
+        self.assertEqual(opened.returncode, 0, f'control: {postgres_ip}:5432 is a live backend address')
+        self.assertEqual(connect_time(f'{postgres_ip}:5432'), 0.0, 'grafana opened a connection into backend')
+        # The real guard against calling home is the network (no route, no outside DNS);
+        # the log check only shows that Grafana did not try and fail noisily.
+        grafana_logs = self.compose('logs', '--no-color', '--no-log-prefix', 'grafana').stdout
+        self.assertNotIn('grafana.com', grafana_logs, 'Grafana tried to call home')
+        self.assertNotIn('stats.grafana.org', grafana_logs)
+        return f'{scored:.0f} scored windows in Prometheus; {with_data}/{len(exprs)} dashboard queries with data'
 
 
 if __name__ == '__main__':

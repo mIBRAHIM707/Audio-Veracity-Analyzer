@@ -12,6 +12,8 @@ local, CPU-only LAB stack:
 | `live` | `ava-live:dev`, built from `deploy/live/Dockerfile` | the tap + scorer (`python -m services.live`) |
 | `asterisk` (profile `lab`) | `ava-lab-asterisk:dev`, built from `lab/asterisk` | the lab PBX |
 | `api` | `ava-api:dev`, built from `deploy/api/Dockerfile` | the analysis API and dashboard (`python -m services.api`): file analysis with the AntiDeepfake baseline, `/v1/calls` and `WS /v1/events` relayed from Redis |
+| `prometheus` (profile `monitoring`) | `prom/prometheus:v3.16.0@sha256:e0498764…` | scrapes `live` and `api` every 15 s (FR-O6) |
+| `grafana` (profile `monitoring`) | `grafana/grafana-oss:13.0.2@sha256:5dad0df1…` | the provisioned "AVA overview (lab)" dashboard (FR-O6) |
 
 The `api` image (17 Nov, attempt 2) is built in two stages:
 - `node:22-bookworm-slim@sha256:e9f565d3…` builds the dashboard from the committed
@@ -72,15 +74,96 @@ the dashboard from this stack. Exposing it is a deployment decision:
 None of these is designed here. For a look on a development machine, run the API on the
 host instead (`services/api/README.md`).
 
+## Monitoring (profile `monitoring`, 18 Nov 2026; PRD FR-O6)
+
+Add `--profile monitoring` to the `up` and `down` commands above. Prometheus 3.16.0
+(Apache-2.0) and Grafana OSS 13.0.2 (AGPL-3.0) are both free and open source. They were
+pulled on 18 Nov 2026 and pinned by version and index digest; the images are 389 MB and
+1.47 GB on disk.
+
+- Network. A second internal network, `metrics`, holds `live`, `api`, `prometheus` and
+  `grafana`. It is always created, also without the profile. Its settings:
+  - `AVA_METRICS_SUBNET`, default 10.231.250.0/24. This is outside Docker's default
+    pools (172.17-172.31.x and 192.168.x).
+  - `AVA_METRICS_DYNAMIC_RANGE`, default 10.231.250.128/25. Other containers get their
+    addresses from this range.
+  - `AVA_LIVE_METRICS_IP`, default 10.231.250.10: `live`'s fixed address.
+
+  Change the three together. The fixed address must be inside the subnet and outside
+  the dynamic range, or another container can take it and `live` cannot be created. If
+  the subnet overlaps a network the host already uses, `up` fails for the whole stack.
+
+  `live`'s health endpoint (`/healthz`, `/readyz`, `/metrics`, no authentication) binds
+  to the fixed address only. Prometheus can scrape it; nothing on `backend` (Asterisk,
+  PostgreSQL, Redis) reaches it. Until 18 Nov it was bound to 127.0.0.1. `prometheus`
+  and `grafana` are on `metrics` only, so they cannot reach `backend` or the internet.
+  Nothing is published on the host.
+- Scraping. `monitoring/prometheus.yml` has jobs `ava-live` (`live:9100`) and `ava-api`
+  (`api:8000`). The API's operations log skips `/metrics`, so scrapes add no log lines.
+  Retention is 15 days or 2 GB (`AVA_PROMETHEUS_RETENTION`,
+  `AVA_PROMETHEUS_RETENTION_SIZE`), in the `promdata` volume.
+- Dashboard. `monitoring/grafana/dashboards/ava-overview.json`, provisioned read-only
+  (edits in the UI are not saved). It covers each FR-O6 item:
+  - latency per stage: the live loop stages, the detector call and the file-analysis
+    stages, as p95;
+  - queue depth: live windows waiting and in the batcher, and the file job queue;
+  - active calls, with capacity and refusals;
+  - alerts per minute: the rate of `ava_live_alerts_raised_total` x 60;
+  - dropped windows: unscored outcomes and stride skips.
+  It also shows the "visible unmonitored/low-quality conditions" of backlog 7.2:
+  degraded and unmonitored directions, calls in sustained packet loss, RTP loss and
+  concealment. Further panels cover tap cost per audio second, detector and loop health,
+  storage and Redis publishing, API responses and the event relay.
+- Grafana settings. The admin password comes from the env file
+  (`AVA_GRAFANA_ADMIN_PASSWORD`). The Compose file needs it even without the profile, so
+  a monitoring start never falls back to Grafana's default `admin`. This breaks existing
+  env files written before 18 Nov: add the variable. Grafana applies the password only
+  when its `grafanadata` volume is first created. To change it later, use Grafana
+  itself or remove the volume. Logs go to the console only (`GF_LOG_MODE`), because the
+  root filesystem is read-only. Anonymous access and
+  sign-up are off. Everything that calls grafana.com is off: usage reporting, update
+  checks, feedback links, the news feed, plugin preinstall, signing-key download, the
+  plugin catalogue, external snapshots, public dashboards and cloud migration. The
+  network blocks it as well. Grafana's `secret_key` is left at its default. The
+  provisioned data source holds no secret, but set `GF_SECURITY_SECRET_KEY` before
+  storing any.
+- Hardening. Both containers have a read-only root with a `noexec` `/tmp`, drop every
+  capability, set `no-new-privileges`, allow at most 256 processes, and are limited to
+  0.5 CPU and 512 MB. Data lives in the volumes `promdata` and `grafanadata`.
+- Reaching Grafana. Like the dashboard, Grafana is not published (see above). Publishing
+  it on the host needs an address, a non-internal network and a decision on
+  authentication beyond the single admin. Until then, use
+  `docker compose ... exec grafana curl -u admin:<password> http://127.0.0.1:3000/api/...`,
+  or the Prometheus API through `exec prometheus wget -qO- http://127.0.0.1:9090/...`.
+- Not done: Prometheus alerting rules and Alertmanager (PRD FR-O6 does not ask for
+  them), dashboards for PostgreSQL and Redis themselves (no exporters), and log
+  shipping.
+
+`tests/unit/test_monitoring_dashboard.py` (CI) renders the real live `/metrics`, and the
+API's when FastAPI is installed. It checks that every series, label value and grouping
+label used by a dashboard query is exported, and that the checker catches a renamed
+metric or label. It also checks the pins, the telemetry settings and the network rules
+in `compose.yaml`.
+
 ## Security and isolation
 
 - One `internal: true` network: no service can reach the internet. That includes
   telemetry, downloads and CDNs, and was tested by a connection attempt from `live` and
   from `api`. Nothing is published on the host.
-- `live`'s health is checked from inside its container (`/readyz` on 127.0.0.1:9100,
-  the Compose health check), so no other container reaches `live`'s unauthenticated
-  `/metrics`. To scrape it, bind it to a network address and attach a collector network
-  deliberately.
+- `live`'s health endpoint (unauthenticated `/metrics`) listens only on its fixed
+  address on the internal `metrics` network (18 Nov; see "Monitoring"). Its Compose
+  health check reads `/readyz` there. This reverses the 17 Nov choice of 127.0.0.1
+  (review L2):
+  - `api`, `prometheus` and `grafana` can reach it, and so, probably, can processes on
+    a Linux Docker host through the bridge. That host part is inferred, not tested.
+  - The containers on `backend` cannot reach it, tested from `asterisk` with a
+    positive control.
+  - It exposes no call IDs. It does have 8 connection slots, each held for up to 5 s, so
+    a misbehaving peer on `metrics` could starve the health check and the scrape. The
+    container would then show unhealthy; calls are not affected.
+  - Grafana's admin can add a data source pointing at `http://api:8000` and read
+    `/v1/calls` through Grafana. Treat the Grafana admin password as giving read access
+    to call metadata.
 - `api` is different (review M2): it listens on 0.0.0.0:8000 without authentication.
   Every container on `backend` can reach all of its routes: `postgres`, `redis`,
   `asterisk` and `live`. The routes are `/metrics`, `/v1/calls`, `WS /v1/events` and
@@ -201,6 +284,6 @@ Run time was 69 s with the images built.
 ## Not done
 
 Publishing the dashboard to the host (see above), Kubernetes manifests and the
-NetworkPolicy, hashed requirements and an SBOM (FR-O7), log shipping and Grafana
-(FR-O6), image signing, and the full FR-O8 deployment guide (hardware, PBX tap
-configuration, upgrade, backup).
+NetworkPolicy, hashed requirements and an SBOM (FR-O7), log shipping (FR-O6), image
+signing, and the full FR-O8 deployment guide (hardware, PBX tap configuration, upgrade,
+backup). Grafana is done (profile `monitoring`, 18 Nov), but it is not published.

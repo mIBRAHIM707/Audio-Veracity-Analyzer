@@ -380,8 +380,14 @@ items needing that data are listed at the end and stay out of the queue.
   18 Nov: in-call RTP/jitter counts on the live `/metrics` (`TapApp.receiver_live`: ended
   calls plus open calls re-read at most every 1 s, never decreasing) and
   `ava_live_rtp_calls_degraded` (open calls in sustained loss); 9 Claude-authored tests;
-  review pass, lows fixed. Remaining FR-O6: jitter-buffer and WebSocket delivery timing,
-  Grafana.
+  review pass, lows fixed. 18 Nov (attempt 2): Grafana (FR-O6). Compose profile
+  `monitoring` adds digest-pinned Prometheus 3.16.0 and Grafana OSS 13.0.2 on an
+  internal `metrics` network; `live`'s health endpoint binds only there. A provisioned
+  dashboard covers each FR-O6 item and the degraded, unmonitored and loss conditions,
+  with every call-home setting off. A Claude-authored CI test checks each query against
+  the rendered `/metrics`, and the Compose lab test has a real call reach Prometheus and
+  Grafana, with isolation probes. Remaining FR-O6: jitter-buffer and WebSocket delivery
+  timing.
 - [ ] 7.3 P1 history/search/local authentication/audit and feedback after P0.
 - [ ] 7.QA Astra-designed Playwright suite, offline assets, failures/reconnects.
 

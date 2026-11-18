@@ -470,6 +470,8 @@ was counted as a disconnect (fixed, unit-tested).
 ## Not done
 
 A deployment configuration file (beyond the scoring JSON); FR-O6 timing of RTP arrival
-to frame (jitter buffer) and WebSocket delivery, live (in-call) RTP metrics (receiver/jitter counts are exported only
-when a call ends), JSON logs and a Grafana dashboard (P1); scorer resume from stored state (FR-I11); agent direction; capacity measurement on box A1 (8.QA); file-mode jobs through the same
-batcher.
+to frame (jitter buffer) and WebSocket delivery; scorer resume from stored state
+(FR-I11); agent direction; capacity measurement on box A1 (8.QA); file-mode jobs
+through the same batcher. In-call RTP counts (18 Nov), the JSON event log (17 Nov) and
+a Grafana dashboard (18 Nov, Compose profile `monitoring`, `deploy/compose/README.md`)
+are done.

@@ -6,6 +6,7 @@
 #   docker build -f deploy/live/Dockerfile -t ava-live:dev .
 #   docker build -t ava-lab-asterisk:dev lab/asterisk          # lab profile only
 #   docker compose --env-file <your stack.env> -f deploy/compose/compose.yaml --profile lab up -d
+#   (add `--profile monitoring` for Prometheus and the Grafana dashboard, FR-O6)
 #
 # Images are pinned by digest (public) or built locally (`pull_policy: never`). Every
 # service sits on one internal network: no container can reach the internet (no
@@ -90,12 +91,18 @@ services:
       - --health-port
       - "9100"
       - --health-host
-      - 127.0.0.1  # review L2: only the container's own health check reads it
+      # 18 Nov (FR-O6): bound to live's fixed address on the `metrics` network only, so
+      # Prometheus can scrape it and nothing on `backend` (Asterisk, PostgreSQL, Redis)
+      # reaches it (review L2 of 17 Nov kept it on 127.0.0.1 for the same reason).
+      - ${AVA_LIVE_METRICS_IP:-10.231.250.10}
     volumes:
       - ${AVA_ONNX_DIR:?set AVA_ONNX_DIR}:/models/onnx:ro
       - ${AVA_CARD_DIR:?set AVA_CARD_DIR}:/models/card:ro
       - ${AVA_VAD_DIR:?set AVA_VAD_DIR}:/models/vad:ro
-    networks: [backend]
+    networks:
+      backend: {}
+      metrics:
+        ipv4_address: ${AVA_LIVE_METRICS_IP:-10.231.250.10}
     read_only: true
     tmpfs:
       - /tmp:size=64m,noexec,nosuid,nodev
@@ -104,7 +111,7 @@ services:
     init: true  # review L4: signals reach Python even during model load
     pids_limit: 256
     healthcheck:
-      test: ["CMD", "python", "-c", "import urllib.request,sys; sys.exit(urllib.request.urlopen('http://127.0.0.1:9100/readyz', timeout=2).status != 200)"]
+      test: ["CMD", "python", "-c", "import urllib.request,sys; sys.exit(urllib.request.urlopen('http://${AVA_LIVE_METRICS_IP:-10.231.250.10}:9100/readyz', timeout=2).status != 200)"]
       interval: 5s
       timeout: 4s
       retries: 12
@@ -142,7 +149,7 @@ services:
       - AVA_REDIS_URL
     volumes:
       - ${AVA_MODEL_ROOT:?set AVA_MODEL_ROOT (the AntiDeepfake checkpoint folder)}:/models/antideepfake:ro
-    networks: [backend]
+    networks: [backend, metrics]  # metrics: scraped by Prometheus (profile `monitoring`)
     read_only: true
     tmpfs:
       # Uploads spool here (2 concurrent x 100 MB, services/api/app.py); torch also
@@ -170,11 +177,105 @@ services:
     stop_grace_period: 20s  # running analyses get 10 s at stop (services/api/__main__.py)
     restart: unless-stopped
 
+  # Monitoring (18 Nov; PRD FR-O6 Prometheus metrics and a Grafana dashboard). Opt in
+  # with `--profile monitoring`. Both sit on the internal `metrics` network only: they
+  # reach the two scrape targets and each other, never `backend` or the internet, and
+  # nothing is published on the host (deploy/compose/README.md, "Monitoring").
+  prometheus:
+    profiles: [monitoring]
+    image: prom/prometheus:v3.16.0@sha256:e04987641b57704f408e31f6373ba4138ecf27cb4a165d24aabb6c38fddd0f06
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.path=/prometheus
+      - --storage.tsdb.retention.time=${AVA_PROMETHEUS_RETENTION:-15d}
+      - --storage.tsdb.retention.size=${AVA_PROMETHEUS_RETENTION_SIZE:-2GB}
+      - --web.listen-address=:9090
+    volumes:
+      - ./monitoring/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - promdata:/prometheus
+    networks: [metrics]
+    read_only: true
+    tmpfs:
+      - /tmp:size=16m,noexec,nosuid,nodev
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    pids_limit: 256
+    cpus: 0.5
+    mem_limit: 512m
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:9090/-/ready"]
+      interval: 5s
+      timeout: 4s
+      retries: 12
+    restart: unless-stopped
+
+  grafana:
+    profiles: [monitoring]
+    image: grafana/grafana-oss:13.0.2@sha256:5dad0df181cb644a14e13617b913b261a54f7d4fd4510721dba420929f35bea2
+    depends_on:
+      prometheus: {condition: service_healthy}
+    environment:
+      GF_SECURITY_ADMIN_USER: admin
+      GF_SECURITY_ADMIN_PASSWORD: ${AVA_GRAFANA_ADMIN_PASSWORD:?set AVA_GRAFANA_ADMIN_PASSWORD in the env file}
+      GF_SECURITY_DISABLE_GRAVATAR: "true"
+      GF_USERS_ALLOW_SIGN_UP: "false"
+      GF_AUTH_ANONYMOUS_ENABLED: "false"
+      # No calls home (PRD: no telemetry, no runtime download), each also blocked by the
+      # internal network: usage reporting, version and plugin update checks, feedback
+      # links, the news feed, plugin preinstall and signing-key download, the plugin
+      # catalogue, external snapshots, public dashboards and cloud migration.
+      GF_ANALYTICS_REPORTING_ENABLED: "false"
+      GF_ANALYTICS_CHECK_FOR_UPDATES: "false"
+      GF_ANALYTICS_CHECK_FOR_PLUGIN_UPDATES: "false"
+      GF_ANALYTICS_FEEDBACK_LINKS_ENABLED: "false"
+      GF_NEWS_NEWS_FEED_ENABLED: "false"
+      GF_PLUGINS_PREINSTALL_DISABLED: "true"
+      GF_PLUGINS_PUBLIC_KEY_RETRIEVAL_DISABLED: "true"
+      GF_PLUGINS_PLUGIN_ADMIN_ENABLED: "false"
+      GF_SNAPSHOTS_EXTERNAL_ENABLED: "false"
+      GF_PUBLIC_DASHBOARDS_ENABLED: "false"
+      GF_CLOUD_MIGRATION_ENABLED: "false"
+      GF_LOG_MODE: console  # review L5: the default also writes /var/log/grafana (read-only root)
+    volumes:
+      - ./monitoring/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./monitoring/grafana/dashboards:/etc/grafana/dashboards:ro
+      - grafanadata:/var/lib/grafana
+    networks: [metrics]
+    read_only: true
+    tmpfs:
+      - /tmp:size=64m,noexec,nosuid,nodev
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    pids_limit: 256
+    cpus: 0.5
+    mem_limit: 512m
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:3000/api/health"]
+      interval: 5s
+      timeout: 4s
+      retries: 24
+      start_period: 20s
+    restart: unless-stopped
+
 networks:
   backend:
     internal: true  # no route to the internet for any service
+  metrics:
+    # Scrape network (18 Nov): live (fixed address, its health endpoint binds only here),
+    # api, prometheus and grafana. Internal: no route out, nothing published. The default
+    # is outside Docker's default address pools (172.17-31.x, 192.168.x). Change
+    # AVA_METRICS_SUBNET, AVA_METRICS_DYNAMIC_RANGE and AVA_LIVE_METRICS_IP together; the
+    # fixed address must lie in the subnet but outside the dynamic range (review M1/M2),
+    # or another container can take it and `live` cannot be created.
+    internal: true
+    ipam:
+      config:
+        - subnet: ${AVA_METRICS_SUBNET:-10.231.250.0/24}
+          ip_range: ${AVA_METRICS_DYNAMIC_RANGE:-10.231.250.128/25}
 
 volumes:
   pgdata:
   redisdata:
   labio:
+  promdata:
+  grafanadata:

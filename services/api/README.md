@@ -43,8 +43,10 @@ the snapshot and are validated; untimed calls counted in
 `ava_live_stage_timer_failures_total` and `ava_live_alerts_raised_total` (defined in
 `services/live/README.md`, "Per-stage latency"; `ava_live_alerts_raised_total` is what
 the scoring loop published, while `ava_alerts_raised_total` above is what reached this
-registry, and the two can differ). FR-O6 is still partial: telephony
-metrics, structured JSON logs and Grafana remain.
+registry, and the two can differ). The structured JSON log is described under
+"Operations log" below. Since 18 Nov the Compose profile `monitoring` scrapes this
+`/metrics` and the live process's into Prometheus, with a provisioned Grafana dashboard
+(`deploy/compose/README.md`, "Monitoring"). Still open: WebSocket delivery timing.
 
 The calls and events routes need `create_app(service, hub=EventHub())`: the in-process
 hub the scorer publishes to. A background task drains the hub into the registry every

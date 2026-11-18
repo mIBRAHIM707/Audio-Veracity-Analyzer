@@ -102,6 +102,19 @@ and about 50,000 original clips, excluding codec copies.
   calls in progress (re-read at most every second), not only ended calls, and never
   decrease; `ava_live_rtp_calls_degraded` shows open calls in sustained loss (FR-I2).
   Details in `daily-runs/2026-11-18.md`.
+- **18 Nov (attempt 2).** FR-O6 Grafana dashboard: Compose profile `monitoring` adds
+  Prometheus 3.16.0 and Grafana OSS 13.0.2 (digest-pinned) on a new internal `metrics`
+  network. Both `live` and `api` are scraped. A provisioned 18-panel dashboard covers
+  every FR-O6 item and the degraded, unmonitored and packet-loss conditions. Grafana's
+  call-home settings are off, and nothing is published on the host. `live`'s health
+  endpoint moved from 127.0.0.1 to its fixed `metrics` address, which `backend`
+  containers cannot reach. A CI test checks every dashboard query against the rendered
+  `/metrics`. In the lab, a real call's scored windows reached Prometheus and all 39
+  dashboard queries returned data. See `deploy/compose/README.md`.
+  Breaking change: env files now need `AVA_GRAFANA_ADMIN_PASSWORD`. Known limits:
+  - the `metrics` subnet (default 10.231.250.0/24) must not clash with a host network;
+  - Grafana's admin can read call metadata through its proxy;
+  - Grafana is not published on the host.
 - **17 Nov daily run (details in `daily-runs/2026-11-17.md`).** FR-O6 per-stage latency
   for the live loop (7.2/8.1): `ava_live_stage_seconds{stage}` with `queue_wait`,
   `batch_wait`, `apply` (scorer and hub publish) and `window_to_result` (offer to
