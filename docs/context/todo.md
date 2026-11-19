@@ -86,6 +86,10 @@ that FR-A7 "embeddings" are deferred to retraining from retained snippets. Dashb
 buttons are next.
 19 Nov (attempt 9): no data change. The History page's call detail now has "Label this
 alert" buttons (true/false positive) for signed-in users, using the attempt-8 API.
+19 Nov (attempt 10): no data change. Signed-in users can play an alert's retained
+snippet from the call detail (FR-U5; audited before any audio is sent; missing, expired
+and unreadable snippets have their own messages). Human: decide whether the API may
+hold the retention key (Compose/k3s wiring) and whether refused playbacks are audited.
 
 Updated 4 October 2026. This is the active sequence; evidence lives in
 `current-state.md` and `handoffs/`. Check marks mean the stated bounded task passed

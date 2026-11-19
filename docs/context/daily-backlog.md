@@ -494,6 +494,16 @@ items needing that data are listed at the end and stay out of the queue.
   guard, never retried, unknown outcome stated), 20-label cap; Claude-authored FS01-FS05
   (pure) and FB01-FB04 on real PostgreSQL 16 + accounts, FN01-FN03 [mock]. Remaining:
   admin settings (FR-A9), FR-U5, FR-A5.
+  19 Nov (attempt 10): FR-U5 retained-snippet playback: `services/retention/playback.py`
+  `SnippetReader` (fixed reasons missing/expired/unreadable/error, WAV in memory), API
+  `GET /v1/alerts/{id}/snippet` with accounts (audit row `alerts.snippet` before any
+  audio, 404/410/500/503, 2-slot cap incl. the audit write, `no-store`,
+  `ava_snippet_reads_total`), `--retention-dir/--retention-key-file/--retention-ttl-days`;
+  dashboard `AlertSnippet.tsx`/`snippet.ts` (on request only, WAV checked, blob revoked;
+  CSP `media-src 'self' blob:`, a defect SB01 found). Claude-authored: 24 unit cases,
+  SS01-SS04 pure, SB01-SB04 on PostgreSQL 16 + production AES-GCM store, SN01-SN02.
+  Review conditional pass, M1 fixed. Remaining: FR-U5 codec detected, FR-A9, FR-A5;
+  Compose/k3s wiring of playback (key in the API, `cryptography` in its image).
 - [ ] 7.QA Astra-designed Playwright suite, offline assets, failures/reconnects.
 
 ## 8 — CPU capacity (FR-I9/I10)

@@ -85,6 +85,7 @@ from services.events.fanout import HubFull
 from services.events.relay_loop import RelayLoop
 from services.api.alert_csv import alerts_csv
 from services.auth.store import AuthStoreError
+from services.retention.playback import SnippetUnavailable, check_alert_id
 from services.store.feedback import LABELS as FEEDBACK_LABELS, check_feedback
 from services.store.history import (DEFAULT_LIMIT as DEFAULT_HISTORY_LIMIT, MAX_LIMIT as MAX_HISTORY_LIMIT,
                                     REASONS as HISTORY_REASONS, STATUSES as HISTORY_STATUSES, HistoryError,
@@ -131,7 +132,7 @@ MAX_CONCURRENT_UPLOADS = 2
 JOB_STATES = ('queued', 'running', 'done', 'failed')
 ROUTES = ('/healthz', '/readyz', '/metrics', '/v1/analyze', '/v1/jobs/:id', '/v1/calls',
           '/v1/calls/:id', '/v1/calls/:id/history', '/v1/history/calls', '/v1/alerts', '/v1/auth/login',
-          '/v1/auth/logout', '/v1/auth/me', '/v1/alerts/:id/feedback')
+          '/v1/auth/logout', '/v1/auth/me', '/v1/alerts/:id/feedback', '/v1/alerts/:id/snippet')
 # FR-U7 local accounts (19 Nov, attempt 7).
 SESSION_COOKIE = 'ava_session'
 LOGIN_OUTCOMES = ('ok', 'invalid', 'locked', 'busy', 'unavailable')  # as services.auth.service
@@ -149,6 +150,14 @@ SELF_AUDITED_ROUTES = frozenset({'/v1/alerts/:id/feedback'})
 FEEDBACK_OUTCOMES = ('ok', 'invalid', 'not_found', 'conflict') + HISTORY_REASONS
 MAX_FEEDBACK_BYTES = 1024
 AUDIT_SLOT_WAIT_S = 2.0  # an audit write waits this long for an account slot before it is skipped/refused
+# FR-U5 snippet playback (19 Nov, attempt 10): mutually exclusive outcomes of
+# GET /v1/alerts/{id}/snippet; `unaudited`: decrypted but not sent (no audit row).
+SNIPPET_OUTCOMES = ('ok', 'invalid', 'missing', 'expired', 'unreadable', 'error', 'busy', 'unaudited')
+MAX_SNIPPET_READS = 2  # decrypting and encoding up to 8 MB each; more at once are refused busy
+SNIPPET_STATUS = {'missing': (404, 'No snippet is kept for this alert'),
+                  'expired': (410, 'The snippet for this alert has expired'),
+                  'unreadable': (500, 'The stored snippet could not be authenticated or read'),
+                  'error': (503, 'The snippet store could not be read (error)')}
 
 
 class LoginBusy:  # stands in for an Authenticator result when no account slot is free
@@ -171,10 +180,11 @@ def route_label(path):
     if path.startswith('/v1/calls/'):
         rest = path[len('/v1/calls/'):]
         return '/v1/calls/:id/history' if rest.endswith('/history') else '/v1/calls/:id'
-    if path.startswith('/v1/alerts/') and path.endswith('/feedback'):
-        alert_id = path[len('/v1/alerts/'):-len('/feedback')]
-        if alert_id and '/' not in alert_id:  # what the route matches (review N1)
-            return '/v1/alerts/:id/feedback'
+    for tail in ('/feedback', '/snippet'):
+        if path.startswith('/v1/alerts/') and path.endswith(tail):
+            alert_id = path[len('/v1/alerts/'):-len(tail)]
+            if alert_id and '/' not in alert_id:  # what the route matches (review N1)
+                return f'/v1/alerts/:id{tail}'
     return path if path in ROUTES else 'other'
 
 
@@ -230,6 +240,12 @@ class Metrics:
         self.auth_refusals = {reason: 0 for reason in AUTH_REFUSALS}
         self.audit_failures = 0
         self.feedback = {outcome: 0 for outcome in FEEDBACK_OUTCOMES}
+        self.snippets = {outcome: 0 for outcome in SNIPPET_OUTCOMES}
+
+    def count_snippet(self, outcome):
+        with self._lock:
+            if outcome in self.snippets:
+                self.snippets[outcome] += 1
 
     def count_feedback(self, outcome):
         with self._lock:
@@ -290,7 +306,7 @@ class Metrics:
                     self.stages.observe(stages.get(stage), stage)
 
     def render(self, jobs, service, uploads_in_flight, live=None, pipeline=None, relay=None, history=False,
-               auth=False):
+               auth=False, snippets=False):
         stats = jobs.stats()
         lines = ['# HELP ava_api_requests_total HTTP responses by route and status class.',
                  '# TYPE ava_api_requests_total counter']
@@ -299,6 +315,7 @@ class Metrics:
             alert_reads = dict(self.alert_reads)
             logins, auth_refusals, audit_failures = dict(self.logins), dict(self.auth_refusals), self.audit_failures
             feedback = dict(self.feedback)
+            snippet_reads = dict(self.snippets)
             requests = dict(self.requests)
             analysis = self.analysis.render('ava_analysis_seconds')
             stages = self.stages.render('ava_analysis_stage_seconds', 'stage')
@@ -375,6 +392,12 @@ class Metrics:
                       '# TYPE ava_alert_feedback_writes_total counter']
             lines += [f'ava_alert_feedback_writes_total{{outcome="{outcome}"}} {feedback[outcome]}'
                       for outcome in FEEDBACK_OUTCOMES]
+        if snippets:
+            lines += ['# HELP ava_snippet_reads_total Retained alert snippet playbacks (GET /v1/alerts/{id}/snippet, '
+                      'FR-U5) by mutually exclusive outcome; ok ones are sent after their audit row.',
+                      '# TYPE ava_snippet_reads_total counter']
+            lines += [f'ava_snippet_reads_total{{outcome="{outcome}"}} {snippet_reads[outcome]}'
+                      for outcome in SNIPPET_OUTCOMES]
         if pipeline is not None:
             try:
                 snapshot, age = pipeline.read()
@@ -599,7 +622,8 @@ async def read_bounded(upload):
 
 
 def create_app(service, *, hub=None, registry=None, dashboard_dir=None, pipeline_stats=None, relay=None,
-               oplog=None, wall_clock=time.time, history=None, auth=None, cookie_secure=True, feedback=None):
+               oplog=None, wall_clock=time.time, history=None, auth=None, cookie_secure=True, feedback=None,
+               snippets=None):
     """`hub` is the in-process `services.events.EventHub` carrying FR-A4 events; with it
     the app serves `/v1/calls` from a `CallRegistry` (a new one unless given) and
     `WS /v1/events`. Without it those routes answer 503: no live source is connected.
@@ -623,9 +647,14 @@ def create_app(service, *, hub=None, registry=None, dashboard_dir=None, pipeline
     cookie's Secure flag (plain HTTP on a non-loopback lab address only).
     `feedback` (optional, `services.store.feedback.AlertFeedbackStore`, FR-A7) serves
     `POST`/`GET /v1/alerts/{id}/feedback`; it needs `auth` (every label names its
-    analyst). Without it those routes answer 503."""
+    analyst). Without it those routes answer 503.
+    `snippets` (optional, `services.retention.playback.SnippetReader`, FR-U5) serves
+    `GET /v1/alerts/{id}/snippet`, the alert's retained audio as WAV; it needs `auth`
+    (every playback is an audited audio export). Without it the route answers 503."""
     if feedback is not None and auth is None:
         raise ValueError('alert feedback needs local accounts: every label names who gave it')
+    if snippets is not None and auth is None:
+        raise ValueError('snippet playback needs local accounts: every playback is audited with its listener')
     if registry is not None and hub is None:
         raise ValueError('a call registry needs the event hub that feeds it')
     if relay is not None and (hub is None or getattr(relay, 'hub', None) is not hub):
@@ -725,7 +754,8 @@ def create_app(service, *, hub=None, registry=None, dashboard_dir=None, pipeline
         if relay_loops:
             relay_snapshot = {**relay_loops[-1].snapshot(), 'relay': dict(relay.stats)}
         return PlainTextResponse(metrics.render(jobs, service, in_flight[0], live, pipeline_stats, relay_snapshot,
-                                                history=history is not None, auth=auth is not None),
+                                                history=history is not None, auth=auth is not None,
+                                                snippets=snippets is not None),
                                  media_type='text/plain; version=0.0.4; charset=utf-8')
 
     @app.middleware('http')
@@ -1085,6 +1115,50 @@ def create_app(service, *, hub=None, registry=None, dashboard_dir=None, pipeline
             if error.reason == 'not_found':
                 raise HTTPException(404, 'No stored alert with this ID') from None
             raise HTTPException(503, f'Feedback store unavailable ({error.reason})') from None
+
+    snippet_slots = asyncio.Semaphore(MAX_SNIPPET_READS)
+
+    @app.get('/v1/alerts/{alert_id}/snippet')
+    async def play_snippet(alert_id: str, request: Request):
+        """PRD FR-U5: the alert's retained snippet as a PCM16 mono WAV, decrypted in memory.
+        Sent only after its `alerts.snippet` audit row is written (an audio export, PRD
+        §6.3); 404 none kept, 410 expired, 500 unreadable, 503 not configured/busy/not
+        audited. Never cached by the browser."""
+        if snippets is None:
+            raise HTTPException(503, 'Snippet playback is not configured on this server')
+        try:
+            check_alert_id(alert_id)
+        except ValueError as error:
+            metrics.count_snippet('invalid')
+            raise HTTPException(422, str(error)) from None
+        if snippet_slots.locked():
+            metrics.count_snippet('busy')
+            raise HTTPException(503, 'Too many snippet playbacks at once (busy); retry later')
+        # The slot is held until the audit row is written (review M1): a decrypted WAV
+        # waiting for an account slot still counts, so at most 2 are in memory at once.
+        async with snippet_slots:
+            try:
+                snippet = await run_in_threadpool(snippets.read, alert_id)
+            except SnippetUnavailable as error:
+                metrics.count_snippet(error.reason)
+                status, detail = SNIPPET_STATUS[error.reason]
+                raise HTTPException(status, detail) from None
+            except Exception:  # an unexpected reader fault: counted, fixed text, nothing sent
+                metrics.count_snippet('error')
+                raise HTTPException(*SNIPPET_STATUS['error']) from None
+            detail = {'alert_id': alert_id, 'seconds': round(snippet['seconds'], 3), 'direction': snippet['direction']}
+            try:
+                await account_call(auth.store.audit, request.state.principal.username, 'alerts.snippet', 'ok', detail,
+                                   wait_s=AUDIT_SLOT_WAIT_S)
+            except (AuthStoreError, ValueError) as error:
+                metrics.count_snippet('unaudited')
+                reason = error.reason if isinstance(error, AuthStoreError) else 'invalid'
+                raise HTTPException(503, f'Playback not recorded in the audit log ({reason})') from None
+        metrics.count_snippet('ok')
+        return Response(snippet['wav'], media_type='audio/wav',
+                        headers={'Cache-Control': 'no-store', 'X-Content-Type-Options': 'nosniff',
+                                 'Content-Disposition': 'inline; filename="ava-alert-snippet.wav"',
+                                 'X-AVA-Snippet-Seconds': f'{snippet["seconds"]:.3f}'})
 
     def read_wall_clock():
         try:

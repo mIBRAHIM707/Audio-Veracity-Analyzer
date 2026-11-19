@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import type { FormEvent, ReactNode } from 'react';
 import { ApiError } from './api';
 import { AlertFeedback } from './AlertFeedback';
+import { AlertSnippet } from './AlertSnippet';
 import { Timeline } from './Timeline';
 import {
   alertKey, appendBounded, callKey, CSV_EXPORT_LIMIT, fetchAlertCsv, fetchAlerts, fetchCallHistory, fetchCalls,
@@ -416,6 +417,7 @@ function SessionView({ session }: { session: StoredSession }) {
               <li key={a.alertId} data-alert-id={a.alertId}>
                 {a.alertId} ({a.direction ?? 'call'}): {ALERT_STATE_TEXT[a.state]}, raised {formatUtc(a.raisedTs)} at
                 EMA {fixed(a.raisedEma)}{a.state === 'open' ? '' : `, closed ${formatUtc(a.closedTs)}`}
+                <AlertSnippet alertId={a.alertId} />
                 <AlertFeedback alertId={a.alertId} alertOpen={a.state === 'open'} />
               </li>
             ))}

@@ -468,7 +468,8 @@ even subscribe to the hub. With
   Counts are exported as `ava_live_snippets_total{outcome}` and
   `ava_live_snippets_queued`, with the pump's alive/stuck/faults, and appear in the
   `stopped` record. Faults in the recorder are counted in the sink's `recorder_errors`.
-  Key provisioning and rotation, and FR-U5 playback, remain open.
+  Key provisioning and rotation remain open. FR-U5 playback (19 Nov) is served by the
+  API from the same folder and key (`services/api/README.md`, "Snippet playback").
 
 Evidence (Claude-authored, 17 Nov):
 - `tests/unit/test_live_retention.py`, 25 cases: off/purge, the stored audio equal to

@@ -183,6 +183,38 @@ service, the alert's encrypted snippet is kept under the same alert ID until its
 purge, the audio a label can be paired with for retraining) and free-text notes
 (privacy).
 
+Snippet playback (PRD FR-U5; 19 Nov, attempt 10), only with `--auth on --retention-dir
+DIR --retention-key-file FILE [--retention-ttl-days 7]`, the same folder, key and TTL
+the live service writes with (`services/live/README.md`, "Alert snippets"; needs
+`requirements-retention.txt`): `GET /v1/alerts/{id}/snippet` decrypts and authenticates
+the alert's snippet in memory (`services/retention/playback.py`) and answers 200
+`audio/wav` (PCM16 mono at the stored rate, 8 kHz from the tap; `Cache-Control:
+no-store`, `X-AVA-Snippet-Seconds`). Every playback is an audio export (PRD §6.3): its
+`alerts.snippet` audit row (alert ID, seconds, direction) is written first, and if it
+cannot be written no audio is sent (503 `Playback not recorded in the audit log`).
+Refusals, none audited: 404 none kept (retention off when the call started, an
+untapped direction, a failed write, or purged), 410 older than the TTL but not yet
+deleted by the live service's 10-minute cleanup, 500 unreadable (failed authentication:
+a changed file, another key, a copy under another alert's name, a future creation
+time), 503 not configured / read error / busy (at most 2 playbacks at once), 422 a
+malformed ID. Nothing names the folder, file or key. Both roles may listen. The 2-slot
+cap covers the audit write too, so at most 2 decrypted snippets are held at once.
+Known limits (review, 19 Nov): the API does not know the live service's retention
+switch, so after retention is turned off a snippet is still played until the live
+service's next cleanup deletes it (within 10 minutes while it runs; until the TTL if it
+is stopped); after cleanup an expired snippet answers 404, not 410 (the dashboard's 404
+text names the retention period); refused playbacks (404/410/500) are not audited, as
+with refused CSV exports (a §6.3 question for the PRD); the `ok` row means the audio was
+authorised and sent, not that it was listened to; an unexpected reader fault is counted
+as `error` but not logged. The start record reports `snippet_playback: {ttl_days,
+folder_exists}`: the live service creates the folder at its first snippet, so a missing
+folder is reported, not refused.
+`/metrics` adds `ava_snippet_reads_total{outcome=ok|invalid|missing|expired|unreadable|
+error|busy|unaudited}`. The API reads the folder only; deletion stays with the live
+service. Not wired in Compose/k3s yet (the API image has no `cryptography` and no
+access to the live service's folder and key); a key in two processes is an operator
+decision.
+
 `services/api/__main__.py` serves the app with uvicorn on `--host` (default 127.0.0.1);
 a non-loopback address is refused without `--auth on` or `--allow-non-loopback`.
 Start-up checks: torch is installed and the model directory holds `model.safetensors`

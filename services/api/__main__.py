@@ -89,6 +89,16 @@ def _env_name(text):
     return text
 
 
+def _ttl_days(text):
+    try:
+        value = float(text)
+    except ValueError:
+        raise argparse.ArgumentTypeError(f'not a number: {text!r}') from None
+    if not 0 < value <= 365:  # also refuses NaN; infinity is above 365
+        raise argparse.ArgumentTypeError('must be more than 0 and at most 365 days')
+    return value
+
+
 def build_parser():
     parser = argparse.ArgumentParser(prog='python -m services.api', description='AVA local analysis API')
     parser.add_argument('--model-root', required=True,
@@ -111,6 +121,13 @@ def build_parser():
                              'and migration 0003: python -m services.auth migrate); every /v1 route then needs a login')
     parser.add_argument('--cookie-insecure', action='store_true',
                         help='session cookie without the Secure flag, for plain HTTP on a non-loopback lab address')
+    parser.add_argument('--retention-dir',
+                        help='FR-U5 playback: the live service\'s snippet folder (read only; needs --auth on, '
+                             '--retention-key-file and requirements-retention.txt)')
+    parser.add_argument('--retention-key-file', help='the live service\'s raw 32-byte AES-256-GCM key file')
+    parser.add_argument('--retention-ttl-days', type=_ttl_days,
+                        help='snippets older than this are not played (use the live service\'s value; default 7; '
+                             'only with --retention-dir)')
     return parser
 
 
@@ -202,6 +219,16 @@ def _open_auth(dsn):
         return authenticator, error.reason
 
 
+def _open_snippets(directory, key_file, ttl_days):
+    """FR-U5 `SnippetReader` over the live service's folder and key. Raises RuntimeError
+    (cryptography missing), ValueError or OSError; callers print neither path nor key."""
+    import time
+    from services.retention.playback import SnippetReader
+    from services.retention.snippets import AesGcmSealer
+    return SnippetReader(directory, AesGcmSealer.from_key_file(key_file), ttl_s=ttl_days * 86400.0,
+                         clock=time.time)
+
+
 def _bind(host, port):
     """The listening socket, bound before anything is announced (a busy port refuses)."""
     return socket.create_server((host, port))
@@ -235,7 +262,7 @@ def _serve(app, sock):
 
 def default_parts():
     return {'service': _open_service, 'redis': _open_redis, 'history': _open_history, 'auth': _open_auth,
-            'bind': _bind, 'serve': _serve}
+            'snippets': _open_snippets, 'bind': _bind, 'serve': _serve}
 
 
 def _say(stream, record):
@@ -273,6 +300,13 @@ def _run(args, environ, stderr, made, held):
         return refuse('--auth on needs --database-url-env: accounts live in PostgreSQL')
     if args.cookie_insecure and args.auth != 'on':
         return refuse('--cookie-insecure only applies with --auth on')
+    if (args.retention_dir is None) != (args.retention_key_file is None):
+        return refuse('snippet playback needs both --retention-dir and --retention-key-file')
+    if args.retention_dir is not None and args.auth != 'on':
+        return refuse('snippet playback needs --auth on: every playback is audited with its listener')
+    if args.retention_dir is None and args.retention_ttl_days is not None:
+        return refuse('--retention-ttl-days only applies with --retention-dir')
+    ttl_days = 7.0 if args.retention_ttl_days is None else args.retention_ttl_days
     if not ipaddress.IPv4Address(args.host).is_loopback and not args.allow_non_loopback and args.auth != 'on':
         return refuse('the API has no authentication: listen on a loopback address, pass --auth on, '
                       'or pass --allow-non-loopback')
@@ -324,6 +358,16 @@ def _run(args, environ, stderr, made, held):
         except Exception as error:
             return refuse(f'account store: {type(error).__name__}')
         held['auth'] = auth
+    snippets = None
+    if args.retention_dir is not None:
+        try:
+            snippets = made['snippets'](args.retention_dir, args.retention_key_file, ttl_days)
+        except RuntimeError:  # the cryptography package is missing
+            return refuse('snippet playback: missing dependency cryptography (requirements-retention.txt)')
+        except ValueError as error:  # the messages name the rule, never the path or key
+            return refuse(f'snippet playback: {error}')
+        except OSError as error:
+            return refuse(f'snippet playback: {type(error).__name__}: {error.strerror}')
     try:
         service = made['service'](args)
     except ImportError as error:
@@ -340,7 +384,7 @@ def _run(args, environ, stderr, made, held):
     try:
         app = create_app(service, hub=hub, relay=relay, dashboard_dir=args.dashboard, oplog=oplog,
                          history=history, auth=auth, cookie_secure=not args.cookie_insecure,
-                         feedback=getattr(auth, 'feedback', None))
+                         feedback=getattr(auth, 'feedback', None), snippets=snippets)
     except ValueError as error:
         return refuse(str(error))
     record = {'event': 'starting', 'host': args.host, 'port': port, 'pid': os.getpid(),
@@ -356,6 +400,11 @@ def _run(args, environ, stderr, made, held):
     if auth is not None:  # True, or why the probe failed: unavailable, schema or error
         record['auth_reachable'] = auth_reachable
         record['cookie_secure'] = not args.cookie_insecure
+    if snippets is not None:  # never the folder or key path
+        # The live service creates the folder at its first snippet, so a missing one is
+        # reported, not refused; a mistyped one shows here (review L3).
+        record['snippet_playback'] = {'ttl_days': ttl_days,
+                                      'folder_exists': Path(args.retention_dir).is_dir()}
     _say(stderr, record)
     if oplog is not None:  # after the starting record, so that record stays the first line
         oplog.start()

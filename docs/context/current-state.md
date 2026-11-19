@@ -259,6 +259,22 @@ and about 50,000 original clips, excluding codec copies.
   FB01-FB04 on the real API with production accounts and `AlertFeedbackStore` in
   PostgreSQL 16 (stored window copy and audit rows checked), FN01-FN03 [mock]. UI
   evidence only; no detector or feedback-quality claim.
+- **19 Nov (attempt 10), 7.3 FR-U5 retained-snippet playback.**
+  `services/retention/playback.py` `SnippetReader` decrypts and authenticates one
+  alert's FR-O5 snippet into an in-memory WAV (reasons missing/expired/unreadable/error;
+  TTL compared as cleanup does). API `GET /v1/alerts/{id}/snippet`, only with `--auth on
+  --retention-dir --retention-key-file`: the `alerts.snippet` audit row is written
+  before any audio is sent (no row, no audio), 404/410/500/503 with fixed texts, at most
+  2 at once including the audit wait, `no-store`, `ava_snippet_reads_total`. Dashboard
+  `AlertSnippet.tsx`: fetched only on request, WAV header checked, blob URL revoked on
+  close/leave; the CSP gained `media-src 'self' blob:` (SB01 found the browser refused
+  the audio without it). Claude-authored: 24 unit cases (production AES-GCM round trip,
+  tampering, TTL boundary, path-like IDs, audit-before-send, cap), SS01-SS04 pure,
+  SB01-SB04 on PostgreSQL 16 with the production store and reader (the browser decodes
+  2.5 s), SN01-SN02 [mock]. Review conditional pass; M1 (cap released before the audit
+  wait) fixed with a test whose mutant fails. Known limits in `services/api/README.md`
+  (retention switch-off not seen by the API until cleanup; refused playbacks not
+  audited). Not yet: codec detected (rest of FR-U5), Compose/k3s wiring.
 - **17 Nov daily run (details in `daily-runs/2026-11-17.md`).** FR-O6 per-stage latency
   for the live loop (7.2/8.1): `ava_live_stage_seconds{stage}` with `queue_wait`,
   `batch_wait`, `apply` (scorer and hub publish) and `window_to_result` (offer to

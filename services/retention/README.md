@@ -54,8 +54,19 @@ container (FR-U5 playback would decrypt to WAV); whether a call started before a
 switch-off may still write after the purge until its end; whether the snippet should
 end at the alert window rather than the latest audio fed; a disk quota.
 
-Not done: wiring to the live tap audio and to `alert.raised` events, the
-retention setting in configuration, scheduled cleanup, and secure deletion (deleted
+**Playback (19 Nov 2026, attempt 10; PRD FR-U5).** `playback.py` `SnippetReader(root,
+sealer, ttl_s=, clock=)` reads one alert's snippet with `open_snippet` and returns it as
+an in-memory PCM16 mono WAV, or `SnippetUnavailable` with a fixed reason: `missing`,
+`expired` (authenticated creation time at least the TTL ago: the same comparison as
+`cleanup`, so a snippet cleanup has not reached yet is not served), `unreadable`
+(authentication or layout failure, a creation time more than 300 s ahead) or `error`
+(OS error). Malformed alert IDs (1-128 characters without NUL) are refused before any
+file access. Served by the API's `GET /v1/alerts/{id}/snippet` (`services/api/README.md`).
+Claude-authored tests: `tests/unit/test_snippet_playback.py`.
+
+Since 17 Nov the live service wires the store to the tap audio, `alert.raised` and a
+cleanup thread (`services/live/README.md`, "Alert snippets"). Still not done: the
+retention setting in shared configuration and secure deletion (deleted
 files are unlinked, not overwritten; on Windows a file being scanned can briefly
 appear as `<NAME>.tmp` during deletion, removed by the next cleanup).
 

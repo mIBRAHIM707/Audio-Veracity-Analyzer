@@ -44,12 +44,28 @@ newest audit rows. With `--auth` the production `AlertFeedbackStore` serves FR-A
 alert feedback on the account store's connection (Claude-authored, 19 November 2026,
 attempt 9), and `POST /feedback-rows` with `{"alert_id"}` returns that alert's stored
 feedback rows with their window copies (test support: the API never returns the copy).
+
+Snippets (backlog 7.3 / PRD FR-U5, Claude-authored 19 November 2026, attempt 10):
+`--snippets` (needs `--auth` and requirements-retention.txt) makes a fresh folder under
+the system temp directory and a random in-memory AES-256-GCM key, and serves
+`GET /v1/alerts/{id}/snippet` through the production `SnippetReader` (TTL
+`SNIPPET_TEST_TTL_S`). `POST /snippet-put` with `{"alert_id", "seconds", "hz",
+"age_s"?}` writes a synthetic tone through the production `SnippetStore` as if created
+`age_s` seconds ago (answer: whether it was stored); `POST /snippet-tamper` with
+`{"alert_id"}` flips one byte of that snippet's ciphertext. The folder is deleted at
+`/drop-schema` and at exit. No real audio is involved.
 """
 import argparse
+import atexit
+import hashlib
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
 import os
+from pathlib import Path
+import shutil
+import tempfile
 import threading
+import time
 
 import numpy as np
 import uvicorn
@@ -62,6 +78,38 @@ from services.inference.analysis import AnalysisService
 MAX_CONTROL_BODY = 64 * 1024
 AUTH_TEST_PASSWORD = 'browser-test-password-2026'  # fictional, test only
 AUTH_TEST_USERS = (('ana', 'analyst'), ('boss', 'admin'))
+SNIPPET_TEST_TTL_S = 3600.0
+
+
+class SnippetFixture:
+    """A temp retention folder with the production AES-256-GCM store and reader."""
+
+    def __init__(self):
+        from services.retention.playback import SnippetReader
+        from services.retention.snippets import AesGcmSealer
+        self.root = Path(tempfile.mkdtemp(prefix='ava-browser-snippets-'))
+        self._key = os.urandom(32)
+        self.reader = SnippetReader(self.root, AesGcmSealer(self._key), ttl_s=SNIPPET_TEST_TTL_S, clock=time.time)
+        atexit.register(self.drop)
+
+    def put(self, body):
+        from services.retention.snippets import AesGcmSealer, SnippetStore
+        seconds, hz, age_s = float(body['seconds']), float(body['hz']), float(body.get('age_s', 0))
+        if not 0 < seconds <= 30 or not 50 <= hz <= 3500 or not 0 <= age_s <= 30 * 86400:
+            raise ValueError('seconds 0-30, hz 50-3500, age_s 0-30 days')
+        t = np.arange(int(seconds * 8000)) / 8000
+        pcm = (np.sin(2 * np.pi * hz * t) * 8000).astype(np.int16)
+        store = SnippetStore(self.root, AesGcmSealer(self._key), clock=lambda: time.time() - age_s)
+        return store.put(str(body['alert_id']), call_id='browser-test', direction='caller', pcm=pcm, sample_rate=8000)
+
+    def tamper(self, alert_id):
+        path = self.root / (hashlib.sha256(str(alert_id).encode('utf-8')).hexdigest() + '.snip')
+        data = bytearray(path.read_bytes())
+        data[-1] ^= 0x01
+        path.write_bytes(bytes(data))
+
+    def drop(self):
+        shutil.rmtree(self.root, ignore_errors=True)
 
 
 def auth_fixture(fixture):
@@ -140,7 +188,7 @@ class HistoryFixture:
             admin.execute(f'DROP SCHEMA IF EXISTS {self.schema} CASCADE')
 
 
-def control_server(hub, port, fixture=None, auth=None):
+def control_server(hub, port, fixture=None, auth=None, snippets=None):
     """Loopback test control server publishing into `hub` and, with a history `fixture`,
     writing to its store (see the module docstring)."""
 
@@ -193,9 +241,16 @@ def control_server(hub, port, fixture=None, auth=None):
                          'windows_total': total} for i, label, name, status, windows, total in rows]})
                 if self.path == '/audit' and auth is not None:
                     return self._reply(200, {'rows': auth.store.recent_audit(int(body.get('limit', 20)))})
+                if self.path == '/snippet-put' and snippets is not None:
+                    return self._reply(200, {'stored': snippets.put(body)})
+                if self.path == '/snippet-tamper' and snippets is not None:
+                    snippets.tamper(body['alert_id'])
+                    return self._reply(200, {})
                 if self.path == '/drop-schema' and fixture is not None:
                     if auth is not None:
                         auth.store.close()
+                    if snippets is not None:
+                        snippets.drop()
                     fixture.drop()
                     return self._reply(200, {'dropped': fixture.schema})
                 return self._reply(404, {'error': 'unknown control path'})
@@ -225,7 +280,12 @@ def main():
                         help='production accounts with two fictional test users (needs --history-dsn-env)')
     parser.add_argument('--ws-session-recheck-s', type=float,
                         help='test only: how often an open WebSocket re-checks its session (production: 60 s)')
+    parser.add_argument('--snippets', action='store_true',
+                        help='FR-U5 snippet playback from a temp folder with a random key (needs --auth and '
+                             'requirements-retention.txt)')
     args = parser.parse_args()
+    if args.snippets and not args.auth:
+        parser.error('--snippets needs --auth')
     if args.history_dsn_env and not args.control_port:
         parser.error('--history-dsn-env needs --control-port')
     if args.auth and not args.history_dsn_env:
@@ -246,15 +306,17 @@ def main():
     if args.ws_session_recheck_s is not None:
         from services.api import app as app_module
         app_module.SESSION_RECHECK_S = args.ws_session_recheck_s  # read at each check; test support only
+    snippets = SnippetFixture() if args.snippets else None
     if args.control_port:
         hub = EventHub()
-        control_server(hub, args.control_port, fixture, auth)
+        control_server(hub, args.control_port, fixture, auth, snippets)
     feedback = None
     if auth is not None:  # FR-A7 alert feedback, as services/api/__main__.py wires it
         from services.store.feedback import AlertFeedbackStore
         feedback = AlertFeedbackStore(auth.store)
     app = create_app(service, hub=hub, dashboard_dir=args.dashboard,
-                     history=None if fixture is None else fixture.history, auth=auth, feedback=feedback)
+                     history=None if fixture is None else fixture.history, auth=auth, feedback=feedback,
+                     snippets=None if snippets is None else snippets.reader)
     uvicorn.run(app, host='127.0.0.1', port=args.port, log_level='warning')
 
 

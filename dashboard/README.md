@@ -319,9 +319,38 @@ labels; the guard is now a ref. FB05 relies on FB02's label (serial spec).
 uv run --no-project --env-file .local/store-test.env npx.cmd playwright test --project=dashboard tests/browser/dashboard-feedback.spec.cjs
 ```
 
+## Retained snippet playback (backlog 7.3, FR-U5, 19 Nov 2026)
+
+`AlertSnippet.tsx` and `snippet.ts`. In the stored call detail each alert has a "Load
+retained audio" control, shown only to a signed-in user (the route exists only with
+accounts). Nothing is fetched until it is pressed, because each playback is an audited
+audio export. One request per press (a ref guard, never retried): `GET
+v1/alerts/{id}/snippet` with `cache: 'no-store'`; the answer must be `audio/wav` and a
+PCM16 mono RIFF/WAVE whose header matches its length (8-48 kHz) before the browser gets
+it. The audio is held as an in-memory blob URL in an `<audio controls>` player, revoked
+when the player is closed, the alert changes or the page goes. Missing (404), expired
+(410), unreadable (500), not set up, not audited, busy and unreachable each have their
+own message; a 401 returns to sign-in. The page's Content-Security-Policy gained
+`media-src 'self' blob:` (without it the browser refused the blob audio, found by SB01);
+`connect-src` still refuses `blob:`.
+
+Tests (Claude-authored, 19 Nov): `tests/browser/snippet-state.spec.ts` SS01-SS04 (pure,
+CI `foundation` project) and `tests/browser/dashboard-snippet.spec.cjs`: SB01-SB03 on the
+real API with the production accounts in PostgreSQL and the production AES-256-GCM
+store and reader (`serve_dashboard_api.py --auth --snippets`: synthetic tones, random
+key, temp folder): a kept snippet played by the browser's own decoder (duration 2.5 s),
+audited before it is sent, `no-store`, the blob revoked on close; missing, expired and
+changed snippets with their messages and no audit row; two clicks in one task send one
+request. SN01 real API without accounts (history [mock]); SN02 [mock]: not set up, a
+non-WAV body, an unreachable server, a 401.
+
+```text
+uv run --no-project --env-file .local/store-test.env npx.cmd playwright test tests/browser/snippet-state.spec.ts tests/browser/dashboard-snippet.spec.cjs
+```
+
 ## Not yet
 
-Call detail with codec and snippets (FR-U5, P1), feedback from the alert search table
+Codec detected in the call detail (FR-U5, P1), feedback from the alert search table
 (feedback is given from the call detail), retraining from feedback (FR-A7, 5.6), TanStack
 Query, MP3/AMR/GSM input (the API accepts PCM16 WAV only), job cancellation, the admin
 settings page (FR-U7/FR-A9), Urdu/RTL text.

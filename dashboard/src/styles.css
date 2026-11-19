@@ -91,3 +91,7 @@ section + section { margin-top: 20px; }
 .feedback-panel p { margin: 4px 0; }
 .feedback-actions { display: flex; flex-wrap: wrap; gap: 8px; margin: 6px 0; }
 .feedback [aria-disabled="true"] { opacity: 0.55; cursor: progress; }
+.snippet { margin: 2px 0; font-size: 0.9rem; }
+.snippet p { margin: 4px 0; }
+.snippet audio { display: block; width: min(100%, 420px); margin-top: 4px; }
+.snippet [aria-disabled="true"] { opacity: 0.55; cursor: progress; }
