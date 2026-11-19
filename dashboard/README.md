@@ -237,8 +237,50 @@ calls list loads was replaced by the deferred default search, and the export wit
 is fixed with HM06, which fails without the fix; N3 fixed; N2 (the hook's "exactly 1,000
 rows and no further page" branch has no browser case) is open.
 
+## Sign in (backlog 7.3, FR-U7, 19 Nov 2026)
+
+`AuthGate.tsx` and `auth.ts`. On load the dashboard asks `GET v1/auth/me`: 404 means the
+API runs without accounts and the pages show as before; 401 shows the sign-in form; 200
+shows the pages with "Signed in as NAME (role)" and a Sign out button. Pages are mounted
+only while signed in: nothing is read and no event socket opens before sign-in, and
+they are removed at sign-out, when a check finds the session ended, and at its absolute
+end (12 h; timed from the server's `now_ts`, so a wrong PC clock cannot end or stretch
+it). The session is an HttpOnly cookie the page never reads.
+It is checked at once when any page gets a 401 or the live socket closes, when the tab
+regains focus, and on a timer just after the server's idle limit (`idle_s` from
+`/v1/auth/me`, 30 min + 5 s). Nothing polls more often, so these checks never keep an
+idle session alive (review H1): batch and history pages left open with no request end at
+the next timer check. An open live board stays signed in, because the server re-checks
+its socket every minute and that counts as activity (a watched board is in use; record
+as a decision); so does a board whose socket keeps failing to connect, since each close
+asks for a session check. A server without accounts is asked again only after a 401 (it
+was restarted with accounts on). A failed first check shows its reason and Try again, never the pages; a
+failed re-check keeps the page with a "could not be verified" warning (the same store
+failure refuses every data read). Refusals never say whether a name exists. A different
+user signing in from another tab remounts the pages. There is no settings page yet
+(admin-only routes are not built), so both roles see the same pages.
+
+Tests (Claude-authored, 19 Nov): `tests/browser/auth-state.spec.ts` AS01-AS05 (pure, CI
+`foundation` project) and `tests/browser/dashboard-auth.spec.cjs`: AB01-AB07 on the real
+API with the production accounts in PostgreSQL (`serve_dashboard_api.py --auth`, cheap
+Argon2 parameters for speed; fictional users `ana`/`boss`): nothing but the session check
+before sign-in, refusals, cookie flags (HttpOnly, SameSite=Strict, Secure, not visible to
+scripts), audit rows for logins, export and upload, sign-out revoking the token on the
+server, a session revoked elsewhere, lockout text, cross-site login refused, the idle
+re-check (Playwright clock; sessions aged on the server), a live board whose socket the
+server closes after a revoke (test server re-checks sockets every 3 s), and a PC clock
+13 h ahead (AB08). AN01 real API without accounts; AN02-AN05 [mock]: a failed first
+check, a failed sign-out and re-check, a late check after sign-in, a server restarted
+with accounts on. Mutation checks: without the 401 report in history reads AB04 fails;
+polling every 60 s fails AB06; not dropping the in-flight check at sign-in fails AN04;
+timing the end from the PC's date fails AB08.
+
+```text
+uv run --no-project --env-file .local/store-test.env npx.cmd playwright test --project=dashboard tests/browser/dashboard-auth.spec.cjs
+```
+
 ## Not yet
 
 Call detail with codec and snippets (FR-U5, P1), feedback on an alert (FR-A7), TanStack
-Query, MP3/AMR/GSM input (the API accepts PCM16 WAV only), job cancellation,
-authentication (7.3), Urdu/RTL text.
+Query, MP3/AMR/GSM input (the API accepts PCM16 WAV only), job cancellation, the admin
+settings page (FR-U7/FR-A9), Urdu/RTL text.

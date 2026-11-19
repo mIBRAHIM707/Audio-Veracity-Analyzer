@@ -232,9 +232,12 @@ and about 50,000 original clips, excluding codec copies.
   handshakes refused, open WebSockets closed when the session ends, audit rows for
   logins, logouts, CSV exports, uploads and account changes. Claude-authored tests
   (PostgreSQL 16 cases included); independent review conditional pass, findings fixed.
-  Not yet: dashboard login page, admin settings (FR-A9), feedback (FR-A7), Compose/k3s
-  wiring, TLS (operator proxy), audit retention (decision). Analysts may upload files
-  (PRD says "read, feedback"; decision to record).
+  Then the dashboard sign-in (`AuthGate.tsx`, `auth.ts`): pages exist only while signed
+  in; sign out; an ended session returns to the form; without accounts nothing changes.
+  Claude-authored Playwright cases on the real API and accounts in PostgreSQL 16.
+  Not yet: admin settings (FR-A9), feedback (FR-A7), Compose/k3s wiring, TLS (operator
+  proxy), audit retention (decision). Analysts may upload files (PRD says "read,
+  feedback"; decision to record).
 - **17 Nov daily run (details in `daily-runs/2026-11-17.md`).** FR-O6 per-stage latency
   for the live loop (7.2/8.1): `ava_live_stage_seconds{stage}` with `queue_wait`,
   `batch_wait`, `apply` (scorer and hub publish) and `window_to_result` (offer to

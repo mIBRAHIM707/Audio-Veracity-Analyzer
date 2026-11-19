@@ -79,8 +79,8 @@ uv run ... python -m services.auth --database-url-env AVA_DATABASE_URL add-user 
 
 ## Not done (recorded)
 
-- Dashboard login page and logout button; the dashboard gets 401 from every /v1 route
-  with auth on until then.
+(The dashboard sign-in form is in `dashboard/src/AuthGate.tsx`; see `dashboard/README.md`.)
+
 - Admin-only settings routes and page (FR-A9, FR-U7), feedback (FR-A7) and their audit
   rows; the PRD's "without FR-U7 the audit log records `actor=system`" path (no audit
   writer runs when auth is off).

@@ -478,8 +478,9 @@ items needing that data are listed at the end and stay out of the queue.
   CLI), `python -m services.api --auth on` (session cookie, 401 on /v1, cross-site
   refusal, WebSocket check, audited logins/exports/uploads/account changes); Claude-authored
   tests incl. PostgreSQL 16; review and re-review conditional pass, all findings fixed or
-  documented. Remaining: the
-  dashboard login page, admin settings (FR-A9), FR-A7 feedback, FR-U5, FR-A5.
+  documented. Then the dashboard sign-in (`AuthGate.tsx`, `auth.ts`; Claude-authored
+  Playwright cases on the real accounts in PostgreSQL 16). Remaining: admin settings
+  (FR-A9), FR-A7 feedback, FR-U5, FR-A5.
 - [ ] 7.QA Astra-designed Playwright suite, offline assets, failures/reconnects.
 
 ## 8 — CPU capacity (FR-I9/I10)

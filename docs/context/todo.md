@@ -78,7 +78,7 @@ Times are shown in UTC.
 accounts with Argon2 passwords, two roles, an audit log (logins, exports, uploads,
 account changes). Accounts are created by an operator (`python -m services.auth`). Human:
 decide audit-log retention, and whether analysts may upload files (FR-U7 says
-"read, feedback"; they can today). The dashboard login page is the next step.
+"read, feedback"; they can today). The dashboard now has a sign-in page.
 
 Updated 4 October 2026. This is the active sequence; evidence lives in
 `current-state.md` and `handoffs/`. Check marks mean the stated bounded task passed

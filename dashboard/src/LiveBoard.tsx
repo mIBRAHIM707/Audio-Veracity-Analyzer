@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useReducer, useRef, useState } from 'react';
 import { Timeline } from './Timeline';
 import type { WindowScore } from './api';
+import { reportSessionEnded, requestSessionCheck } from './api';
 import {
   applyDetailAlerts, applyEnvelope, applySnapshot, connectionWasHealthy, EMPTY_BOARD, formatDuration, LiveDataError,
   orderedCalls, parseCallList, parseDetail, parseMessage, reconnectDelayMs,
@@ -48,6 +49,7 @@ type Connection =
 
 async function getJson(url: string, signal: AbortSignal): Promise<{ status: number; body: unknown }> {
   const response = await fetch(url, { signal: AbortSignal.any([signal, AbortSignal.timeout(REQUEST_TIMEOUT_MS)]) });
+  reportSessionEnded(response.status); // FR-U7: the sign-in gate re-checks the session
   let body: unknown;
   try {
     body = await response.json();
@@ -383,6 +385,9 @@ export function LiveBoard() {
         pending = null;
         pendingOverflow = false; // the reconnect reads a fresh snapshot anyway
         if (connectionWasHealthy(openedAt, Date.now(), received)) attempt = 0;
+        // Any close may mean the session ended (1008 from the server's re-check, 1006 for a
+        // refused handshake): the sign-in gate re-checks it. Bounded by the back-off.
+        requestSessionCheck();
         scheduleReconnect(event.reason || `Connection closed (code ${event.code}).`);
       };
     };

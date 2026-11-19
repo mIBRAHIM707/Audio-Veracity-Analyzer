@@ -5,6 +5,7 @@ import type { AnalysisResult, JobStatus } from './api';
 import { Timeline } from './Timeline';
 import { LiveBoard } from './LiveBoard';
 import { HistoryPage } from './HistoryPage';
+import { AuthGate } from './AuthGate';
 
 // Batch upload page (PRD FR-U4; backlog 2.3). Drag-and-drop or choose a file, poll the
 // job when the service queues it, show the verdict and the per-window timeline.
@@ -98,7 +99,12 @@ function pageFromHash(): Page {
   return window.location.hash === '#history' ? 'history' : 'batch';
 }
 
+/** FR-U7: with accounts on, the pages exist only while signed in (AuthGate.tsx). */
 export function App() {
+  return <AuthGate><Pages /></AuthGate>;
+}
+
+function Pages() {
   const [page, setPage] = useState<Page>(pageFromHash);
   useEffect(() => {
     const onHash = () => setPage(pageFromHash());

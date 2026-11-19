@@ -51,7 +51,24 @@ export class ApiError extends Error {
   }
 }
 
+/** Window event a page sends when the API refused it with 401 (FR-U7): the session ended
+ * while the page was open, and the sign-in gate (AuthGate.tsx) re-checks it at once. */
+export const SESSION_ENDED_EVENT = 'ava:session-ended';
+
+/** Window event the live board sends when its socket closes: the session may have ended
+ * (a refused handshake reaches the browser as code 1006, not as a 401). */
+export const SESSION_CHECK_EVENT = 'ava:session-check';
+
+export function reportSessionEnded(status: number): void {
+  if (status === 401) window.dispatchEvent(new Event(SESSION_ENDED_EVENT));
+}
+
+export function requestSessionCheck(): void {
+  window.dispatchEvent(new Event(SESSION_CHECK_EVENT));
+}
+
 const STATUS_TEXT: Record<number, string> = {
+  401: 'Your session has ended. Sign in again.',
   404: 'The job is no longer known to the service (it may have restarted).',
   411: 'The upload had no Content-Length.',
   413: 'The file is too large (over 100 MB) or too long (over 10 minutes).',
@@ -62,6 +79,7 @@ const STATUS_TEXT: Record<number, string> = {
 
 /** Pure: the message shown for a failed response. Server detail is shown as text, never HTML. */
 export function describeError(status: number, detail: unknown): string {
+  if (status === 401) return STATUS_TEXT[401];
   const base = STATUS_TEXT[status] ?? `The service answered with HTTP ${status}.`;
   return typeof detail === 'string' && detail.trim() ? `${base} (${detail.trim()})` : base;
 }
@@ -141,6 +159,7 @@ async function boundedFetch(url: string, init: RequestInit, signal: AbortSignal 
   const combined = signal ? AbortSignal.any([signal, limit]) : limit;
   try {
     const response = await fetch(url, { ...init, signal: combined });
+    reportSessionEnded(response.status);
     return { response, body: await readJson(response, combined) };
   } catch (error) {
     if (signal?.aborted) throw error;

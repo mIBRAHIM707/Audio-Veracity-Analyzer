@@ -30,6 +30,17 @@ real migrations and serves `/v1/history/calls`, `/v1/calls/{id}/history` and
 `{"type", "call_id", "data", "seq", "ts"}` writes one FR-A4 envelope through the
 production `PostgresEventStore` (answer: its outcome), and `POST /drop-schema` drops the
 schema (the spec calls it before stopping the server; a killed server leaves it).
+
+Accounts (backlog 7.3 / PRD FR-U7, Claude-authored 19 November 2026): `--auth` (needs
+`--history-dsn-env` and requirements-auth.txt) turns on the production accounts in the
+same fresh schema, with two fictional users, `ana` (analyst) and `boss` (admin), both
+with the password `AUTH_TEST_PASSWORD`. Hashing uses cheap Argon2 parameters here only
+(t=1, 8 MiB, p=1) so the browser cases stay fast; the production parameters are tested
+in tests/unit/test_local_auth.py. `POST /auth-disable` with `{"username", "disabled"}`
+disables or enables a user through the production store (revoking its sessions),
+`POST /age-sessions` with `{"seconds"}` moves every session's last use that far into
+the past (to reach the idle limit without waiting), and `POST /audit` returns the
+newest audit rows.
 """
 import argparse
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -46,6 +57,20 @@ from services.events.fanout import EventHub
 from services.inference.analysis import AnalysisService
 
 MAX_CONTROL_BODY = 64 * 1024
+AUTH_TEST_PASSWORD = 'browser-test-password-2026'  # fictional, test only
+AUTH_TEST_USERS = (('ana', 'analyst'), ('boss', 'admin'))
+
+
+def auth_fixture(fixture):
+    """The production Authenticator on the fixture's schema with the two test users."""
+    from services.auth.passwords import Argon2Passwords
+    from services.auth.service import Authenticator
+    from services.auth.store import PostgresAuthStore
+    passwords = Argon2Passwords(time_cost=1, memory_kib=8192, parallelism=1)
+    store = PostgresAuthStore(fixture.connect)
+    for username, role in AUTH_TEST_USERS:
+        store.add_user(username, passwords.hash(AUTH_TEST_PASSWORD), role, actor='system:browser-test')
+    return Authenticator(store, passwords)
 
 
 def zero_crossing_rate(samples):
@@ -112,7 +137,7 @@ class HistoryFixture:
             admin.execute(f'DROP SCHEMA IF EXISTS {self.schema} CASCADE')
 
 
-def control_server(hub, port, fixture=None):
+def control_server(hub, port, fixture=None, auth=None):
     """Loopback test control server publishing into `hub` and, with a history `fixture`,
     writing to its store (see the module docstring)."""
 
@@ -142,7 +167,24 @@ def control_server(hub, port, fixture=None):
                     return self._reply(200, {})
                 if self.path == '/store' and fixture is not None:
                     return self._reply(200, {'outcome': fixture.record(body)})
+                if self.path == '/auth-disable' and auth is not None:
+                    revoked = auth.store.set_disabled(body['username'], bool(body['disabled']),
+                                                      actor='system:browser-test')
+                    return self._reply(200, {'sessions_revoked': revoked})
+                if self.path == '/age-sessions' and auth is not None:
+                    seconds = int(body['seconds'])
+                    if not 0 < seconds <= 86400:
+                        raise ValueError('seconds must be from 1 to 86400')
+                    with fixture.connect() as connection:  # as if every session was last used `seconds` earlier
+                        aged = connection.execute(
+                            'UPDATE auth_sessions SET created_at = created_at - make_interval(secs => %s), '
+                            'last_seen_at = last_seen_at - make_interval(secs => %s)', (seconds, seconds)).rowcount
+                    return self._reply(200, {'aged': aged})
+                if self.path == '/audit' and auth is not None:
+                    return self._reply(200, {'rows': auth.store.recent_audit(int(body.get('limit', 20)))})
                 if self.path == '/drop-schema' and fixture is not None:
+                    if auth is not None:
+                        auth.store.close()
                     fixture.drop()
                     return self._reply(200, {'dropped': fixture.schema})
                 return self._reply(404, {'error': 'unknown control path'})
@@ -168,9 +210,15 @@ def main():
     parser.add_argument('--history-dsn-env', metavar='NAME',
                         help='serve stored history from a fresh schema in the PostgreSQL database named by this '
                              'environment variable (needs --control-port and requirements-store.txt)')
+    parser.add_argument('--auth', action='store_true',
+                        help='production accounts with two fictional test users (needs --history-dsn-env)')
+    parser.add_argument('--ws-session-recheck-s', type=float,
+                        help='test only: how often an open WebSocket re-checks its session (production: 60 s)')
     args = parser.parse_args()
     if args.history_dsn_env and not args.control_port:
         parser.error('--history-dsn-env needs --control-port')
+    if args.auth and not args.history_dsn_env:
+        parser.error('--auth needs --history-dsn-env')
     if args.model_root:
         from services.inference.baseline import baseline_factory, model_id
         service = AnalysisService(baseline_factory(args.model_root, threads=args.threads), model_id=model_id())
@@ -183,11 +231,15 @@ def main():
         if not dsn:
             parser.error(f'environment variable {args.history_dsn_env} is not set')
         fixture = HistoryFixture(dsn)
+    auth = auth_fixture(fixture) if args.auth else None
+    if args.ws_session_recheck_s is not None:
+        from services.api import app as app_module
+        app_module.SESSION_RECHECK_S = args.ws_session_recheck_s  # read at each check; test support only
     if args.control_port:
         hub = EventHub()
-        control_server(hub, args.control_port, fixture)
+        control_server(hub, args.control_port, fixture, auth)
     app = create_app(service, hub=hub, dashboard_dir=args.dashboard,
-                     history=None if fixture is None else fixture.history)
+                     history=None if fixture is None else fixture.history, auth=auth)
     uvicorn.run(app, host='127.0.0.1', port=args.port, log_level='warning')
 
 

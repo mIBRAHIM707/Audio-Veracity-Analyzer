@@ -68,7 +68,7 @@ class FakePasswords:
 
 
 class FakeStore:
-    absolute_s = 3600
+    absolute_s, idle_s = 3600, 1800
 
     def __init__(self, **users):
         self.users = {name: UserRecord(i + 1, name, value[0], value[1], value[2] if len(value) > 2 else False)
@@ -390,13 +390,17 @@ class AuthApiTests(unittest.TestCase):
         client = self.make()
         response = self.login(client)
         self.assertEqual(response.status_code, 200, response.text)
-        self.assertEqual(response.json(), {'username': 'ana', 'role': 'analyst', 'expires_ts': 1e9})
+        body = response.json()
+        self.assertAlmostEqual(body.pop('now_ts'), time.time(), delta=60)  # the server's clock
+        self.assertEqual(body, {'username': 'ana', 'role': 'analyst', 'expires_ts': 1e9, 'idle_s': 1800})
         cookie = response.headers['set-cookie']
         token = next(iter(self.store.sessions))
         for part in (f'ava_session={token}', 'HttpOnly', 'Secure', 'SameSite=strict', 'Path=/', 'Max-Age=3600'):
             self.assertIn(part, cookie)
         self.assertNotIn(token, response.text, 'the token is only in the cookie')
-        self.assertEqual(client.get('/v1/auth/me').json(), {'username': 'ana', 'role': 'analyst', 'expires_ts': 1e9})
+        me = client.get('/v1/auth/me').json()
+        self.assertIsInstance(me.pop('now_ts'), float)
+        self.assertEqual(me, {'username': 'ana', 'role': 'analyst', 'expires_ts': 1e9, 'idle_s': 1800})
         self.assertEqual(client.get('/v1/calls').status_code, 503, 'past the session check: no live source here')
         upload = client.post('/v1/analyze', files={'file': ('x.wav', api_fixture.wav(8.0), 'audio/wav')})
         self.assertEqual(upload.status_code, 200, 'an analyst may analyse files')

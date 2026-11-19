@@ -140,7 +140,8 @@ connection, separate from the read-only history connection, so the role needs
 `SELECT, INSERT, UPDATE` on `users`, `SELECT, INSERT, UPDATE, DELETE` on
 `auth_sessions` (DELETE for the purge of old sessions; without it the purge is skipped,
 logins still work) and `INSERT, SELECT` on `audit_log` (and the sequences). Every /v1 route then needs a login (401 without one;
-login, logout and `GET /v1/auth/me` are added); cross-site writes and WebSocket
+login, logout and `GET /v1/auth/me` are added; login and `me` answer `username`, `role`,
+`expires_ts`, the server's idle limit `idle_s` and its clock `now_ts`); cross-site writes and WebSocket
 handshakes are refused 403; CSV exports of `/v1/alerts` are audited (`alerts.export`,
 filters and row count; not sent if the row cannot be written), and so is every other
 mutating request after it is answered (`api.analyze`; failures counted in
@@ -153,7 +154,7 @@ has `auth` (always) and, with it on, `auth_reachable` (true, `unavailable`, `sch
 address; browsers accept Secure cookies from http://localhost). `/metrics` adds
 `ava_auth_logins_total{outcome=ok|invalid|locked|busy|unavailable}` and
 `ava_auth_refused_requests_total{reason=no_session|cross_origin|store_unavailable}`.
-Not yet: the dashboard login page (the dashboard answers 401 everywhere with auth on),
+The dashboard shows a sign-in form when accounts are on (`dashboard/README.md`). Not yet:
 admin-only settings routes (FR-A9/FR-U7 settings page), TLS (the operator's proxy).
 
 `services/api/__main__.py` serves the app with uvicorn on `--host` (default 127.0.0.1);

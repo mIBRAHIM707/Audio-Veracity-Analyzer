@@ -854,7 +854,8 @@ def create_app(service, *, hub=None, registry=None, dashboard_dir=None, pipeline
             if result.outcome == 'ok':
                 principal = result.principal
                 response = JSONResponse({'username': principal.username, 'role': principal.role,
-                                         'expires_ts': principal.expires_ts})
+                                         'expires_ts': principal.expires_ts, 'idle_s': auth.store.idle_s,
+                                         'now_ts': wall_clock()})
                 response.set_cookie(SESSION_COOKIE, result.token, max_age=auth.store.absolute_s, path='/',
                                     secure=cookie_secure, httponly=True, samesite='strict')
                 return response
@@ -880,8 +881,12 @@ def create_app(service, *, hub=None, registry=None, dashboard_dir=None, pipeline
 
         @app.get('/v1/auth/me')
         def me(request: Request):
+            # `idle_s`: the server's idle limit, so the dashboard can re-check just after it
+            # without its own checks keeping an idle session alive. `now_ts`: this server's
+            # clock, so the dashboard times the absolute end without trusting its own clock.
             principal = request.state.principal
-            return {'username': principal.username, 'role': principal.role, 'expires_ts': principal.expires_ts}
+            return {'username': principal.username, 'role': principal.role, 'expires_ts': principal.expires_ts,
+                    'idle_s': auth.store.idle_s, 'now_ts': wall_clock()}
 
     def current_registry():
         if not feeds:

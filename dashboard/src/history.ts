@@ -7,7 +7,7 @@
 // All three read PostgreSQL through services/store/history.py; without a store they
 // answer 503. Times are Unix seconds from the server and are shown and entered in UTC.
 
-import { ApiError } from './api';
+import { ApiError, reportSessionEnded } from './api';
 
 export const CALLS_PAGE = 50; // services/store/history.py DEFAULT_LIMIT
 export const ALERTS_PAGE = 100; // DEFAULT_ALERT_LIMIT
@@ -315,6 +315,13 @@ export const callKey = (c: CallRow) => String(c.session);
 /** Pure: the message for a refused history read. Server detail is shown as text only. */
 export function describeHistoryError(status: number, detail: unknown): string {
   const text = typeof detail === 'string' && detail.trim() ? detail.trim().slice(0, 200) : '';
+  if (status === 401) return 'Your session has ended. Sign in again.';
+  if (status === 503 && /not recorded in the audit log/i.test(text)) {
+    return 'The export was not sent: it could not be recorded in the audit log. Try again shortly.';
+  }
+  if (status === 503 && /account store unavailable/i.test(text)) {
+    return 'Your session could not be checked (the account store is unavailable). Try again shortly.';
+  }
   if (status === 503) {
     if (/no call history store/i.test(text)) {
       return 'Call history is not available: this server has no history database configured.';
@@ -343,6 +350,7 @@ export async function readJson(url: string, signal: AbortSignal, timeoutMs = REQ
   let body: unknown;
   try {
     response = await fetch(url, { signal: combined, headers: { Accept: 'application/json' } });
+    reportSessionEnded(response.status);
     try {
       body = await response.json();
     } catch (error) {
@@ -385,6 +393,7 @@ export async function fetchAlertCsv(filters: AlertFilters, signal: AbortSignal):
   try {
     response = await fetch(`v1/alerts?${alertQuery(filters, { limit: CSV_EXPORT_LIMIT, csv: true })}`,
                            { signal: combined, headers: { Accept: 'text/csv' } });
+    reportSessionEnded(response.status);
     if (!response.ok) {
       let detail: unknown;
       try { detail = (await response.json() as { detail?: unknown }).detail; } catch { detail = undefined; }
