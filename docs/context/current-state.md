@@ -250,6 +250,15 @@ and about 50,000 original clips, excluding codec copies.
   conditional pass, findings fixed. Embeddings are not stored (no audio features in
   PostgreSQL); FR-O5 retained snippets share the alert ID. Not yet: dashboard feedback
   buttons, write time at the window cap measured, PRD wording for "embeddings".
+- **19 Nov (attempt 9), 7.3 FR-A7 dashboard feedback (PRD plan 3.25 UI).**
+  `dashboard/src/AlertFeedback.tsx`, `feedback.ts`, `session.ts` (`SessionContext` from
+  `AuthGate`): in the `#history` call detail each alert has a collapsed "Label this alert"
+  panel, shown only to a signed-in user; it reads the labels when opened and sends one
+  POST per click (synchronous ref guard, never retried; an unanswered write says its
+  outcome is unknown); 20-label cap shown. Claude-authored FS01-FS05 (pure, CI) and
+  FB01-FB04 on the real API with production accounts and `AlertFeedbackStore` in
+  PostgreSQL 16 (stored window copy and audit rows checked), FN01-FN03 [mock]. UI
+  evidence only; no detector or feedback-quality claim.
 - **17 Nov daily run (details in `daily-runs/2026-11-17.md`).** FR-O6 per-stage latency
   for the live loop (7.2/8.1): `ava_live_stage_seconds{stage}` with `queue_wait`,
   `batch_wait`, `apply` (scorer and hub publish) and `window_to_result` (offer to

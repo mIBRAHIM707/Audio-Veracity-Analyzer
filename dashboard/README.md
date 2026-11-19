@@ -279,8 +279,49 @@ timing the end from the PC's date fails AB08.
 uv run --no-project --env-file .local/store-test.env npx.cmd playwright test --project=dashboard tests/browser/dashboard-auth.spec.cjs
 ```
 
+## Alert feedback (backlog 7.3, FR-A7, 19 Nov 2026)
+
+`AlertFeedback.tsx` and `feedback.ts`. In the stored call detail of `#history`, each
+alert has a "Label this alert" control, shown only to a signed-in user (`SessionContext`
+from `AuthGate.tsx`; a server without accounts has no feedback routes and shows none).
+It stays collapsed until opened, so opening a call sends no feedback read. Opened, it
+reads `GET v1/alerts/{id}/feedback` and shows the current label (who, when, UTC), the
+earlier labels, and two buttons: "Mark as true positive (synthetic speech)" and "Mark as
+false positive (not synthetic speech)". Each click sends one `POST` with
+`{"label": ...}`, never retried; further clicks are ignored until it answers, and the
+panel cannot be hidden meanwhile (buttons are `aria-disabled`, so focus stays). A write
+is never cancelled by the page: leaving it mid-write still stores the label. A write
+whose answer never arrives, or a 503 `unavailable`/`error` or other 5xx (possibly a
+connection lost at COMMIT), says the label may or may not be stored and offers "Reload
+labels". Known limit: a panel reopened before an earlier answer arrives does not know
+about that write (a second label is the worst case: append-only, capped, audited). Labels are appended on the server: a new label becomes current, the earlier
+ones stay. At 20 labels (the server's cap) the buttons are disabled; a 409 from a label
+added elsewhere is shown as such. The server stores each label with a copy of the
+alert's window scores and an audit row; both roles may label (decision of 19 Nov).
+Store failures are named by reason (busy, unavailable, timeout, schema, error).
+
+Tests (Claude-authored, 19 Nov): `tests/browser/feedback-state.spec.ts` FS01-FS05 (pure,
+CI `foundation` project) and `tests/browser/dashboard-feedback.spec.cjs`: FB01-FB04 on the
+real API with the production accounts and `AlertFeedbackStore` in PostgreSQL
+(`serve_dashboard_api.py --auth`; the test-only control path `/feedback-rows` reads the
+stored rows with their window copies): label and relabel by an analyst with the stored
+window copy and audit rows checked, an admin labelling an open alert, clicks (and an
+attempt to hide the panel) during a held write sending one label, the 20-label cap and
+its audited 409, leaving the page mid-write (FB05). FN01 real API without accounts
+(history [mock]); FN02-FN03 [mock]: read/write failures, an unanswered write, an
+uncertain 503, a 201 with an unreadable body, a 401. Mutation checks: without the
+double-submit guard FB03 fails; a toggle that hides the panel mid-write fails FB03;
+aborting the write on unmount fails FB05; controls shown on a server without accounts
+fail FN01. FB03 first found that a state-only guard let two clicks in one task send two
+labels; the guard is now a ref. FB05 relies on FB02's label (serial spec).
+
+```text
+uv run --no-project --env-file .local/store-test.env npx.cmd playwright test --project=dashboard tests/browser/dashboard-feedback.spec.cjs
+```
+
 ## Not yet
 
-Call detail with codec and snippets (FR-U5, P1), feedback on an alert (FR-A7), TanStack
+Call detail with codec and snippets (FR-U5, P1), feedback from the alert search table
+(feedback is given from the call detail), retraining from feedback (FR-A7, 5.6), TanStack
 Query, MP3/AMR/GSM input (the API accepts PCM16 WAV only), job cancellation, the admin
 settings page (FR-U7/FR-A9), Urdu/RTL text.

@@ -4,6 +4,7 @@ import { ApiError } from './api';
 import { SESSION_CHECK_EVENT, SESSION_ENDED_EVENT, checkLoginForm, fetchSession, login, logout,
          recheckDelayMs } from './auth';
 import type { Session } from './auth';
+import { SessionContext } from './session';
 
 // PRD FR-U7 login in the dashboard (backlog 7.3, 19 Nov 2026). The gate asks the API who
 // is signed in. A server without accounts (404) shows the pages unchanged and is not
@@ -180,7 +181,7 @@ export function AuthGate({ children }: { children: ReactNode }) {
     );
   }
   const current = state.session;
-  if (current.kind === 'off') return <>{children}</>;
+  if (current.kind === 'off') return <SessionContext.Provider value={current}>{children}</SessionContext.Provider>;
   if (current.kind === 'anonymous') {
     return (
       <main>
@@ -207,7 +208,9 @@ export function AuthGate({ children }: { children: ReactNode }) {
         </p>
       )}
       {/* A different user signing in from another tab remounts the pages (review L3). */}
-      <Fragment key={current.username}>{children}</Fragment>
+      <Fragment key={current.username}>
+        <SessionContext.Provider value={current}>{children}</SessionContext.Provider>
+      </Fragment>
     </>
   );
 }

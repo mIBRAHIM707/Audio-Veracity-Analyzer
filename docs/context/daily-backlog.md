@@ -488,6 +488,12 @@ items needing that data are listed at the end and stay out of the queue.
   on; Claude-authored tests incl. PostgreSQL 16; review conditional pass, findings fixed.
   Remaining: dashboard feedback buttons (PRD 3.25 UI), admin settings (FR-A9), FR-U5,
   FR-A5; embeddings are not stored (snippets via FR-O5 retention instead).
+  19 Nov (attempt 9): FR-A7 dashboard feedback (PRD 3.25 UI): `AlertFeedback.tsx`,
+  `feedback.ts`, `SessionContext`; per-alert collapsed panel in the stored call detail,
+  shown only to signed-in users; current and earlier labels, one POST per click (ref
+  guard, never retried, unknown outcome stated), 20-label cap; Claude-authored FS01-FS05
+  (pure) and FB01-FB04 on real PostgreSQL 16 + accounts, FN01-FN03 [mock]. Remaining:
+  admin settings (FR-A9), FR-U5, FR-A5.
 - [ ] 7.QA Astra-designed Playwright suite, offline assets, failures/reconnects.
 
 ## 8 — CPU capacity (FR-I9/I10)

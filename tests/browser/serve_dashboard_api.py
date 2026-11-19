@@ -40,7 +40,10 @@ in tests/unit/test_local_auth.py. `POST /auth-disable` with `{"username", "disab
 disables or enables a user through the production store (revoking its sessions),
 `POST /age-sessions` with `{"seconds"}` moves every session's last use that far into
 the past (to reach the idle limit without waiting), and `POST /audit` returns the
-newest audit rows.
+newest audit rows. With `--auth` the production `AlertFeedbackStore` serves FR-A7
+alert feedback on the account store's connection (Claude-authored, 19 November 2026,
+attempt 9), and `POST /feedback-rows` with `{"alert_id"}` returns that alert's stored
+feedback rows with their window copies (test support: the API never returns the copy).
 """
 import argparse
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -180,6 +183,14 @@ def control_server(hub, port, fixture=None, auth=None):
                             'UPDATE auth_sessions SET created_at = created_at - make_interval(secs => %s), '
                             'last_seen_at = last_seen_at - make_interval(secs => %s)', (seconds, seconds)).rowcount
                     return self._reply(200, {'aged': aged})
+                if self.path == '/feedback-rows' and auth is not None:
+                    with fixture.connect() as connection:
+                        rows = connection.execute(
+                            'SELECT id, label, username, alert_status, windows, windows_total FROM alert_feedback '
+                            'WHERE alert_id = %s ORDER BY id', (str(body['alert_id']),)).fetchall()
+                    return self._reply(200, {'rows': [
+                        {'id': i, 'label': label, 'username': name, 'alert_status': status, 'windows': windows,
+                         'windows_total': total} for i, label, name, status, windows, total in rows]})
                 if self.path == '/audit' and auth is not None:
                     return self._reply(200, {'rows': auth.store.recent_audit(int(body.get('limit', 20)))})
                 if self.path == '/drop-schema' and fixture is not None:
@@ -238,8 +249,12 @@ def main():
     if args.control_port:
         hub = EventHub()
         control_server(hub, args.control_port, fixture, auth)
+    feedback = None
+    if auth is not None:  # FR-A7 alert feedback, as services/api/__main__.py wires it
+        from services.store.feedback import AlertFeedbackStore
+        feedback = AlertFeedbackStore(auth.store)
     app = create_app(service, hub=hub, dashboard_dir=args.dashboard,
-                     history=None if fixture is None else fixture.history, auth=auth)
+                     history=None if fixture is None else fixture.history, auth=auth, feedback=feedback)
     uvicorn.run(app, host='127.0.0.1', port=args.port, log_level='warning')
 
 

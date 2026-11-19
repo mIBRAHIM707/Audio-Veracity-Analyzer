@@ -84,6 +84,8 @@ false positive (`POST /v1/alerts/{id}/feedback`); the label is stored with the a
 window scores and an audit row. Embeddings are not stored. Human: confirm in the PRD
 that FR-A7 "embeddings" are deferred to retraining from retained snippets. Dashboard
 buttons are next.
+19 Nov (attempt 9): no data change. The History page's call detail now has "Label this
+alert" buttons (true/false positive) for signed-in users, using the attempt-8 API.
 
 Updated 4 October 2026. This is the active sequence; evidence lives in
 `current-state.md` and `handoffs/`. Check marks mean the stated bounded task passed
