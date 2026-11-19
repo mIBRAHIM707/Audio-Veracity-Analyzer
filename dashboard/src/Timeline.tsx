@@ -14,12 +14,20 @@ interface Props {
   maxRows?: number;
   /** Heading of the first column (the live view numbers events, not windows). */
   indexHeading?: string;
+  /** Score column heading; the history view's scores are uncalibrated, not probabilities. */
+  scoreHeading?: string;
+  /** Note for a window at or above the threshold. */
+  markText?: string;
+  /** Chart description for assistive technology (the span in seconds is appended). */
+  ariaLabel?: string;
 }
 
 const WIDTH = 640;
 const HEIGHT = 120;
 
-export function Timeline({ windows, durationSeconds, threshold, caption, maxRows, indexHeading = 'Window' }: Props) {
+export function Timeline({ windows, durationSeconds, threshold, caption, maxRows, indexHeading = 'Window',
+                          scoreHeading = 'p(synthetic)', markText = 'scored synthetic',
+                          ariaLabel = 'Per-window probability of synthetic speech' }: Props) {
   if (windows.length === 0) {
     return <p className="muted" data-testid="timeline-empty">No window was scored.</p>;
   }
@@ -30,7 +38,7 @@ export function Timeline({ windows, durationSeconds, threshold, caption, maxRows
   return (
     <figure className="timeline">
       <svg viewBox={`0 0 ${WIDTH} ${HEIGHT}`} role="img" preserveAspectRatio="none"
-           aria-label={`Per-window probability of synthetic speech over ${span.toFixed(1)} seconds`}>
+           aria-label={`${ariaLabel} over ${span.toFixed(1)} seconds`}>
         <rect className="plot" x={0} y={0} width={WIDTH} height={HEIGHT} />
         {windows.map(w => (
           <rect key={w.index} data-testid="timeline-bar"
@@ -50,7 +58,7 @@ export function Timeline({ windows, durationSeconds, threshold, caption, maxRows
       )}
       <table>
         <thead>
-          <tr><th scope="col">{indexHeading}</th><th scope="col">Seconds</th><th scope="col">p(synthetic)</th><th scope="col">Note</th></tr>
+          <tr><th scope="col">{indexHeading}</th><th scope="col">Seconds</th><th scope="col">{scoreHeading}</th><th scope="col">Note</th></tr>
         </thead>
         <tbody>
           {rows.map(w => (
@@ -58,7 +66,7 @@ export function Timeline({ windows, durationSeconds, threshold, caption, maxRows
               <td>{w.index}</td>
               <td>{w.t_start.toFixed(1)}–{w.t_end.toFixed(1)}</td>
               <td>{w.p_synthetic.toFixed(3)}</td>
-              <td>{[w.p_synthetic >= threshold ? 'scored synthetic' : '', w.partial ? 'partial' : '', w.note ?? ''].filter(Boolean).join(', ')}</td>
+              <td>{[w.p_synthetic >= threshold ? markText : '', w.partial ? 'partial' : '', w.note ?? ''].filter(Boolean).join(', ')}</td>
             </tr>
           ))}
         </tbody>

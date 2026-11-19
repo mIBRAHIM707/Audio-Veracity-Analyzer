@@ -4,6 +4,7 @@ import { ApiError, checkFile, pollJob, submitAnalysis } from './api';
 import type { AnalysisResult, JobStatus } from './api';
 import { Timeline } from './Timeline';
 import { LiveBoard } from './LiveBoard';
+import { HistoryPage } from './HistoryPage';
 
 // Batch upload page (PRD FR-U4; backlog 2.3). Drag-and-drop or choose a file, poll the
 // job when the service queues it, show the verdict and the per-window timeline.
@@ -87,12 +88,14 @@ function Result({ fileName, result }: { fileName: string; result: AnalysisResult
   );
 }
 
-type Page = 'batch' | 'live';
+type Page = 'batch' | 'live' | 'history';
 
-/** `#live` is the live call board (FR-U1/U2); anything else is the batch page, which
- * stays the default so a batch-only server never opens an event connection. */
+/** `#live` is the live call board (FR-U1/U2), `#history` stored history and alert search
+ * (FR-U6); anything else is the batch page, which stays the default so a batch-only
+ * server never opens an event connection or a history read. */
 function pageFromHash(): Page {
-  return window.location.hash === '#live' ? 'live' : 'batch';
+  if (window.location.hash === '#live') return 'live';
+  return window.location.hash === '#history' ? 'history' : 'batch';
 }
 
 export function App() {
@@ -109,9 +112,11 @@ export function App() {
     <main>
       <nav aria-label="Pages" className="pages">
         <a href="#live" aria-current={page === 'live' ? 'page' : undefined}>Live calls</a>
+        <a href="#history" aria-current={page === 'history' ? 'page' : undefined}>History</a>
         <a href="#batch" aria-current={page === 'batch' ? 'page' : undefined}>Batch analysis</a>
       </nav>
-      {page === 'live'
+      {page === 'history' && <HistoryPage notice={<Limitations />} />}
+      {page === 'history' ? null : page === 'live'
         ? (
           <>
             <header>

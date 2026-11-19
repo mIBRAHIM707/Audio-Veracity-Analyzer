@@ -71,6 +71,9 @@ from PostgreSQL (every session, alerts and window scores), read-only.
 19 Nov (attempt 5): no data change. `GET /v1/alerts` searches stored alerts (state, time,
 minimum confidence) and exports them as CSV. Human: confirm in the PRD that FR-A6
 "confidence" means the alert's peak (uncalibrated) EMA.
+19 Nov (attempt 6): no data change. The dashboard has a History page (`#history`): stored
+calls, alert search with CSV export, and every stored session of a call, from PostgreSQL.
+Times are shown in UTC.
 
 Updated 4 October 2026. This is the active sequence; evidence lives in
 `current-state.md` and `handoffs/`. Check marks mean the stated bounded task passed

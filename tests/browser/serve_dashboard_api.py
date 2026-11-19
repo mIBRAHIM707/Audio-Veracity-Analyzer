@@ -21,10 +21,20 @@ port N: `POST /publish` with `{"type", "call_id", "data", "ts"?}` publishes one 
 event through the hub's own validation (400 with the error when it is refused) and
 `POST /loss` with `{"missing", "interruptions"}` reports relay loss (`stream.gap`). The
 control server is test support only; nothing in `services/` exposes it.
+
+History (backlog 7.3, Claude-authored 19 November 2026): `--history-dsn-env NAME` (needs
+`--control-port` and requirements-store.txt) reads a disposable PostgreSQL DSN from
+environment variable NAME, creates a fresh schema `ava_browser_<random>`, applies the
+real migrations and serves `/v1/history/calls`, `/v1/calls/{id}/history` and
+`/v1/alerts` through the production `PostgresCallHistory`. `POST /store` with
+`{"type", "call_id", "data", "seq", "ts"}` writes one FR-A4 envelope through the
+production `PostgresEventStore` (answer: its outcome), and `POST /drop-schema` drops the
+schema (the spec calls it before stopping the server; a killed server leaves it).
 """
 import argparse
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
+import os
 import threading
 
 import numpy as np
@@ -50,8 +60,61 @@ def fake_detector(samples):
     return [40.0 * (rate - 0.1), 0.0]
 
 
-def control_server(hub, port):
-    """Loopback test control server publishing into `hub` (see the module docstring)."""
+class HistoryFixture:
+    """A fresh schema in a disposable PostgreSQL database, written by the production event
+    store and read by the production history reader (see the module docstring)."""
+
+    def __init__(self, dsn):
+        import uuid
+
+        import psycopg
+
+        from services.store import migrate
+        from services.store.events_pg import PostgresEventStore
+        from services.store.history import PostgresCallHistory
+
+        self._psycopg, self._dsn = psycopg, dsn
+        self.schema = f'ava_browser_{uuid.uuid4().hex[:12]}'
+        with psycopg.connect(dsn, autocommit=True) as admin:
+            admin.execute(f'CREATE SCHEMA {self.schema}')
+        self._connections = []
+        self._lock = threading.Lock()
+        self.history = None
+        try:
+            migrate.apply_migrations(self.connect())
+        except BaseException:
+            self.drop()  # never leave a half-made schema behind (review L7)
+            raise
+        self.store = PostgresEventStore(self.connect)
+        self.history = PostgresCallHistory(self.connect)
+
+    def connect(self):
+        connection = self._psycopg.connect(self._dsn, options=f'-c search_path={self.schema}')
+        self._connections.append(connection)
+        return connection
+
+    def record(self, body):
+        from services.events.contract import make_envelope
+
+        envelope = make_envelope(body['type'], body.get('call_id'), body.get('data', {}), seq=body['seq'], ts=body['ts'])
+        with self._lock:  # one writer, as the live process
+            return self.store.record(envelope)
+
+    def drop(self):
+        if self.history is not None:
+            self.history.close()
+        for connection in self._connections:
+            try:
+                connection.close()
+            except Exception:
+                pass
+        with self._psycopg.connect(self._dsn, autocommit=True) as admin:
+            admin.execute(f'DROP SCHEMA IF EXISTS {self.schema} CASCADE')
+
+
+def control_server(hub, port, fixture=None):
+    """Loopback test control server publishing into `hub` and, with a history `fixture`,
+    writing to its store (see the module docstring)."""
 
     class Handler(BaseHTTPRequestHandler):
         def log_message(self, *_args):  # quiet
@@ -77,9 +140,16 @@ def control_server(hub, port):
                 if self.path == '/loss':
                     hub.report_upstream_loss(missing=body.get('missing', 0), interruptions=body.get('interruptions', 0))
                     return self._reply(200, {})
+                if self.path == '/store' and fixture is not None:
+                    return self._reply(200, {'outcome': fixture.record(body)})
+                if self.path == '/drop-schema' and fixture is not None:
+                    fixture.drop()
+                    return self._reply(200, {'dropped': fixture.schema})
                 return self._reply(404, {'error': 'unknown control path'})
             except (EventContractError, ValueError, KeyError, TypeError) as error:
                 return self._reply(400, {'error': f'{type(error).__name__}: {error}'})
+            except Exception as error:  # e.g. a database error: the spec sees its class (review L7)
+                return self._reply(500, {'error': f'{type(error).__name__}: {error}'})
 
     server = ThreadingHTTPServer(('127.0.0.1', port), Handler)
     threading.Thread(target=server.serve_forever, name='live-control', daemon=True).start()
@@ -95,17 +165,29 @@ def main():
     parser.add_argument('--threads', type=int, default=4)
     parser.add_argument('--control-port', type=int,
                         help='serve live calls from an EventHub fed by a loopback test control server on this port')
+    parser.add_argument('--history-dsn-env', metavar='NAME',
+                        help='serve stored history from a fresh schema in the PostgreSQL database named by this '
+                             'environment variable (needs --control-port and requirements-store.txt)')
     args = parser.parse_args()
+    if args.history_dsn_env and not args.control_port:
+        parser.error('--history-dsn-env needs --control-port')
     if args.model_root:
         from services.inference.baseline import baseline_factory, model_id
         service = AnalysisService(baseline_factory(args.model_root, threads=args.threads), model_id=model_id())
     else:
         service = AnalysisService(lambda: fake_detector, model_id='browser-fixture-fake-detector')
     hub = None
+    fixture = None
+    if args.history_dsn_env:
+        dsn = os.environ.get(args.history_dsn_env)
+        if not dsn:
+            parser.error(f'environment variable {args.history_dsn_env} is not set')
+        fixture = HistoryFixture(dsn)
     if args.control_port:
         hub = EventHub()
-        control_server(hub, args.control_port)
-    app = create_app(service, hub=hub, dashboard_dir=args.dashboard)
+        control_server(hub, args.control_port, fixture)
+    app = create_app(service, hub=hub, dashboard_dir=args.dashboard,
+                     history=None if fixture is None else fixture.history)
     uvicorn.run(app, host='127.0.0.1', port=args.port, log_level='warning')
 
 

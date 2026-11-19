@@ -163,8 +163,82 @@ page's total alert count can pass the registry's 256-alert cap until the next
 snapshot. A revived call's open count is rebuilt from the 50-item feed, so it can be
 low until the next snapshot. No live view in another language or right-to-left text yet.
 
+## History and search (backlog 7.3, FR-U6, 19 Nov 2026)
+
+`#history` (link "History"). Read only, from PostgreSQL through the API
+(`services/store/history.py`): `GET /v1/history/calls`, `GET /v1/calls/{id}/history`
+and `GET /v1/alerts` (`src/history.ts` pure parsing and queries, `src/HistoryPage.tsx`).
+The page opens no WebSocket. Without a history store the API answers 503 and the page
+says that no history database is configured.
+
+- Stored calls: one row per stored monitoring session, newest first (a call killed and
+  re-tapped has two rows; the killed one shows `monitor_lost (inferred: monitor lost)`),
+  with start/end, final state, open/total alerts, scored/stored windows and the highest
+  window score. Filter: all, without a stored end, ended. "Load older calls" pages with
+  the API's `next_before` (50 a page).
+- Alert search (FR-A6): state, raised-time range (from inclusive, to exclusive) and
+  minimum confidence, newest raised first, 100 a page with the API's opaque cursor
+  ("Load more alerts" reuses the filters the shown results were searched with).
+  Confidence is the alert's peak EMA (uncalibrated; an open alert's value can still
+  rise); the page says so. Filters are checked in the browser first (impossible dates,
+  from not before to, confidence outside 0-1, and a field the browser holds as
+  unfinished, such as a date without its time or `1e`, which reads as empty) and a
+  refused filter is never sent. The alert search starts after the calls list has
+  answered: the API's history reader serves one read at a time.
+- CSV export ("Export these results as CSV"): the filters of the search shown (not
+  unsearched form edits), newest 10,000 matches, fetched and saved as `ava-alerts.csv`
+  (a same-origin `blob:` download); when the API reports more matches
+  (`X-AVA-Next-Cursor`), the page says to narrow the time range.
+- Call detail (choose a call ID in either list): every stored session of that call ID,
+  newest first, with end (inferred or not), speech seconds, verdict, alerts, and the
+  stored window scores as the shared timeline (bars span the stride before each score
+  time, seconds since the session started; unscored windows left out; table newest 120
+  rows). Its score column is "Score (uncalibrated)" and windows at 0.5 or above are
+  marked "at or above 0.5", never as probabilities or "synthetic". Truncation by the
+  API's bounds (16 sessions, 256 alerts, 10,800 windows) is stated. Closing the detail
+  returns focus to the button that opened it.
+- Bounds and failures: each read is limited to 30 s (the store's own bound is about
+  25 s plus a reconnect; CSV 60 s); a newer search or page
+  replaces one still running and the older answer is dropped; a list keeps at most 1,000
+  rows (then it says to narrow the filters); store failures are explained by reason
+  (unreachable, busy, timeout, not migrated), malformed answers are an error text, and
+  server text is shown as text only. Never shown: start/end data of a call (the API does
+  not serve it) or audio.
+
+Known limits: times are entered and shown in UTC (`YYYY-MM-DD HH:MM:SS UTC`), not the
+browser's zone, so an analyst in Pakistan (UTC+5) must convert. A read the page abandons
+(time limit, newer search) keeps running on the server and holds the reader's single
+connection, so a quick retry can be answered "busy". The detail chart draws every stored
+window (up to 10,800 bars; only the table is capped); its render time at that size is
+not measured. The cost of the calls page's per-row counts on a large store is not
+measured either.
+
+Tests (Claude-authored, 19 Nov 2026): `tests/browser/history-state.spec.ts` (HS01-HS10,
+pure, `foundation` project, so CI runs them) and `tests/browser/dashboard-history.spec.cjs`
+(project `dashboard`). HB01-HB07 use the real API reading a real PostgreSQL database
+whose rows the production `PostgresEventStore` wrote from FR-A4 envelopes
+(`serve_dashboard_api.py --history-dsn-env`, a fresh schema per run, dropped at the end);
+they need `AVA_TEST_POSTGRES_DSN` (see `services/store/README.md`) and are skipped
+without it:
+
+```text
+uv run --no-project --env-file .local/store-test.env npx.cmd playwright test --project=dashboard tests/browser/dashboard-history.spec.cjs
+```
+
+HM01 uses the real API without a store; HM02-HM06 are [mock] (failures by reason,
+malformed answers, network loss, an older search answering last, export of the search
+shown, export truncation and refusal, the 1,000-row cap, a vanished call). Mutation
+check: without aborting the older search, HM03 fails. Independent review (19 Nov):
+conditional pass; its M1 (unfinished inputs read as no filter, first confirmed failing
+by HB03), M2 (probability wording), M3 (HB07 could not see the status filter), L1, L2,
+L4-L7 and four nits are fixed; L3 is fixed for page load (sequential start) and
+otherwise a known limit above, as is L8. Re-review: its N1 (a search made while the
+calls list loads was replaced by the deferred default search, and the export with it)
+is fixed with HM06, which fails without the fix; N3 fixed; N2 (the hook's "exactly 1,000
+rows and no further page" branch has no browser case) is open.
+
 ## Not yet
 
-Call detail with codec and snippets (FR-U5, P1), history and search (FR-U6), TanStack
+Call detail with codec and snippets (FR-U5, P1), feedback on an alert (FR-A7), TanStack
 Query, MP3/AMR/GSM input (the API accepts PCM16 WAV only), job cancellation,
 authentication (7.3), Urdu/RTL text.

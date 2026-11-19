@@ -212,6 +212,16 @@ and about 50,000 original clips, excluding codec copies.
   CSV with formula neutralisation; `ava_alert_search_reads_total`. Claude-authored tests
   (23, PostgreSQL cases on a local 16 container). Not measured: the peak query's cost on
   large stores. Same deployment gap as the history routes.
+- **19 Nov (attempt 6), 7.3 FR-U6 dashboard history and search (P1).** `#history` in the
+  dashboard (`dashboard/src/history.ts`, `HistoryPage.tsx`): stored sessions with
+  status filter and paging, alert search (state, UTC time range, minimum confidence =
+  peak EMA) with paging and CSV export, and the stored detail of a call (every session,
+  inferred `monitor_lost` ends, alerts, window timeline). Read only; validated answers;
+  store failures by reason; 1,000-row list cap. Claude-authored tests: 10 pure (CI) and
+  13 Playwright, 7 of them on the real API reading a PostgreSQL 16 database written by
+  the real event store (skipped without `AVA_TEST_POSTGRES_DSN`). Times are UTC only.
+  Still open in 7.3: FR-A7 feedback, FR-U5 call detail with codec/snippets, FR-U7 login
+  and audit.
 - **17 Nov daily run (details in `daily-runs/2026-11-17.md`).** FR-O6 per-stage latency
   for the live loop (7.2/8.1): `ava_live_stage_seconds{stage}` with `queue_wait`,
   `batch_wait`, `apply` (scorer and hub publish) and `window_to_result` (offer to

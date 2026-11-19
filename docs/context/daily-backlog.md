@@ -466,6 +466,13 @@ items needing that data are listed at the end and stay out of the queue.
   (PostgreSQL 16); review conditional pass, M and lows fixed, re-review pass. Remaining:
   FR-U6 dashboard history/search, FR-A7 feedback, FR-A5, local auth/audit; PRD wording
   for "confidence"; cost of the peak query not measured.
+  19 Nov (attempt 6): FR-U6 `#history` dashboard page (`dashboard/src/history.ts`,
+  `HistoryPage.tsx`): stored sessions (status filter, `next_before` paging), alert
+  search (state, UTC range, minimum peak-EMA confidence, cursor paging) with CSV export
+  (`blob:` download, truncation stated), stored call detail (every session, inferred
+  ends, alerts, timeline); 10 pure + 13 Playwright Claude-authored cases (HB01-HB07 on
+  real PostgreSQL 16 via `serve_dashboard_api.py --history-dsn-env`). Remaining: FR-A7
+  feedback, FR-U5, FR-U7 auth/audit, FR-A5; UTC-only times.
 - [ ] 7.QA Astra-designed Playwright suite, offline assets, failures/reconnects.
 
 ## 8 — CPU capacity (FR-I9/I10)
