@@ -19,10 +19,30 @@ be idle.
 IDs may be reused after an end; start/end data as JSONB; end columns all set or all
 null, relaxed by 0002 for inferred ends), `window_scores` (one row per call, direction and window index, flushed every
 hop), `alerts` (`open` -> `cleared` or `ended_open`). The architecture's other tables
-(`call_directions`, `alert_feedback`, `batch_jobs`, `settings`) belong to later P0/P1
+(`call_directions`, `batch_jobs`, `settings`) belong to later P0/P1
 work and are not created yet. `users`, `auth_sessions` and `audit_log` come from
 `0003_local_auth.sql` (19 Nov, attempt 7; PRD FR-U7, §6.3) and are written by
 `services/auth/store.py` (see `services/auth/README.md`).
+
+`0004_alert_feedback.sql` (19 Nov, attempt 8; PRD FR-A7): `alert_feedback`, written by
+`feedback.py` (`AlertFeedbackStore`) through the account store's connection
+(`PostgresAuthStore.transaction`), one row per label with its `alerts.feedback` audit
+row in the same transaction. Append-only (the newest row is the alert's current label).
+Each row keeps `user_id` (set NULL if the user were deleted) and `username`, the
+alert's status when labelled, and `windows`: a JSON copy of the alert's window scores
+(direction, window, ts, scored, score, ema, provisional, quality, degraded,
+concealed_fraction) over the span `history.PEAK_EMA` reads (its direction, or every
+direction without one, from the raise to its close or, while open, to the session's
+last event), oldest first, at most 3,600 (2 h of one direction), with `windows_total`
+counting all. The copy is as of labelling: windows stored later are not in it. The copy
+is read first; then the alert row is locked until commit (`FOR NO KEY UPDATE`, waiting
+at most 2 s) and, if the alert closed in between, copied again, so the status recorded
+matches the copy's end while the event store's `alert.cleared`/`call.ended` waits only
+for the count, insert and audit row. At most 20 labels are kept per alert (then
+`conflict`); `created_at` is `clock_timestamp()` after the lock, so it follows ID order. No embeddings or audio
+features (none are stored here; with FR-O5 snippet retention on, the alert's encrypted
+snippet under the same alert ID, until its TTL purge, is the audio a label pairs with).
+Rows follow their alert (and call) on delete.
 
 `0002_inferred_end.sql` (19 Nov): `end_inferred` and `start_event_at` (the applied
 explicit start's time) columns; open explicit rows written before it get

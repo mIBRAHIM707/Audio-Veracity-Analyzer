@@ -481,6 +481,13 @@ items needing that data are listed at the end and stay out of the queue.
   documented. Then the dashboard sign-in (`AuthGate.tsx`, `auth.ts`; Claude-authored
   Playwright cases on the real accounts in PostgreSQL 16). Remaining: admin settings
   (FR-A9), FR-A7 feedback, FR-U5, FR-A5.
+  19 Nov (attempt 8): FR-A7 alert feedback, API and storage: migration 0004
+  `alert_feedback`, `services/store/feedback.py` (label + copy of the alert's window
+  scores + `alerts.feedback` audit row in one transaction, alert row locked, at most 20
+  labels per alert, newest current), `POST`/`GET /v1/alerts/{id}/feedback` with accounts
+  on; Claude-authored tests incl. PostgreSQL 16; review conditional pass, findings fixed.
+  Remaining: dashboard feedback buttons (PRD 3.25 UI), admin settings (FR-A9), FR-U5,
+  FR-A5; embeddings are not stored (snippets via FR-O5 retention instead).
 - [ ] 7.QA Astra-designed Playwright suite, offline assets, failures/reconnects.
 
 ## 8 — CPU capacity (FR-I9/I10)

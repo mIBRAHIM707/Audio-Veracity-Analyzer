@@ -191,6 +191,10 @@ def _open_auth(dsn):
     store = PostgresAuthStore(_connect_factory(dsn))
     authenticator = Authenticator(store, Argon2Passwords())
     authenticator.close = store.close  # held and closed like the other resources
+    # FR-A7 alert feedback shares the account store's connection: each label is written
+    # in one transaction with its audit row (needs migration 0004; 503 until then).
+    from services.store.feedback import AlertFeedbackStore
+    authenticator.feedback = AlertFeedbackStore(store)
     try:
         store.resolve('A' * 43)  # a well-formed token that matches nothing: one real query
         return authenticator, True
@@ -335,7 +339,8 @@ def _run(args, environ, stderr, made, held):
     oplog = ApiLog(stderr) if args.event_log == 'stderr' else None
     try:
         app = create_app(service, hub=hub, relay=relay, dashboard_dir=args.dashboard, oplog=oplog,
-                         history=history, auth=auth, cookie_secure=not args.cookie_insecure)
+                         history=history, auth=auth, cookie_secure=not args.cookie_insecure,
+                         feedback=getattr(auth, 'feedback', None))
     except ValueError as error:
         return refuse(str(error))
     record = {'event': 'starting', 'host': args.host, 'port': port, 'pid': os.getpid(),

@@ -79,6 +79,11 @@ accounts with Argon2 passwords, two roles, an audit log (logins, exports, upload
 account changes). Accounts are created by an operator (`python -m services.auth`). Human:
 decide audit-log retention, and whether analysts may upload files (FR-U7 says
 "read, feedback"; they can today). The dashboard now has a sign-in page.
+19 Nov (attempt 8): no data change. Signed-in analysts can mark a stored alert true or
+false positive (`POST /v1/alerts/{id}/feedback`); the label is stored with the alert's
+window scores and an audit row. Embeddings are not stored. Human: confirm in the PRD
+that FR-A7 "embeddings" are deferred to retraining from retained snippets. Dashboard
+buttons are next.
 
 Updated 4 October 2026. This is the active sequence; evidence lives in
 `current-state.md` and `handoffs/`. Check marks mean the stated bounded task passed

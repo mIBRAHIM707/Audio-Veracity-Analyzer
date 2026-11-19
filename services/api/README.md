@@ -157,6 +157,32 @@ address; browsers accept Secure cookies from http://localhost). `/metrics` adds
 The dashboard shows a sign-in form when accounts are on (`dashboard/README.md`). Not yet:
 admin-only settings routes (FR-A9/FR-U7 settings page), TLS (the operator's proxy).
 
+Alert feedback (PRD FR-A7; 19 Nov, attempt 8), only with `--auth on` (every label names
+its analyst; without accounts both routes answer 503):
+`POST /v1/alerts/{id}/feedback` with exactly `{"label": "true_positive"}` or
+`{"label": "false_positive"}` (at most 1 KB; anything else 422, larger 413) answers 201
+with `feedback_id`, `label`, `username`, `ts`, `alert_state`, `windows_stored` and
+`windows_total`; 404 for an alert that is not stored; 409 once the alert has 20 labels;
+503 with a fixed reason when the store fails (if the connection drops just after the
+commit, the answer is 503 although the label was stored: `GET` shows it). `GET
+/v1/alerts/{id}/feedback` lists the alert's labels newest first (`current` is the
+newest; at most 100). Both roles may label; labels are appended, so a changed mind
+keeps its history. The label, a copy of the alert's window scores and its
+`alerts.feedback` audit row (alert ID, label, feedback ID) are one transaction on the
+account connection (see `services/store/README.md`): a label that cannot be audited is
+not stored, and the audit middleware then adds no second row (it records refused and
+failed submissions, without the body). The role also needs `SELECT` on `alerts`,
+`calls`, `window_scores` and `INSERT, SELECT` on `alert_feedback` (and its sequence);
+migration 0004. `/metrics` adds `ava_alert_feedback_writes_total{outcome=ok|invalid|
+not_found|conflict|unavailable|busy|timeout|schema|error}`. Alert IDs containing `/`
+cannot be addressed (the scorer's are UUIDs). Feedback shares the account connection
+with session checks, so a slow label write delays them (up to 2 s, then 503 busy); the
+write time at the 3,600-window cap is not measured. Not stored: embeddings or other
+audio features (none are kept in PostgreSQL; with FR-O5 snippet retention on in the live
+service, the alert's encrypted snippet is kept under the same alert ID until its TTL
+purge, the audio a label can be paired with for retraining) and free-text notes
+(privacy).
+
 `services/api/__main__.py` serves the app with uvicorn on `--host` (default 127.0.0.1);
 a non-loopback address is refused without `--auth on` or `--allow-non-loopback`.
 Start-up checks: torch is installed and the model directory holds `model.safetensors`

@@ -45,7 +45,9 @@ WebSocket, cross-site refusal, audited CSV export) is in `services/api/app.py`;
   refused login (`auth.login refused` with the reason and, for an existing account
   only, the name tried: an unknown "name" may be a password typed into the wrong field;
   not for attempts on a name already locked), logout, CSV export (`alerts.export` with
-  filters and row count), every other mutating request with a session (architecture
+  filters and row count), alert feedback (`alerts.feedback` with alert ID, label and
+  feedback ID, in the label's transaction; refused/failed submissions get the
+  middleware's row), every other mutating request with a session (architecture
   §2.5 audit middleware: `api.analyze` for uploads, `api.request` otherwise; route,
   method and status, never a body), and every operator change (`user.add`,
   `user.password`, `user.disable`, `user.enable`, `user.role`, actor `system:cli`).
@@ -62,9 +64,15 @@ WebSocket, cross-site refusal, audited CSV export) is in `services/api/app.py`;
   export), so a stalled database cannot take the threads /healthz and /metrics need.
   Sessions that ended over a day ago are deleted in batches of 100 at each login, in a
   savepoint: a role without DELETE on `auth_sessions` skips the purge, never the login.
-- **Roles.** Both roles can use every route that exists. `admin` is reserved for the
-  settings routes (FR-A9, FR-U7 settings page), not built yet; feedback (FR-A7) is not
-  built yet either.
+- **Roles.** Both roles can use every route that exists, including alert feedback
+  (FR-A7, 19 Nov attempt 8; FR-U7 gives it to analysts, and an admin can label too).
+  `admin` is reserved for the settings routes (FR-A9, FR-U7 settings page), not built yet.
+- **Other modules' audited writes.** `PostgresAuthStore.transaction(work,
+  required_migration=N)` runs one transaction on the account connection (same waits,
+  timeouts and failure reasons; the schema version is read again while it is short of
+  `N`, so a database migrated after start-up is seen without a restart), and
+  `audit_in(db, ...)` appends an audit row inside it. `services/store/feedback.py` uses
+  them so a label and its `alerts.feedback` row commit or roll back together.
 - **Bootstrap.** No default account. The first admin is created by the operator:
 
 ```text
@@ -81,8 +89,8 @@ uv run ... python -m services.auth --database-url-env AVA_DATABASE_URL add-user 
 
 (The dashboard sign-in form is in `dashboard/src/AuthGate.tsx`; see `dashboard/README.md`.)
 
-- Admin-only settings routes and page (FR-A9, FR-U7), feedback (FR-A7) and their audit
-  rows; the PRD's "without FR-U7 the audit log records `actor=system`" path (no audit
+- Admin-only settings routes and page (FR-A9, FR-U7) and their audit rows; the
+  dashboard's feedback buttons (the FR-A7 API is built); the PRD's "without FR-U7 the audit log records `actor=system`" path (no audit
   writer runs when auth is off).
 - TLS: the operator's reverse proxy or Ingress (k3s README); Compose/k3s wiring of
   `--auth on` with a database role limited to the tables above.

@@ -28,6 +28,10 @@ POST /v1/auth/login, POST /v1/auth/logout, GET /v1/auth/me  PRD FR-U7 local acco
                   (19 Nov, attempt 7), only when `create_app(..., auth=)` is given: then
                   every other /v1 route and the WebSocket need a valid session cookie,
                   and a CSV export is written to the audit log (see "Authentication").
+POST /v1/alerts/{id}/feedback, GET /v1/alerts/{id}/feedback  PRD FR-A7 (19 Nov, attempt
+                  8): label a stored alert true_positive/false_positive, stored with a
+                  copy of its window scores and its audit row in one transaction; list
+                  its labels. Needs `feedback=` (and so `auth=`); otherwise 503.
 The calls and events routes need an `EventHub` passed to `create_app`; otherwise
 they answer 503 / close with 1011. With a `RedisRelay` on that hub the scorer's events
 arrive from Redis pub/sub (16 Nov). The history routes need a `PostgresCallHistory`
@@ -81,9 +85,10 @@ from services.events.fanout import HubFull
 from services.events.relay_loop import RelayLoop
 from services.api.alert_csv import alerts_csv
 from services.auth.store import AuthStoreError
+from services.store.feedback import LABELS as FEEDBACK_LABELS, check_feedback
 from services.store.history import (DEFAULT_LIMIT as DEFAULT_HISTORY_LIMIT, MAX_LIMIT as MAX_HISTORY_LIMIT,
                                     REASONS as HISTORY_REASONS, STATUSES as HISTORY_STATUSES, HistoryError,
-                                    check_alert_filters)
+                                    check_alert_filters, valid_call_id)
 from services.inference.analysis import (AnalysisError, AnalyzerBusy, MAX_ASYNC_SECONDS, MAX_BYTES,
                                          NeedsAsyncJob, decode_wav)
 # FR-O6 live-pipeline families, shared with the live service process (moved 16 Nov).
@@ -126,7 +131,7 @@ MAX_CONCURRENT_UPLOADS = 2
 JOB_STATES = ('queued', 'running', 'done', 'failed')
 ROUTES = ('/healthz', '/readyz', '/metrics', '/v1/analyze', '/v1/jobs/:id', '/v1/calls',
           '/v1/calls/:id', '/v1/calls/:id/history', '/v1/history/calls', '/v1/alerts', '/v1/auth/login',
-          '/v1/auth/logout', '/v1/auth/me')
+          '/v1/auth/logout', '/v1/auth/me', '/v1/alerts/:id/feedback')
 # FR-U7 local accounts (19 Nov, attempt 7).
 SESSION_COOKIE = 'ava_session'
 LOGIN_OUTCOMES = ('ok', 'invalid', 'locked', 'busy', 'unavailable')  # as services.auth.service
@@ -136,7 +141,13 @@ MAX_LOGIN_BYTES = 4096
 SESSION_RECHECK_S = 60.0  # an open WebSocket re-checks its session this often
 MAX_ACCOUNT_CALLS = 8  # session checks and audit writes in worker threads at once (review M1)
 # Audit action per mutating route (architecture §2.5); any other mutating route is 'api.request'.
-AUDITED_ROUTES = {'/v1/analyze': 'api.analyze'}
+AUDITED_ROUTES = {'/v1/analyze': 'api.analyze', '/v1/alerts/:id/feedback': 'alerts.feedback'}
+# Routes whose success writes its own audit row in the same transaction as the change
+# (with what was changed): the middleware then records only their refusals and failures.
+SELF_AUDITED_ROUTES = frozenset({'/v1/alerts/:id/feedback'})
+# FR-A7 alert feedback (19 Nov, attempt 8): outcomes of POST /v1/alerts/{id}/feedback.
+FEEDBACK_OUTCOMES = ('ok', 'invalid', 'not_found', 'conflict') + HISTORY_REASONS
+MAX_FEEDBACK_BYTES = 1024
 AUDIT_SLOT_WAIT_S = 2.0  # an audit write waits this long for an account slot before it is skipped/refused
 
 
@@ -160,6 +171,10 @@ def route_label(path):
     if path.startswith('/v1/calls/'):
         rest = path[len('/v1/calls/'):]
         return '/v1/calls/:id/history' if rest.endswith('/history') else '/v1/calls/:id'
+    if path.startswith('/v1/alerts/') and path.endswith('/feedback'):
+        alert_id = path[len('/v1/alerts/'):-len('/feedback')]
+        if alert_id and '/' not in alert_id:  # what the route matches (review N1)
+            return '/v1/alerts/:id/feedback'
     return path if path in ROUTES else 'other'
 
 
@@ -214,6 +229,12 @@ class Metrics:
         self.logins = {outcome: 0 for outcome in LOGIN_OUTCOMES}
         self.auth_refusals = {reason: 0 for reason in AUTH_REFUSALS}
         self.audit_failures = 0
+        self.feedback = {outcome: 0 for outcome in FEEDBACK_OUTCOMES}
+
+    def count_feedback(self, outcome):
+        with self._lock:
+            if outcome in self.feedback:
+                self.feedback[outcome] += 1
 
     def count_audit_failure(self):
         with self._lock:
@@ -277,6 +298,7 @@ class Metrics:
             history_reads = dict(self.history)
             alert_reads = dict(self.alert_reads)
             logins, auth_refusals, audit_failures = dict(self.logins), dict(self.auth_refusals), self.audit_failures
+            feedback = dict(self.feedback)
             requests = dict(self.requests)
             analysis = self.analysis.render('ava_analysis_seconds')
             stages = self.stages.render('ava_analysis_stage_seconds', 'stage')
@@ -348,6 +370,11 @@ class Metrics:
             lines += ['# HELP ava_audit_write_failures_total Mutating requests answered whose audit row could not '
                       'be written (the account store failed or was busy).',
                       '# TYPE ava_audit_write_failures_total counter', f'ava_audit_write_failures_total {audit_failures}']
+            lines += ['# HELP ava_alert_feedback_writes_total Alert feedback submissions (POST /v1/alerts/{id}/feedback, '
+                      'FR-A7) by mutually exclusive outcome; ok rows are stored with their audit row.',
+                      '# TYPE ava_alert_feedback_writes_total counter']
+            lines += [f'ava_alert_feedback_writes_total{{outcome="{outcome}"}} {feedback[outcome]}'
+                      for outcome in FEEDBACK_OUTCOMES]
         if pipeline is not None:
             try:
                 snapshot, age = pipeline.read()
@@ -572,7 +599,7 @@ async def read_bounded(upload):
 
 
 def create_app(service, *, hub=None, registry=None, dashboard_dir=None, pipeline_stats=None, relay=None,
-               oplog=None, wall_clock=time.time, history=None, auth=None, cookie_secure=True):
+               oplog=None, wall_clock=time.time, history=None, auth=None, cookie_secure=True, feedback=None):
     """`hub` is the in-process `services.events.EventHub` carrying FR-A4 events; with it
     the app serves `/v1/calls` from a `CallRegistry` (a new one unless given) and
     `WS /v1/events`. Without it those routes answer 503: no live source is connected.
@@ -593,7 +620,12 @@ def create_app(service, *, hub=None, registry=None, dashboard_dir=None, pipeline
     The app does not close it (its owner does).
     `auth` (optional, `services.auth.service.Authenticator`, FR-U7) turns on accounts:
     see "Authentication" in the module docstring. `cookie_secure=False` drops the
-    cookie's Secure flag (plain HTTP on a non-loopback lab address only)."""
+    cookie's Secure flag (plain HTTP on a non-loopback lab address only).
+    `feedback` (optional, `services.store.feedback.AlertFeedbackStore`, FR-A7) serves
+    `POST`/`GET /v1/alerts/{id}/feedback`; it needs `auth` (every label names its
+    analyst). Without it those routes answer 503."""
+    if feedback is not None and auth is None:
+        raise ValueError('alert feedback needs local accounts: every label names who gave it')
     if registry is not None and hub is None:
         raise ValueError('a call registry needs the event hub that feeds it')
     if relay is not None and (hub is None or getattr(relay, 'hub', None) is not hub):
@@ -778,7 +810,8 @@ def create_app(service, *, hub=None, registry=None, dashboard_dir=None, pipeline
                 return JSONResponse({'detail': 'Login required'}, status_code=401)
             request.state.principal = principal
             response = await call_next(request)
-            if request.method in UNSAFE_METHODS and request.url.path != '/v1/auth/logout':
+            if request.method in UNSAFE_METHODS and request.url.path != '/v1/auth/logout' \
+                    and not (route_label(request.url.path) in SELF_AUDITED_ROUTES and response.status_code < 400):
                 await audit_request(request, principal, response.status_code)
             return response
 
@@ -1001,6 +1034,57 @@ def create_app(service, *, hub=None, registry=None, dashboard_dir=None, pipeline
             except AuthStoreError as error:
                 raise HTTPException(503, f'Export not recorded in the audit log ({error.reason})') from None
         return response
+
+    def feedback_store():
+        if feedback is None:
+            raise HTTPException(503, 'Alert feedback needs local accounts and the call store')
+        return feedback
+
+    @app.post('/v1/alerts/{alert_id}/feedback')
+    async def give_feedback(alert_id: str, request: Request):
+        """PRD FR-A7: label a stored alert true or false positive (201 with the record).
+        The label, a copy of the alert's window scores and the audit row are one transaction."""
+        store = feedback_store()
+        body = await read_small_body(request, MAX_FEEDBACK_BYTES)
+        if body is None:
+            metrics.count_feedback('invalid')
+            raise HTTPException(413, f'Feedback body exceeds {MAX_FEEDBACK_BYTES} bytes')
+        try:
+            fields = json.loads(body)
+        except (ValueError, UnicodeDecodeError):
+            fields = None
+        try:
+            if not isinstance(fields, dict) or set(fields) != {'label'}:
+                raise ValueError(f'send a JSON object with one field, label: one of {FEEDBACK_LABELS}')
+            check_feedback(alert_id, fields['label'])
+        except ValueError as error:
+            metrics.count_feedback('invalid')
+            raise HTTPException(422, str(error)) from None
+        try:
+            record = await account_call(store.record, request.state.principal, alert_id, fields['label'],
+                                        wait_s=AUDIT_SLOT_WAIT_S)
+        except AuthStoreError as error:
+            metrics.count_feedback(error.reason)
+            if error.reason == 'not_found':
+                raise HTTPException(404, 'No stored alert with this ID') from None
+            if error.reason == 'conflict':
+                raise HTTPException(409, 'This alert has the most labels allowed') from None
+            raise HTTPException(503, f'Feedback not stored ({error.reason})') from None
+        metrics.count_feedback('ok')
+        return JSONResponse(record, status_code=201)
+
+    @app.get('/v1/alerts/{alert_id}/feedback')
+    async def read_feedback(alert_id: str):
+        """The alert's labels, newest first; `current` is the newest label."""
+        store = feedback_store()
+        if not valid_call_id(alert_id):  # alert IDs have the call ID's 1-128 character rule
+            raise HTTPException(422, 'alert ID must be 1-128 characters without NUL')
+        try:
+            return await account_call(store.list, alert_id)
+        except AuthStoreError as error:
+            if error.reason == 'not_found':
+                raise HTTPException(404, 'No stored alert with this ID') from None
+            raise HTTPException(503, f'Feedback store unavailable ({error.reason})') from None
 
     def read_wall_clock():
         try:

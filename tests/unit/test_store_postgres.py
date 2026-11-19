@@ -185,8 +185,10 @@ class PostgresTests(unittest.TestCase):
         tables = {r[0] for r in self.query('SELECT table_name FROM information_schema.tables WHERE table_schema = %s',
                                            (self.schema,))}
         # 0003 (19 Nov, attempt 7): FR-U7 accounts, sessions and the audit log.
+        # 0004 (19 Nov, attempt 8): FR-A7 alert feedback.
+        self.assertEqual(rows[3], (4, '0004_alert_feedback.sql', files[3].sha256))
         self.assertEqual(tables, {'schema_migrations', 'calls', 'window_scores', 'alerts', 'users', 'auth_sessions',
-                                  'audit_log'})
+                                  'audit_log', 'alert_feedback'})
 
     def test_changed_applied_migration_is_refused_without_changes(self):
         connection = self.connect()

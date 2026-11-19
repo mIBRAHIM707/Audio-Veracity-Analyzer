@@ -238,6 +238,18 @@ and about 50,000 original clips, excluding codec copies.
   Not yet: admin settings (FR-A9), feedback (FR-A7), Compose/k3s wiring, TLS (operator
   proxy), audit retention (decision). Analysts may upload files (PRD says "read,
   feedback"; decision to record).
+- **19 Nov (attempt 8), 7.3 FR-A7 alert feedback (P1), API and storage.** Migration 0004
+  `alert_feedback`; `services/store/feedback.py`: a `true_positive`/`false_positive`
+  label, a JSON copy of the alert's window scores (the FR-A6 peak span, up to 3,600
+  windows, `windows_total`) and the `alerts.feedback` audit row in one transaction on the
+  account connection (`PostgresAuthStore.transaction`), alert row locked, labels
+  appended (newest current, at most 20 per alert). `POST /v1/alerts/{id}/feedback` (201,
+  404, 409, 422, 503) and `GET` (labels newest first), only with `--auth on`; metric
+  `ava_alert_feedback_writes_total`. Claude-authored tests incl. PostgreSQL 16 (a clear
+  waits for a label being written; rollback when the audit row fails); review
+  conditional pass, findings fixed. Embeddings are not stored (no audio features in
+  PostgreSQL); FR-O5 retained snippets share the alert ID. Not yet: dashboard feedback
+  buttons, write time at the window cap measured, PRD wording for "embeddings".
 - **17 Nov daily run (details in `daily-runs/2026-11-17.md`).** FR-O6 per-stage latency
   for the live loop (7.2/8.1): `ava_live_stage_seconds{stage}` with `queue_wait`,
   `batch_wait`, `apply` (scorer and hub publish) and `window_to_result` (offer to

@@ -112,7 +112,7 @@ class PostgresAuthStore:
         self._connect, self._connection = connect, None
         self._lock = threading.Lock()
         self._closing = False
-        self._schema_checked = False
+        self._schema_version = 0  # highest migration seen on this connection (0: not read yet)
         self.absolute_s = _interval('absolute_s', absolute_s, 60, 7 * 86400)
         self.idle_s = _interval('idle_s', idle_s, 60, self.absolute_s)
         if isinstance(wait_s, bool) or not isinstance(wait_s, (int, float)) or not 0 <= wait_s <= 60:
@@ -134,14 +134,28 @@ class PostgresAuthStore:
 
     def _drop(self):
         connection, self._connection = self._connection, None
-        self._schema_checked = False
+        self._schema_version = 0
         if connection is not None:
             try:
                 connection.close()
             except Exception:
                 pass
 
-    def _run(self, work):
+    def transaction(self, work, *, required_migration):
+        """Run `work(db)` as one transaction on this store's connection, with its waits,
+        timeouts and failure reasons, after checking the schema has `required_migration`
+        (at least 0003). For other modules whose writes must share a transaction with
+        their audit row (`services/store/feedback.py`); `work` may call `audit_in`."""
+        if isinstance(required_migration, bool) or not isinstance(required_migration, int) \
+                or required_migration < REQUIRED_MIGRATION:
+            raise ValueError(f'required_migration must be an integer of at least {REQUIRED_MIGRATION}')
+        return self._run(work, required_migration)
+
+    def audit_in(self, db, actor, action, outcome='ok', detail=None):
+        """Append one audit row inside a `transaction` (committed or rolled back with it)."""
+        self._audit(db, actor, action, outcome, {} if detail is None else detail)
+
+    def _run(self, work, required=REQUIRED_MIGRATION):
         if not self._lock.acquire(timeout=self.wait_s):
             raise AuthStoreError('another account operation holds the connection', reason='busy')
         try:
@@ -149,23 +163,33 @@ class PostgresAuthStore:
                 raise AuthStoreError('account store is closed', reason='unavailable')
             if self._connection is None or self._connection.closed:
                 self._connection = self._connect()
-                self._schema_checked = False
+                self._schema_version = 0
             if getattr(self._connection.info.transaction_status, 'name', None) != 'IDLE':
                 raise AuthStoreError('connect() returned a connection with a transaction open (or broken)',
                                      reason='error')
             with self._connection.transaction():
                 db = self._connection
                 db.execute(f'SET LOCAL statement_timeout = {int(self.statement_timeout_ms)}')
-                if not self._schema_checked:
+                if self._schema_version < required:
+                    # Read again while it is short of what this call needs: a database migrated
+                    # after start-up is then seen without a restart.
                     row = db.execute('SELECT max(version) FROM schema_migrations').fetchone()
-                    if row is None or row[0] is None or row[0] < REQUIRED_MIGRATION:
-                        raise AuthStoreError(f'the database needs migration {REQUIRED_MIGRATION:04d} or later',
-                                             reason='schema')
+                    version = 0 if row is None or row[0] is None else int(row[0])
+                    if version < required:
+                        error = AuthStoreError(f'the database needs migration {required:04d} or later',
+                                               reason='schema')
+                        # The connection is healthy: keep it (review L3, 19 Nov attempt 8), so a
+                        # feedback call on a 0003 database does not reconnect every login.
+                        error.keep_connection = True
+                        raise error
+                    seen = version
+                else:
+                    seen = self._schema_version
                 result = work(db)
-            self._schema_checked = True
+            self._schema_version = seen
             return result
         except AuthStoreError as error:
-            if error.reason not in ('conflict', 'not_found'):
+            if error.reason not in ('conflict', 'not_found') and not getattr(error, 'keep_connection', False):
                 self.failures += 1
                 self._drop()
             raise
