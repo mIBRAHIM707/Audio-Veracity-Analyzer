@@ -17,10 +17,21 @@ be idle.
 
 `0001_live_records.sql`: `calls` (one open row per call ID by a partial unique index;
 IDs may be reused after an end; start/end data as JSONB; end columns all set or all
-null), `window_scores` (one row per call, direction and window index, flushed every
+null, relaxed by 0002 for inferred ends), `window_scores` (one row per call, direction and window index, flushed every
 hop), `alerts` (`open` -> `cleared` or `ended_open`). The architecture's other tables
 (`call_directions`, `alert_feedback`, `users`, `audit_log`, `batch_jobs`, `settings`)
 belong to later P0/P1 work and are not created yet.
+
+`0002_inferred_end.sql` (19 Nov): `end_inferred` and `start_event_at` (the applied
+explicit start's time) columns; open explicit rows written before it get
+`start_event_at = started_at` (the live process, the only writer, applies migrations at
+start-up, so such a row belongs to a stopped process). An inferred end (see the
+supersede rule below) has `end_reason = 'monitor_lost'` and no speech seconds; every
+other ended row must still carry speech seconds, so code summing `speech_seconds` must
+expect NULL for inferred ends. It replaces
+0001's unnamed check `calls_check2` (PostgreSQL's generated name, asserted by a
+PostgreSQL test) with the named checks `calls_speech_seconds_reported` and
+`calls_inferred_end_shape`.
 
 ## Event store (`events_pg.py`)
 
@@ -33,8 +44,25 @@ belong to later P0/P1 work and are not created yet.
 - Any non-start event for a call ID whose latest call has ended is `after_end`,
   whatever its time (FR-I11 late results, a `no_speech`/`unmonitored` status the
   scorer can publish just after `call.ended`, replays), as in the in-memory registry.
-- An ID never seen before starts implicitly (`implicit_start`); a later `call.started`
-  completes it (start data kept, earlier start time kept).
+- An ID never seen before starts implicitly (`implicit_start`); a `call.started` whose
+  time is not later than the first event seen completes it (start data kept, start
+  time = the start's time). A session's start is published before its other events.
+- Abrupt live stop (19 Nov, 5.QA): a killed scorer sends no `call.ended`, and the
+  restarted one re-taps the call and publishes a new `call.started` from a new hub
+  (`seq` back at 1, so `seq` cannot be compared). A start strictly later than the open
+  session's start (`start_event_at`, or the first event of an implicit session)
+  supersedes it: the old row ends `monitor_lost` at its last event (never after the
+  new start) with `end_inferred` true, no speech seconds and no verdict; its open alerts
+  become `ended_open` (closed at that end, or at their raise if that is later); a new
+  row opens. The outcome is `stored`; `PostgresEventStore.superseded` counts these and
+  the live service exports it as `ava_live_store_superseded_total` (a supersede whose
+  commit lands but whose connection breaks is retried as `duplicate` and not counted:
+  `calls.end_inferred` is the source of truth). A start at the same or an earlier time
+  is a `duplicate` (a retried write); so, defensively, is any later start for an open
+  explicit row without `start_event_at`. A backwards clock step can defeat the rule:
+  a new session whose start is not later than the old start is merged into the old
+  row, and its windows collide with the old window keys and are dropped as
+  duplicates.
 - An ID may be reused only by a `call.started` strictly later than its last end (the
   registry refuses reuse until the ended call is evicted: a deliberate difference).
 - Status updates without a direction change the current call state only: they are
@@ -77,7 +105,8 @@ PostgreSQL case kills the store's connection mid-call and checks the catch-up).
 
 Not done: scorer resume from persisted state (FR-I11: the flush
 exists, resume does not; hysteresis counters and `direction_alert_id` are not stored);
-cleanup of open rows whose `call.ended` was lost; retention of `window_scores`
+cleanup of open rows whose `call.ended` was lost and whose call is never re-tapped
+(only a later start of the same call ID ends them); retention of `window_scores`
 (architecture: indefinite). Migration files with `END;` inside a function body are
 refused by the transaction-control check (fail closed).
 

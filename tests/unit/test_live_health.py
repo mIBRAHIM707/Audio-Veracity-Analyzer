@@ -258,6 +258,11 @@ class MetricsTests(unittest.TestCase):
         self.assertEqual(values['ava_live_store_events_total{outcome="stored"}'], 0)
         self.assertEqual((values['ava_live_pump_alive{pump="store"}'], values['ava_live_pump_stuck{pump="store"}']),
                          (0, 0))
+        self.assertNotIn('ava_live_store_superseded_total', values)  # no such count reported
+        # Claude-authored, 19 Nov (5.QA): the PostgreSQL store's supersede count is exported.
+        pumps[0]['report'] = lambda: {'counts': dict(store_pump.counts), 'backlog': store_pump.backlog,
+                                      'consecutive_failures': store_pump.consecutive_failures, 'superseded': 2}
+        self.assertEqual(samples(health.metrics())['ava_live_store_superseded_total'], 2)
 
 
 class HttpTests(unittest.TestCase):

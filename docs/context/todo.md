@@ -58,6 +58,9 @@ is restarted mid-call.
 18 Nov (attempt 7): no data change. If the live service is killed mid-call, the API's
 call list and the browser board now show the re-tapped call as a new session; the
 database side of that case is still open.
+19 Nov: no data change. The database side is done: after a kill the old monitoring
+session is closed as `monitor_lost` with no invented speech time (migration 0002), and a
+lab test kills the live service mid-call and checks the call still completes.
 
 Updated 4 October 2026. This is the active sequence; evidence lives in
 `current-state.md` and `handoffs/`. Check marks mean the stated bounded task passed

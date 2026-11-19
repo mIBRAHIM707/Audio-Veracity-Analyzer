@@ -16,7 +16,7 @@ from services.events.fanout import EventHub
 from services.events.redis_bridge import CHANNEL
 from services.live import __main__ as cli
 from services.live.__main__ import EXIT_INTERRUPTED, EXIT_OK, EXIT_REFUSED
-from services.store.migrate import MigrationError
+from services.store.migrate import MigrationError, load_migrations
 from tests.unit.test_live_cli import BASE, SECRET, FakeService, Harness, run
 from tests.unit.test_store_postgres import DSN, REAL
 
@@ -319,7 +319,7 @@ class RealPostgresCliTests(unittest.TestCase):
         code = cli.main(WITH_DB, environ=environ, factories=factories, stop_event=stop, stderr=err)
         self.assertEqual(code, EXIT_OK, err.getvalue())
         start, stopped = [json.loads(line) for line in err.getvalue().splitlines()]
-        self.assertEqual(start['database_migrations_applied'], [1])
+        self.assertEqual(start['database_migrations_applied'], [m.version for m in load_migrations()])
         self.assertEqual(stopped['store']['counts']['stored'], 2)
         with psycopg.connect(dsn) as reader:
             rows = reader.execute('SELECT call_id, end_reason FROM calls').fetchall()
@@ -353,7 +353,7 @@ class RealPostgresCliTests(unittest.TestCase):
         dsn = make_conninfo(DSN, options=f'-c search_path={schema}')
         store, applied = cli._open_store(dsn)
         self.addCleanup(store.close)
-        self.assertEqual(applied, [1])
+        self.assertEqual(applied, [m.version for m in load_migrations()])
         self.assertEqual(store.record(make_envelope('call.started', 'c1', {}, seq=1, ts=1_763_200_000.0)), 'stored')
         connection = store._connection
         self.assertEqual(connection.execute('SHOW statement_timeout').fetchone()[0], '10s')

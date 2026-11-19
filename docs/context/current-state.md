@@ -159,6 +159,18 @@ and about 50,000 original clips, excluding codec copies.
   open alerts become `ended_open`). This is covered by unit and Playwright cases, not a
   lab kill. Still open: the PostgreSQL store's duplicate start after a kill, and a
   SIGKILL lab case.
+- **19 Nov (attempt 1), 5.QA M1 (store and lab).** Migration 0002 adds `end_inferred`
+  and `start_event_at` (backfilled for open rows) and allows a missing `speech_seconds`
+  only on an inferred `monitor_lost` end. In the PostgreSQL store a `call.started`
+  strictly later than the open session's start supersedes it (old row inferred
+  `monitor_lost`, open alerts `ended_open`, new row), exported as
+  `ava_live_store_superseded_total`; `seq` is not used (the new hub restarts it).
+  Architecture §2.4 records this as interim behaviour until resume exists. Evidence:
+  Claude-authored PostgreSQL 16 tests (incl. upgrading a database with rows) and the
+  Compose lab case `test_a_killed_live_process_never_stops_the_call`: SIGKILL mid-call,
+  live healthy again in 13 s, the call completed, registry `superseded_session` 1, rows
+  `monitor_lost` (inferred, no speech seconds) and `bye`, no alert left open. Details in
+  `daily-runs/2026-11-19.md`.
 - **17 Nov daily run (details in `daily-runs/2026-11-17.md`).** FR-O6 per-stage latency
   for the live loop (7.2/8.1): `ava_live_stage_seconds{stage}` with `queue_wait`,
   `batch_wait`, `apply` (scorer and hub publish) and `window_to_result` (offer to

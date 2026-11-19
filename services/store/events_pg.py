@@ -6,10 +6,20 @@ PostgreSQL"; architecture §2.4, §2.7).
 (`services.events.contract.Envelope`) in its own transaction and returns an outcome:
 
 - `call.started` opens a `calls` row (one open row per ID, by a partial unique
-  index). A second start for an open call is a `duplicate`, except that it completes
-  an implicitly started call (start data kept, `implicit_start` cleared, the earlier
-  start time kept). An ID may be reused only by a start strictly later than that ID's
-  last end; otherwise the start is `after_end`.
+  index). A start for an implicitly started open call that is not later than its
+  first event completes it (start data kept, `implicit_start` cleared, start time =
+  the start's time). A second start for an open call is a `duplicate` when its time is
+  not later than the applied start's (`start_event_at`; a replay or retried write).
+  A start strictly later than the open session's start (the applied start, or the
+  first event of an implicit one) supersedes it (19 Nov, 5.QA): an abrupt scorer stop
+  sent no `call.ended`, and the restarted scorer re-tapped the call and published one
+  new start before that session's other events. The old row ends `monitor_lost` at
+  its last event with `end_inferred` and no speech seconds, its open alerts become
+  `ended_open`, and a new row is opened (outcome `stored`, counted in `superseded`).
+  The seq cannot be used: the restarted scorer's hub starts again at 1. An open
+  explicit row without `start_event_at` (not written by this code; migration 0002
+  fills it for older rows) never supersedes: `duplicate`. An ID may be reused only by
+  a start strictly later than that ID's last end; otherwise the start is `after_end`.
 - `score.updated` with a direction and window index inserts one `window_scores` row
   (primary key call/direction/window: a replay is a `duplicate` and does not move the
   call state back) and updates the call's current state; a status update
@@ -39,6 +49,7 @@ from datetime import datetime, timezone
 STORED_TYPES = ('call.started', 'score.updated', 'alert.raised', 'alert.cleared', 'call.ended')
 OUTCOMES = ('stored', 'duplicate', 'after_end', 'not_stored', 'unknown_alert')
 TRANSIENT = ('OperationalError', 'InterfaceError')  # psycopg classes for connection faults
+SUPERSEDED = 'superseded'  # internal: a start that closed an open session (counted as stored)
 
 
 class StoreError(RuntimeError):
@@ -75,6 +86,7 @@ class PostgresEventStore:
         self._connect, self._connection = connect, None
         self.counts = {outcome: 0 for outcome in OUTCOMES}
         self.failures = 0
+        self.superseded = 0  # starts (also counted as 'stored') that ended an open session
 
     def close(self):
         connection, self._connection = self._connection, None
@@ -112,6 +124,9 @@ class PostgresEventStore:
                 self.close()
             raise StoreError(f'{envelope.type} for a call was not stored: {type(error).__name__}',
                              retryable=retryable) from error
+        if outcome == SUPERSEDED:
+            self.superseded += 1
+            outcome = 'stored'
         self.counts[outcome] += 1
         return outcome
 
@@ -129,23 +144,48 @@ class PostgresEventStore:
         return handler(db, call_pk, envelope, data, when)
 
     def _start(self, db, envelope, data, when):
-        open_row = db.execute('SELECT id, implicit_start FROM calls WHERE call_id = %s AND ended_at IS NULL '
-                              'FOR UPDATE', (envelope.call_id,)).fetchone()
+        open_row = db.execute('SELECT id, implicit_start, started_at, start_event_at FROM calls '
+                              'WHERE call_id = %s AND ended_at IS NULL FOR UPDATE', (envelope.call_id,)).fetchone()
         if open_row:
-            if not open_row[1]:
-                return 'duplicate'
-            db.execute('UPDATE calls SET implicit_start = FALSE, start_data = %s::jsonb, '
-                       'started_at = least(started_at, %s), last_event_at = greatest(last_event_at, %s), '
-                       'last_seq = greatest(last_seq, %s) WHERE id = %s',
-                       (envelope.data_json, when, when, envelope.seq, open_row[0]))
-            return 'stored'
+            call_pk, implicit, started_at, start_event_at = open_row
+            if implicit:
+                if when > started_at:  # a session's start precedes its other events
+                    return self._supersede(db, call_pk, envelope, when)
+                db.execute('UPDATE calls SET implicit_start = FALSE, start_data = %s::jsonb, start_event_at = %s, '
+                           'started_at = least(started_at, %s), last_event_at = greatest(last_event_at, %s), '
+                           'last_seq = greatest(last_seq, %s) WHERE id = %s',
+                           (envelope.data_json, when, when, when, envelope.seq, call_pk))
+                return 'stored'
+            if start_event_at is not None and when > start_event_at:
+                return self._supersede(db, call_pk, envelope, when)
+            return 'duplicate'  # a replay (same time) or an earlier start; NULL: defensive only
         ended = self._last_end(db, envelope.call_id)
         if ended is not None and ended >= when:
             return 'after_end'  # a replayed start of a call that has already ended
-        db.execute('INSERT INTO calls (call_id, started_at, start_data, last_event_at, last_seq) '
-                   'VALUES (%s, %s, %s::jsonb, %s, %s)',
-                   (envelope.call_id, when, envelope.data_json, when, envelope.seq))
+        self._insert_start(db, envelope, when)
         return 'stored'
+
+    @staticmethod
+    def _insert_start(db, envelope, when):
+        db.execute('INSERT INTO calls (call_id, started_at, start_event_at, start_data, last_event_at, last_seq) '
+                   'VALUES (%s, %s, %s, %s::jsonb, %s, %s)',
+                   (envelope.call_id, when, when, envelope.data_json, when, envelope.seq))
+
+    def _supersede(self, db, call_pk, envelope, when):
+        """An abrupt scorer stop (crash, SIGKILL) sent no `call.ended`; the restarted
+        scorer re-tapped the call and published a new start. The old row ends
+        `monitor_lost` at its last event (never after the new start), with an inferred
+        end: no speech seconds or verdict were reported, so none are written. Its open
+        alerts become `ended_open` (closed at that end, or at their raise if later).
+        Then the new session's row is opened."""
+        end = db.execute("UPDATE calls SET ended_at = least(last_event_at, %s), final_state = state, "
+                         "end_reason = 'monitor_lost', end_inferred = TRUE WHERE id = %s RETURNING ended_at",
+                         (when, call_pk)).fetchone()[0]
+        # Never closed before it was raised (a backwards clock step can put the end there).
+        db.execute("UPDATE alerts SET status = 'ended_open', closed_at = greatest(raised_at, %s) "
+                   "WHERE call_pk = %s AND status = 'open'", (end, call_pk))
+        self._insert_start(db, envelope, when)
+        return SUPERSEDED  # reported as 'stored' once the transaction has committed
 
     def _open_call(self, db, envelope, when):
         """The open row for the call ID, started implicitly if the ID was never seen;

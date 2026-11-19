@@ -294,6 +294,15 @@ items needing that data are listed at the end and stay out of the queue.
   Claude-authored unit and Playwright cases. Remaining: the PostgreSQL store's duplicate
   start after a kill (needs the source epoch or a start-up sweep: design step) and a
   SIGKILL lab case.
+  19 Nov: store side done without the epoch. Migration 0002 (`end_inferred`,
+  `start_event_at`, backfilled for open rows; the speech-seconds check relaxed only for
+  inferred `monitor_lost` ends); a start strictly later than the open session's start
+  supersedes it (old row `monitor_lost`, inferred, no speech seconds; open alerts
+  `ended_open`); `ava_live_store_superseded_total`; architecture §2.4 interim note.
+  Claude-authored PostgreSQL tests (incl. an upgrade with rows) and the Compose lab case
+  `test_a_killed_live_process_never_stops_the_call` (SIGKILL mid-call: the call
+  completes; registry supersedes; two stored rows). Remaining for 5.QA: none known for
+  restarts; scorer resume from persisted state stays a topology decision (5.1 note).
 
 ## 6 — Asterisk laboratory (FR-T1–T5/T7, FR-I1/I2)
 - [ ] 6.1 Docker/WSL preflight; Asterisk/SIPp endpoints and WAV injection.

@@ -302,7 +302,7 @@ class HealthServer:
         if not self.pumps:
             return []
         alive, stuck, faults, moved = [], [], [], []
-        stored, waits, backlog, failures, hub_dropped = [], [], [], [], []
+        stored, waits, backlog, failures, hub_dropped, superseded = [], [], [], [], [], []
         forwarded, publish_failures, no_receivers = [], [], []
         snippets, snippets_queued = [], []
         for pump in self.pumps:
@@ -325,6 +325,8 @@ class HealthServer:
                 waits += [((('kind', key),), counts.get(key, 0)) for key in STORE_WAITS]
                 backlog.append(((), report['backlog']))
                 failures.append(((), report['consecutive_failures']))
+                if 'superseded' in report:
+                    superseded.append(((), report['superseded']))
             if 'forwarded' in counts:
                 forwarded.append(((), counts['forwarded']))
                 publish_failures.append(((), counts['publish_failures']))
@@ -342,6 +344,10 @@ class HealthServer:
                       + _family('gauge', 'ava_live_store_backlog', 'Events waiting to be stored.', backlog)
                       + _family('gauge', 'ava_live_store_consecutive_failures',
                                 'Store attempts failed in a row (> 0: storage is stalled).', failures))
+        if superseded:
+            lines += _family('counter', 'ava_live_store_superseded_total',
+                             'Stored starts that ended an open session by inference (an earlier scorer stopped '
+                             'abruptly; also counted as stored; source of truth: calls.end_inferred).', superseded)
         if snippets:
             lines += (_family('counter', 'ava_live_snippets_total',
                               'Alert snippet recorder counts (FR-O5): captured, written, write_failed, no_audio, '

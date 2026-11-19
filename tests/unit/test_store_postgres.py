@@ -174,10 +174,13 @@ class PostgresTests(unittest.TestCase):
 
     def test_apply_is_idempotent_and_records_hashes(self):
         connection = self.connect()
-        self.assertEqual(migrate.apply_migrations(connection), [1])
+        files = migrate.load_migrations()
+        self.assertEqual(migrate.apply_migrations(connection), [m.version for m in files])
         self.assertEqual(migrate.apply_migrations(connection), [])
-        rows = self.query('SELECT version, name, sha256 FROM schema_migrations')
-        self.assertEqual(rows, [(1, '0001_live_records.sql', migrate.load_migrations()[0].sha256)])
+        rows = self.query('SELECT version, name, sha256 FROM schema_migrations ORDER BY version')
+        self.assertEqual(rows, [(m.version, m.name, m.sha256) for m in files])
+        self.assertEqual(rows[:2], [(1, '0001_live_records.sql', files[0].sha256),
+                                    (2, '0002_inferred_end.sql', files[1].sha256)])
         tables = {r[0] for r in self.query('SELECT table_name FROM information_schema.tables WHERE table_schema = %s',
                                            (self.schema,))}
         self.assertEqual(tables, {'schema_migrations', 'calls', 'window_scores', 'alerts'})
@@ -201,7 +204,7 @@ class PostgresTests(unittest.TestCase):
         tables = {r[0] for r in self.query('SELECT table_name FROM information_schema.tables WHERE table_schema = %s',
                                            (self.schema,))}
         self.assertEqual(tables, set(), 'one transaction: neither 0001 nor the broken file may remain')
-        self.assertEqual(migrate.apply_migrations(connection, good), [1])
+        self.assertEqual(migrate.apply_migrations(connection, good), [m.version for m in good])
 
     def test_concurrent_starts_apply_once(self):
         results, errors = [], []
@@ -220,7 +223,7 @@ class PostgresTests(unittest.TestCase):
         for thread in threads:
             thread.join(timeout=60)
         self.assertEqual(errors, [])
-        self.assertEqual(sorted(results), [[], [], [], [1]])
+        self.assertEqual(sorted(results), [[], [], [], [m.version for m in migrate.load_migrations()]])
 
     # -- event store -----------------------------------------------------------------
 
@@ -303,13 +306,148 @@ class PostgresTests(unittest.TestCase):
         self.assertEqual(rows, [(True, False), (False, True)])
 
     def test_late_start_completes_an_implicit_start(self):
-        # Review L1 (15 Nov): start data is kept and the earlier start time stays.
+        # Review L1 (15 Nov): start data is kept. 19 Nov (Claude-authored change): a
+        # session's start is published before its other events, so a late start carries
+        # a time not later than the first event seen; one later than that is a new
+        # session (see the supersede tests below).
         store = self.migrated_store()
         self.assertEqual(store.record(score('c8', 2, T0 + 4, 0, 0.3, 0.3)), 'stored')
-        self.assertEqual(store.record(env('call.started', 'c8', {'from': 'lab'}, 1, T0 + 6)), 'stored')
-        self.assertEqual(store.record(env('call.started', 'c8', {'from': 'other'}, 3, T0 + 7)), 'duplicate')
-        rows = self.query('SELECT implicit_start, start_data, extract(epoch FROM started_at), last_seq FROM calls')
-        self.assertEqual(rows, [(False, {'from': 'lab'}, T0 + 4, 2)])
+        late_start = env('call.started', 'c8', {'from': 'lab'}, 1, T0 + 3)
+        self.assertEqual(store.record(late_start), 'stored')
+        self.assertEqual(store.record(late_start), 'duplicate')  # a replay
+        self.assertEqual(store.record(env('call.started', 'c8', {'from': 'other'}, 3, T0 + 2)), 'duplicate')
+        rows = self.query('SELECT implicit_start, start_data, extract(epoch FROM started_at), '
+                          'extract(epoch FROM start_event_at), last_seq FROM calls')
+        self.assertEqual(rows, [(False, {'from': 'lab'}, T0 + 3, T0 + 3, 2)])
+        self.assertEqual(store.superseded, 0)
+
+    def test_start_at_the_first_event_time_completes_an_implicit_start(self):
+        # Claude-authored, 19 Nov: the boundary is strict (equal time = same session).
+        store = self.migrated_store()
+        store.record(score('c13', 2, T0 + 4, 0, 0.3, 0.3))
+        self.assertEqual(store.record(env('call.started', 'c13', {}, 1, T0 + 4)), 'stored')
+        self.assertEqual(self.query('SELECT implicit_start, ended_at FROM calls'), [(False, None)])
+        self.assertEqual(store.superseded, 0)
+
+    # -- abrupt live stop: a later start supersedes the open session (Claude-authored,
+    #    19 Nov 2026; backlog 5.QA; PRD FR-A3, FR-I11; architecture §2.4) ------------
+
+    def test_a_later_start_supersedes_a_session_that_never_ended(self):
+        store = self.migrated_store()
+        old = [env('call.started', 'k1', {'from': 'first'}, 1, T0),
+               score('k1', 2, T0 + 4, 0, 0.9, 0.9, state='suspicious'),
+               env('alert.raised', 'k1', {'alert_id': 'k1-a', 'direction': 'caller', 'ema': 0.85, 'window': 1},
+                   3, T0 + 6),
+               score('k1', 4, T0 + 6, 1, 0.95, 0.85, state='alert')]
+        self.assertEqual([store.record(e) for e in old], ['stored'] * 4)
+        # The scorer is killed (no call.ended). The restarted one has a new hub: seq 1 again.
+        restart = env('call.started', 'k1', {'from': 'second'}, 1, T0 + 20)
+        self.assertEqual(store.record(restart), 'stored')
+        self.assertEqual((store.superseded, store.counts['stored']), (1, 5))
+        rows = self.query('SELECT start_data, ended_at IS NULL, extract(epoch FROM ended_at), final_state, end_reason, '
+                          'end_inferred, speech_seconds, verdict, end_data FROM calls ORDER BY id')
+        self.assertEqual(rows, [({'from': 'first'}, False, T0 + 6, 'alert', 'monitor_lost', True, None, None, None),
+                                ({'from': 'second'}, True, None, None, None, False, None, None, None)])
+        self.assertEqual(self.query("SELECT status, extract(epoch FROM closed_at) FROM alerts"), [('ended_open', T0 + 6)])
+        # The new session's events go to the new row; its window 0 is not a duplicate.
+        self.assertEqual(store.record(score('k1', 2, T0 + 24, 0, 0.1, 0.1)), 'stored')
+        self.assertEqual(store.record(restart), 'duplicate')  # a retried write of the same start
+        self.assertEqual(store.superseded, 1)
+        self.assertEqual(self.query('SELECT c.start_data, count(w.*) FROM calls c JOIN window_scores w ON w.call_pk = c.id '
+                                    'GROUP BY c.id ORDER BY c.id'), [({'from': 'first'}, 2), ({'from': 'second'}, 1)])
+        self.assertEqual(store.record(ended('k1', 3, T0 + 30)), 'stored')
+        self.assertEqual(self.query('SELECT end_reason, end_inferred, speech_seconds FROM calls ORDER BY id'),
+                         [('monitor_lost', True, None), ('bye', False, 7.5)])
+        # A replay of the old session's start is after both ends.
+        self.assertEqual(store.record(old[0]), 'after_end')
+
+    def test_an_implicit_session_is_superseded_by_a_later_start(self):
+        store = self.migrated_store()
+        store.record(score('k2', 5, T0 + 4, 0, 0.3, 0.3))  # its start was never stored
+        store.record(score('k2', 6, T0 + 6, 1, 0.2, 0.25))
+        self.assertEqual(store.record(env('call.started', 'k2', {}, 1, T0 + 10)), 'stored')
+        self.assertEqual(self.query('SELECT implicit_start, extract(epoch FROM ended_at), end_reason, end_inferred '
+                                    'FROM calls ORDER BY id'),
+                         [(True, T0 + 6, 'monitor_lost', True), (False, None, None, False)])
+        self.assertEqual(store.superseded, 1)
+
+    def test_superseded_end_is_never_after_the_new_start_and_equal_starts_do_not_supersede(self):
+        store = self.migrated_store()
+        store.record(env('call.started', 'k3', {}, 1, T0))
+        self.assertEqual(store.record(env('call.started', 'k3', {'other': True}, 9, T0)), 'duplicate')  # same time
+        self.assertEqual(store.record(env('call.started', 'k3', {}, 9, T0 - 1)), 'duplicate')  # earlier
+        store.record(score('k3', 2, T0 + 30, 0, 0.3, 0.3))  # e.g. the clock stepped back before the restart
+        store.record(env('alert.raised', 'k3', {'alert_id': 'k3-a', 'direction': 'caller', 'ema': 0.9, 'window': 0},
+                         3, T0 + 30))
+        self.assertEqual(store.record(env('call.started', 'k3', {}, 1, T0 + 20)), 'stored')
+        self.assertEqual(self.query('SELECT extract(epoch FROM ended_at) FROM calls WHERE ended_at IS NOT NULL'),
+                         [(T0 + 20,)])
+        # Review L3: an alert is never closed before it was raised.
+        self.assertEqual(self.query('SELECT status, extract(epoch FROM closed_at) FROM alerts'), [('ended_open', T0 + 30)])
+        self.assertEqual(store.superseded, 1)
+
+    def test_an_open_row_without_a_start_event_time_is_not_superseded(self):
+        # Defensive: this code always writes `start_event_at` and migration 0002 fills it
+        # for older open rows. Without it a later start cannot be told from a late
+        # start of the same session, so it stays a duplicate.
+        store = self.migrated_store()
+        store.record(env('call.started', 'k4', {}, 1, T0))
+        with self.psycopg.connect(DSN, options=f'-c search_path={self.schema}', autocommit=True) as other:
+            other.execute('UPDATE calls SET start_event_at = NULL')
+        self.assertEqual(store.record(env('call.started', 'k4', {}, 1, T0 + 20)), 'duplicate')
+        self.assertEqual(self.query('SELECT count(*), bool_and(ended_at IS NULL) FROM calls'), [(1, True)])
+
+    def test_upgrading_a_database_with_rows_to_migration_2(self):
+        # Review M2: 0001 alone, rows written, then the rest; the data and the checks
+        # survive, and an open row from before can be superseded by a re-tap.
+        connection = self.connect()
+        files = migrate.load_migrations()
+        self.assertEqual(migrate.apply_migrations(connection, files[:1]), [1])
+        with self.psycopg.connect(DSN, options=f'-c search_path={self.schema}') as old:
+            old.execute("INSERT INTO calls (call_id, started_at, last_event_at, last_seq, ended_at, final_state, "
+                        "end_reason, speech_seconds) VALUES ('u1', to_timestamp(%s), to_timestamp(%s), 4, "
+                        "to_timestamp(%s), 'monitoring', 'bye', 12.5)", (T0, T0 + 9, T0 + 10))
+            old.execute("INSERT INTO calls (call_id, started_at, last_event_at, last_seq) "
+                        "VALUES ('u2', to_timestamp(%s), to_timestamp(%s), 3)", (T0, T0 + 5))
+            old.execute("INSERT INTO calls (call_id, started_at, implicit_start, last_event_at, last_seq) "
+                        "VALUES ('u3', to_timestamp(%s), TRUE, to_timestamp(%s), 2)", (T0 + 1, T0 + 5))
+        self.assertEqual(migrate.apply_migrations(connection), [m.version for m in files[1:]])
+        rows = self.query('SELECT call_id, end_reason, speech_seconds, end_inferred, '
+                          'extract(epoch FROM start_event_at) FROM calls ORDER BY id')
+        self.assertEqual(rows, [('u1', 'bye', 12.5, False, None), ('u2', None, None, False, T0),
+                                ('u3', None, None, False, None)])
+        names = {r[0] for r in self.query("SELECT conname FROM pg_constraint WHERE conrelid = 'calls'::regclass "
+                                          "AND contype = 'c'")}
+        self.assertNotIn('calls_check2', names)
+        self.assertLessEqual({'calls_speech_seconds_reported', 'calls_inferred_end_shape'}, names)
+        store = PostgresEventStore(self.connect)
+        self.assertEqual(store.record(env('call.started', 'u2', {}, 1, T0 + 20)), 'stored')
+        self.assertEqual(store.record(env('call.started', 'u3', {}, 1, T0 + 20)), 'stored')
+        self.assertEqual(store.superseded, 2)
+        self.assertEqual(self.query("SELECT call_id, end_reason, end_inferred FROM calls WHERE call_id <> 'u1' "
+                                    'AND ended_at IS NOT NULL ORDER BY call_id'),
+                         [('u2', 'monitor_lost', True), ('u3', 'monitor_lost', True)])
+
+    def test_migration_2_allows_only_honest_inferred_ends(self):
+        migrate.apply_migrations(self.connect())
+        names = {r[0] for r in self.query("SELECT conname FROM pg_constraint WHERE conrelid = 'calls'::regclass "
+                                          "AND contype = 'c'")}
+        self.assertNotIn('calls_check2', names)
+        self.assertLessEqual({'calls_check', 'calls_check1', 'calls_speech_seconds_reported',
+                              'calls_inferred_end_shape'}, names)
+        insert = ("INSERT INTO calls (call_id, started_at, last_event_at, last_seq, ended_at, final_state, end_reason, "
+                  "speech_seconds, end_inferred) VALUES ('x', now(), now(), 1, now(), 'monitoring', %s, %s, %s)")
+        refused = {'reported end without speech seconds': ('bye', None, False),
+                   'inferred end with a reported reason': ('bye', None, True),
+                   'inferred end with invented speech seconds': ('monitor_lost', 0.0, True)}
+        for label, values in refused.items():
+            with self.assertRaises(self.psycopg.errors.CheckViolation, msg=label):
+                self.query(insert, values)
+        with self.assertRaises(self.psycopg.errors.CheckViolation, msg='open row marked inferred'):
+            self.query("INSERT INTO calls (call_id, started_at, last_event_at, last_seq, end_inferred) "
+                       "VALUES ('y', now(), now(), 1, TRUE)")
+        self.query(insert + ' RETURNING id', ('monitor_lost', None, True))
+        self.query(insert.replace("'x'", "'z'") + ' RETURNING id', ('bye', 3.0, False))
 
     def test_connection_with_an_open_transaction_is_refused(self):
         # Review M1 (15 Nov): psycopg would nest a savepoint and commit nothing.

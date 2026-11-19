@@ -29,8 +29,9 @@ inside the stack, and checks:
   timed in `ava_ws_delivery_seconds`, none unmeasured, no slow-client close.
 - (18 Nov, 5.QA) restarts during a real call: of the live container (re-tap, two
   sessions), of PostgreSQL and Redis (no window lost from the store, the Redis outage
-  reported to the client), and of the API (registry picks the call up again); see each
-  case's docstring.
+  reported to the client), and of the API (registry picks the call up again); (19 Nov)
+  a SIGKILL of the live container (inferred `monitor_lost` end in the store, the
+  registry supersedes the old session); see each case's docstring.
 The project and its volumes are removed afterwards.
 """
 import base64
@@ -51,6 +52,7 @@ from urllib.parse import quote
 
 from lab.asterisk import rtp_pcap
 from models.export import model_card as mc
+from services.store.migrate import load_migrations
 from tests.lab.test_live_service_lab import ONNX, QA_CONFIG, VAD_MODEL
 
 LAB = unittest.skipIf(os.environ.get('AVA_TEST_DOCKER_LAB') != '1', 'set AVA_TEST_DOCKER_LAB=1')
@@ -390,7 +392,7 @@ class ComposeStackLabTests(unittest.TestCase):
         self.assertIn(('call_ended', call_id), events)
         starting = next(r for r in records if r.get('event') == 'starting')
         self.assertEqual((starting['ari_reachable'], starting['redis_reachable'], starting['database_migrations_applied']),
-                         (True, True, [1]))
+                         (True, True, [m.version for m in load_migrations()]))
         api_logs = self.compose('logs', '--no-color', '--no-log-prefix', 'api').stdout
         api_start = next(json.loads(line) for line in api_logs.splitlines() if '"starting"' in line)
         self.assertEqual((api_start['live_events'], api_start['redis_reachable'], api_start['dashboard']),
@@ -558,6 +560,109 @@ class ComposeStackLabTests(unittest.TestCase):
         print(f'\nobserved: live back healthy {live_back_s:.1f} s after the restart began; call of '
               f'{call_ms / 1000:.0f} s completed; windows before/after {windows[0]}/{windows[1]}; '
               f'gap reports {gaps}')
+
+    def test_a_killed_live_process_never_stops_the_call(self):
+        """5.QA abrupt stop (Claude-authored, 19 Nov 2026; PRD "AVA failure must not stop a
+        call", FR-A3, FR-I11; architecture §2.4 `monitor_lost`). The live container is
+        killed with SIGKILL while a real call is scored: no `call.ended` is sent and the
+        old process's unsent events are lost. The container is started again. The call
+        completes; the new process sweeps the old process's leftover channels, re-taps
+        the call and scores it to `bye`. The API registry supersedes the old session
+        (18 Nov rule); PostgreSQL ends the old row `monitor_lost` with an inferred end (no
+        speech seconds) and keeps the new session as a second row (19 Nov rule); no alert
+        stays open; the relay reports the source restart to the client."""
+        self.compose('up', '-d', '--wait', '--wait-timeout', '360', timeout=600)
+        self.wait_healthy('live', 120)
+        self.wait_healthy('api', 240)
+        self.wait_relay_subscribed(60)
+        lines = self.start_subscriber(900)
+        sipp, sipp_out, call_ms, call_started_at = self.start_long_call('kil')
+        seen = []
+        collect = self.collector(lines, seen)
+
+        self.assertTrue(collect(lambda e: e['type'] == 'score.updated', 60), f'no score before the kill: {seen}')
+        call_id = seen[-1]['call_id']
+        self.assertRegex(call_id, r'^[0-9A-Za-z._-]+$', 'safe to quote in SQL')
+
+        def psql(sql):
+            return self.compose('exec', '-T', 'postgres', 'psql', '-U', 'ava', '-d', 'ava', '-tAc', sql,
+                                check=False).stdout.strip()
+        # Review L5: the old session has a window in PostgreSQL before the kill (a score
+        # seen through Redis does not prove the store pump had written it).
+        deadline = time.monotonic() + 30
+        while psql("SELECT count(*) FROM window_scores w JOIN calls c ON c.id = w.call_pk "
+                   f"WHERE c.call_id = '{call_id}'") in ('', '0'):
+            self.assertLess(time.monotonic(), deadline, 'no window of the call stored before the kill')
+            time.sleep(0.5)
+        killed_at = time.monotonic()
+        self.compose('kill', '-s', 'SIGKILL', 'live', timeout=60)
+        # The restart policy may already have started it again; `start` is then a no-op.
+        self.compose('start', 'live', timeout=120)
+        self.wait_healthy('live', 120)
+        live_back_s = time.monotonic() - killed_at
+        remaining_s = call_ms / 1000 - (time.monotonic() - call_started_at)
+        self.assertGreater(remaining_s, 15, f'live took {live_back_s:.1f} s to come back: the call had almost '
+                                            'ended, so a missing re-tap below would not be a re-tap defect')
+
+        def restarted(event):  # the new session's start of this call
+            return event['type'] == 'call.started' and event['call_id'] == call_id
+        self.assertTrue(collect(restarted, 60), f'not re-tapped after the kill: {seen}')
+        returncode = sipp.wait(timeout=call_ms / 1000 + 120)
+        sipp_out.seek(0)
+        self.assertEqual(returncode, 0, f'the call did not complete: {sipp_out.read()[-1500:]!r}')
+        self.assertTrue(collect(lambda e: e['type'] == 'call.ended' and e['call_id'] == call_id, 60),
+                        f'no end after the kill: {seen}')
+
+        ours = [e for e in seen if e.get('call_id') == call_id]
+        self.assertEqual([e.get('reason') for e in ours if e['type'] == 'call.ended'], ['bye'],
+                         f'the killed process sent no end: {seen}')
+        starts = [i for i, e in enumerate(ours) if e['type'] == 'call.started']
+        self.assertEqual(len(starts), 2, f'two monitoring sessions: {seen}')
+        self.assertIn('score.updated', [e['type'] for e in ours[starts[1]:]], 'scored again after the kill')
+        gaps = [e for e in seen if e['type'] == 'stream.gap']
+        self.assertTrue(gaps and all(g['dropped'] == 0 for g in gaps), f'gap report: {gaps}')
+        self.assertGreaterEqual(sum(g.get('upstream_interruptions', 0) for g in gaps), 1,
+                                'the scorer restart is reported to the client')
+
+        # The API registry: the old session was superseded, not merged; the call ended bye.
+        final = json.loads(self.api_get(f'/v1/calls/{call_id}')['body'])
+        self.assertEqual((final['status'], final['end_reason']), ('ended', 'bye'), final)
+        stats = json.loads(self.api_get('/v1/calls')['body'])['registry']
+        self.assertEqual((stats['superseded_session'], stats['apply_errors']), (1, 0), stats)
+
+        # PostgreSQL: two rows; the old one ended by inference, the new one by its bye.
+        query = ("SELECT end_reason || '|' || end_inferred || '|' || coalesce(speech_seconds::text, 'null') || '|' || "
+                 "(SELECT count(*) FROM window_scores w WHERE w.call_pk = c.id) || '|' || "
+                 "(SELECT count(*) FROM alerts a WHERE a.call_pk = c.id AND a.status = 'open') "
+                 f"FROM calls c WHERE c.call_id = '{call_id}' AND c.ended_at IS NOT NULL ORDER BY c.id")
+        rows, deadline = [], time.monotonic() + 60
+        while time.monotonic() < deadline:
+            rows = psql(query).splitlines()
+            if len(rows) == 2:
+                break
+            time.sleep(1)
+        self.assertEqual(len(rows), 2, rows)
+        old, new = (row.split('|') for row in rows)
+        self.assertEqual(old[:3], ['monitor_lost', 'true', 'null'], rows)
+        self.assertEqual(new[:2], ['bye', 'false'], rows)
+        self.assertNotEqual(new[2], 'null', rows)
+        self.assertTrue(int(old[3]) >= 1 and int(new[3]) >= 1, f'windows stored in both sessions: {rows}')
+        self.assertEqual((old[4], new[4]), ('0', '0'), f'no alert left open: {rows}')
+        self.assertEqual(psql(f"SELECT count(*) FROM calls WHERE call_id = '{call_id}' AND ended_at IS NULL"), '0',
+                         'no row of the call is left open')
+        self.assertEqual(self.live_metrics().get('ava_live_store_superseded_total'), 1, 'the new process superseded it')
+
+        # The killed process wrote no `stopped` record; live started twice.
+        live_events = []
+        for line in self.compose('logs', '--no-color', '--no-log-prefix', 'live').stdout.splitlines():
+            try:
+                live_events.append(json.loads(line).get('event'))
+            except (ValueError, AttributeError):
+                continue
+        self.assertEqual(live_events.count('starting'), 2, live_events)
+        self.assertNotIn('stopped', live_events, 'SIGKILL: no graceful stop')
+        print(f'\nobserved: live back healthy {live_back_s:.1f} s after the kill with {remaining_s:.0f} s of the '
+              f'call left; stored rows {rows}; gap reports {gaps}')
 
     def test_postgres_and_redis_restarts_mid_call_lose_no_stored_window(self):
         """5.QA backing-service restarts (Claude-authored, 18 Nov 2026; PRD "AVA failure

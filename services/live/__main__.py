@@ -472,7 +472,8 @@ def _prepare(args, environ, factories, stderr, opened):
                                            pending=lambda: store_pump.backlog + subscription.buffered()),
                       'resource': store,
                       'report': lambda: {'counts': dict(store_pump.counts), 'backlog': store_pump.backlog,
-                                         'consecutive_failures': store_pump.consecutive_failures}})
+                                         'consecutive_failures': store_pump.consecutive_failures,
+                                         'superseded': getattr(store, 'superseded', 0)}})
     if redis_client is not None:
         from services.events.redis_bridge import RedisForwarder
         channel_feed = service.hub.subscribe(buffer=MAX_BUFFER)
