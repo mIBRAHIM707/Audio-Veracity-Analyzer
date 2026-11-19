@@ -80,6 +80,15 @@ items needing that data are listed at the end and stay out of the queue.
   (prepare vs analysis service, 5 formats, refusals, gain divergence recorded).
   Remaining: speaker-turn boundary contract (not defined in PRD/architecture; needs
   a scope definition) and live/streaming-side parity.
+  15 Nov: tap sink stream resampling bit-identical to `canonicalize` (test_tap_scoring_sink).
+  19 Nov: chain parity (`tests/unit/test_train_serve_chain_parity.py`, Claude-authored):
+  an `augment.py` mu-law copy with seeded loss and the same packets as RTP through the
+  real TapApp, jitter buffer, sink, SpeechFeed and pipeline reach the detector as the
+  same samples in every window, with matching concealment flags and concealed shares;
+  forced 4/5-packet bursts too. Review conditional pass, fixes re-reviewed (pass).
+  Known divergences, recorded not fixed: first/last-packet loss, A-law silence (+8),
+  per-clip peak normalization in preparation vs none at serving (3.QA M1). Remaining
+  for 3.1: only the speaker-turn boundary contract (scope decision).
 - [x] 3.2 VAD, speech-only windows, no-speech/partial-window semantics.
   Evidence (14 Nov catch-up, after the owner's install decision superseded the 9 Nov
   VAD blocker): windower, Silero adapter and `services/scorer/speech_feed.py` below,

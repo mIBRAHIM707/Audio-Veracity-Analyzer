@@ -177,6 +177,14 @@ and about 50,000 original clips, excluding codec copies.
   (A-law 0.9999, GSM 0.999 vs 0.61 to the clean signal). Public CSALT speech from those
   callers is scored end to end. This is codec plumbing evidence with a fake detector,
   not detector accuracy on these codecs.
+- **19 Nov (attempt 2), 3.1 train/serve chain parity.** `tests/unit/test_train_serve_chain_parity.py`
+  (Claude-authored): a prepared clip's `augment.py` mu-law copy with seeded loss
+  (`repeat_then_silence`) and the same packets sent as RTP to the real `TapApp`, jitter
+  buffer, scoring sink, `SpeechFeed` and pipeline give the detector the same samples,
+  window for window; the concealment flags and each window's concealed share match the
+  lost packets. A second case forces 4- and 5-packet bursts (repeat three, then
+  silence). Not covered: late packets, first/last-packet loss (a known divergence),
+  A-law (+8 silence), GSM/AMR, real VAD. Infrastructure evidence only.
 - **17 Nov daily run (details in `daily-runs/2026-11-17.md`).** FR-O6 per-stage latency
   for the live loop (7.2/8.1): `ava_live_stage_seconds{stage}` with `queue_wait`,
   `batch_wait`, `apply` (scorer and hub publish) and `window_to_result` (offer to
