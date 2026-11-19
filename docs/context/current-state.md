@@ -195,6 +195,15 @@ and about 50,000 original clips, excluding codec copies.
   tapped across namespaces, stored and shown in the API; no AVA pod connects to the
   internet. Open: CoreDNS still forwards outside names (FR-O3 DNS part), Ingress/TLS
   (auth decision), an external PBX's route to the pod network, monitoring on k3s.
+- **19 Nov (attempt 4), 5.1/5.2 FR-A3 history from PostgreSQL (P0).**
+  `services/store/history.py` reads stored calls in read-only REPEATABLE READ
+  transactions (sessions newest first with alerts and window scores; bounded sessions,
+  alerts and a shared window budget; busy/timeout/schema/unavailable failures); the API
+  serves `GET /v1/calls/{id}/history` and `GET /v1/history/calls` (keyset paging) with
+  `--database-url-env`, and `ava_call_history_reads_total`. Claude-authored tests (23,
+  PostgreSQL cases on a local 16 container; rows written by the real event store incl. a
+  superseded session). Not yet wired into Compose/k3s (their policies keep the API off
+  PostgreSQL; a read-only role is an operator step); the dashboard does not use it yet.
 - **17 Nov daily run (details in `daily-runs/2026-11-17.md`).** FR-O6 per-stage latency
   for the live loop (7.2/8.1): `ava_live_stage_seconds{stage}` with `queue_wait`,
   `batch_wait`, `apply` (scorer and hub publish) and `window_to_result` (offer to

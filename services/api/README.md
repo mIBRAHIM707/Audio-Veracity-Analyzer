@@ -12,6 +12,8 @@ persistence yet; bind it to localhost.
 | `GET /openapi.json` | local schema; the `/docs` pages stay off (CDN assets), a recorded deviation from FR-A11 |
 | `GET /v1/calls[?status=all\|active\|ended]` | FR-A3 summaries from `services/calls` (state, last score, 20-point score trend, alert counts) plus registry counters; 422 bad status; 503 without an event hub |
 | `GET /v1/calls/{id}` | FR-A3 detail: alerts (`open`, `cleared`, `ended_open`) and the timeline (`full_resolution`, `downsampled`); 404 unknown |
+| `GET /v1/calls/{id}/history` | FR-A3 full stored history from PostgreSQL (19 Nov): `{call_id, sessions, sessions_total, sessions_truncated}`, every session newest first (a restarted or killed scorer leaves one per session; `end_inferred` marks an end inferred after an abrupt stop) with its alerts and per-window scores in time order; at most 10,800 window rows per answer (`windows_truncated`); 404 nothing stored; 503 without `history=` or when the database is unavailable (`unavailable`), another read holds the connection for 2 s (`busy`), a read runs too long (`timeout`), the database is not migrated to 0002 (`schema`) or fails (`error`). The body is encoded in a worker thread, not on the event loop; at most 4 history requests run at once and further ones are `busy` at once (probes keep their threads); an answer that cannot be encoded is `error` |
+| `GET /v1/history/calls[?status=all\|active\|ended&limit=1..200&before=]` | stored session summaries newest first (counts of alerts, open alerts, windows, scored windows, highest score; no window rows); `next_before` is the cursor for the next page, null on the last; `active` means an open row, which a lost `call.ended` can leave open indefinitely (check `last_event_ts`); 422 bad parameters; 503 as above |
 | `WS /v1/events[?call_id=]` | FR-A4 envelopes as JSON text, oldest first; a `{"type": "stream.gap", "dropped": n}` control message when a slow client's 256-envelope buffer overflowed, with `upstream_missing` (events the Redis relay counted lost) and `upstream_interruptions` (Redis outages or scorer restarts, size unknown) added only when nonzero (re-read REST); closes 1013 at the subscriber limit, 1011 without an event hub; client messages are ignored |
 
 `GET /metrics` (FR-A8, FR-O6 subset, 14 Nov): `ava_analysis_seconds` is a histogram
@@ -107,8 +109,24 @@ gauges `ava_event_relay_subscribed` and `ava_event_relay_running`.
 uv run --no-project --python 3.11 --with-requirements requirements-api.txt --with-requirements requirements-redis.txt \
     --with-requirements requirements-model.txt --extra-index-url https://download.pytorch.org/whl/cpu \
     python -m services.api --model-root D:/AVA-Data/models/antideepfake --port 8000 \
-    [--dashboard dashboard/dist] [--redis-url-env AVA_REDIS_URL]
+    [--dashboard dashboard/dist] [--redis-url-env AVA_REDIS_URL] [--database-url-env AVA_DATABASE_URL]
 ```
+
+`--database-url-env NAME` (19 Nov; add `--with-requirements requirements-store.txt`)
+names the variable holding the PostgreSQL URL the live service stores calls in, and
+serves the two history routes from `services/store/history.py`. The URL is never printed.
+One probe read runs at start-up; a database that is down, not migrated or failing is
+reported in the `starting` record (`history_reachable`: true, `unavailable`, `schema` or
+`error`), not refused, and the routes answer 503 until it is fixed. Every `starting`
+record has `call_history` (true with this option). Reads run in `READ ONLY, REPEATABLE
+READ` transactions on one connection (requests take turns), with a 5 s connect timeout,
+TCP keepalives and 10 s statement/lock timeouts as in the live process; the API never
+applies migrations, so it can use a read-only role (recommended: `SELECT` on `calls`,
+`window_scores`, `alerts`, `schema_migrations`). `start_data`/`end_data` are never served.
+`/metrics` then adds
+`ava_call_history_reads_total{outcome=ok|not_found|unavailable|busy|timeout|schema|error}`.
+Not yet wired into the Compose or k3s deployments: their network policies keep the API
+away from PostgreSQL, and a read-only role is an operator step (backlog 10.2).
 
 `services/api/__main__.py` serves the app with uvicorn on `--host` (default 127.0.0.1);
 a non-loopback address is refused without `--allow-non-loopback` (no authentication).
@@ -192,4 +210,9 @@ uv run --no-project --python 3.11 --with-requirements requirements-api.txt pytho
 route; a directory without `index.html` is refused at startup.
 
 Not yet: MP3/AMR/GSM decode and the 8 kHz path (backlog 3.x), language hint,
-durable jobs and cancellation (5.2), authentication and audit (7.3).
+durable jobs and cancellation (5.2), authentication and audit (7.3). The history routes
+expose call IDs and scores without authentication, like `/v1/calls`: bind to localhost.
+
+Tests for the history routes and option: `tests/unit/test_store_history.py`
+(Claude-authored, 19 Nov; the PostgreSQL cases need `AVA_TEST_POSTGRES_DSN`, see
+`services/store/README.md`).

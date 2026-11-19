@@ -213,6 +213,13 @@ items needing that data are listed at the end and stay out of the queue.
   `tap-receiver`; here tap and scorer share one process and a restart ends open calls
   `monitor_lost` (§2.4), so resume needs a topology decision (split process, or resume
   re-tapped calls) before it can be built.
+  19 Nov (attempt 4): FR-A3 "full history in PostgreSQL": `services/store/history.py`
+  read-only reader (REPEATABLE READ, READ ONLY; sessions newest first with alerts and
+  window scores; bounds incl. a 10,800-row window budget per answer; busy/timeout/
+  schema/unavailable reasons) and API routes `GET /v1/calls/{id}/history`,
+  `GET /v1/history/calls` (keyset paging), `--database-url-env`, history metric;
+  Claude-authored tests (PostgreSQL 16); review conditional pass, M1-M2 and lows fixed.
+  Remaining: Compose/k3s wiring with a read-only role, dashboard use, durable job table.
 - [ ] 5.2 Jobs/cancellation/idempotency, calls/alerts API and WebSocket events.
   Progress (10 Nov): `services/scorer/ordered.py` per-call serialized boundary
   (phase-4 QA M1/L3): monotonic per-direction `window_idx`, duplicate/stale results

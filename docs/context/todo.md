@@ -66,6 +66,8 @@ and the same call through the live tap give the detector identical audio.
 19 Nov (attempt 3): no data change. Kubernetes (k3s) manifests in `deploy/k8s` with a
 default-deny network policy; a lab node in Docker runs a real call through them and no
 AVA pod can reach the internet. Human: add `requirements-test.txt` to the CI workflow.
+19 Nov (attempt 4): no data change. The API can now show a call's full stored history
+from PostgreSQL (every session, alerts and window scores), read-only.
 
 Updated 4 October 2026. This is the active sequence; evidence lives in
 `current-state.md` and `handoffs/`. Check marks mean the stated bounded task passed

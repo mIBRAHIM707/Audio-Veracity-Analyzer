@@ -17,9 +17,13 @@ GET  /v1/calls/{id} FR-A3 detail: alerts and the timeline (30 min full resolutio
 WS   /v1/events[?call_id=]  FR-A4 envelopes as JSON text; a `stream.gap` control
                   message reports envelopes dropped for a slow client, and events the
                   Redis relay lost upstream (re-read REST).
+GET  /v1/calls/{id}/history  FR-A3 full stored history of a call from PostgreSQL: every
+                  session with its alerts and per-window scores (19 Nov).
+GET  /v1/history/calls[?status=&limit=&before=]  stored sessions, newest first, paged.
 The calls and events routes need an `EventHub` passed to `create_app`; otherwise
 they answer 503 / close with 1011. With a `RedisRelay` on that hub the scorer's events
-arrive from Redis pub/sub (16 Nov). PostgreSQL history is backlog 5.1.
+arrive from Redis pub/sub (16 Nov). The history routes need a `PostgresCallHistory`
+(`services/store/history.py`); otherwise they answer 503.
 
 Errors: 411 no Content-Length, 413 oversize/too long, 422 undecodable/unsupported,
 503 busy, too many concurrent uploads or job queue full, 500 detector failure.
@@ -40,12 +44,14 @@ import uuid
 
 from fastapi import FastAPI, File, HTTPException, UploadFile, WebSocket, WebSocketDisconnect
 from fastapi.concurrency import run_in_threadpool
-from fastapi.responses import JSONResponse, PlainTextResponse
+from fastapi.responses import JSONResponse, PlainTextResponse, Response
 from fastapi.staticfiles import StaticFiles
 
 from services.calls.registry import CallRegistry, RegistryFeed
 from services.events.fanout import HubFull
 from services.events.relay_loop import RelayLoop
+from services.store.history import (DEFAULT_LIMIT as DEFAULT_HISTORY_LIMIT, MAX_LIMIT as MAX_HISTORY_LIMIT,
+                                    REASONS as HISTORY_REASONS, STATUSES as HISTORY_STATUSES, HistoryError)
 from services.inference.analysis import (AnalysisError, AnalyzerBusy, MAX_ASYNC_SECONDS, MAX_BYTES,
                                          NeedsAsyncJob, decode_wav)
 # FR-O6 live-pipeline families, shared with the live service process (moved 16 Nov).
@@ -87,9 +93,12 @@ MULTIPART_OVERHEAD = 64 * 1024
 MAX_CONCURRENT_UPLOADS = 2
 JOB_STATES = ('queued', 'running', 'done', 'failed')
 ROUTES = ('/healthz', '/readyz', '/metrics', '/v1/analyze', '/v1/jobs/:id', '/v1/calls',
-          '/v1/calls/:id')
+          '/v1/calls/:id', '/v1/calls/:id/history', '/v1/history/calls')
 STATUS_CLASSES = ('2xx', '3xx', '4xx', '5xx')
 HTTP_METHODS = frozenset({'GET', 'HEAD', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'})  # others logged as 'other'
+# Mutually exclusive outcomes of a PostgreSQL history read (19 Nov, FR-A3).
+HISTORY_OUTCOMES = ('ok', 'not_found') + HISTORY_REASONS
+MAX_HISTORY_REQUESTS = 4  # well below the 40 worker threads Starlette's thread pool has
 
 
 def route_label(path):
@@ -97,7 +106,8 @@ def route_label(path):
     if path.startswith('/v1/jobs/'):
         return '/v1/jobs/:id'
     if path.startswith('/v1/calls/'):
-        return '/v1/calls/:id'
+        rest = path[len('/v1/calls/'):]
+        return '/v1/calls/:id/history' if rest.endswith('/history') else '/v1/calls/:id'
     return path if path in ROUTES else 'other'
 
 
@@ -147,6 +157,12 @@ class Metrics:
         self.ws_delivery = Histogram(buckets=WS_DELIVERY_BUCKETS_S)
         self.ws_unmeasured = 0
         self.ws_slow_closes = 0
+        self.history = {outcome: 0 for outcome in HISTORY_OUTCOMES}
+
+    def count_history(self, outcome):
+        with self._lock:
+            if outcome in self.history:
+                self.history[outcome] += 1
 
     def observe_ws_delivery(self, sent_at, event_ts):
         """One FR-A4 envelope finished sending on a WebSocket at wall-clock `sent_at`
@@ -181,11 +197,12 @@ class Metrics:
                 for stage in ANALYSIS_STAGES:
                     self.stages.observe(stages.get(stage), stage)
 
-    def render(self, jobs, service, uploads_in_flight, live=None, pipeline=None, relay=None):
+    def render(self, jobs, service, uploads_in_flight, live=None, pipeline=None, relay=None, history=False):
         stats = jobs.stats()
         lines = ['# HELP ava_api_requests_total HTTP responses by route and status class.',
                  '# TYPE ava_api_requests_total counter']
         with self._lock:
+            history_reads = dict(self.history)
             requests = dict(self.requests)
             analysis = self.analysis.render('ava_analysis_seconds')
             stages = self.stages.render('ava_analysis_stage_seconds', 'stage')
@@ -234,6 +251,12 @@ class Metrics:
                       f'ava_ws_slow_client_closes_total {ws_slow_closes}']
         if relay is not None:
             lines += relay_lines(relay)
+        if history:
+            lines += ['# HELP ava_call_history_reads_total PostgreSQL call history reads by mutually exclusive '
+                      'outcome (unavailable: no or lost connection; schema: database not migrated).',
+                      '# TYPE ava_call_history_reads_total counter']
+            lines += [f'ava_call_history_reads_total{{outcome="{outcome}"}} {history_reads[outcome]}'
+                      for outcome in HISTORY_OUTCOMES]
         if pipeline is not None:
             try:
                 snapshot, age = pipeline.read()
@@ -425,7 +448,7 @@ async def read_bounded(upload):
 
 
 def create_app(service, *, hub=None, registry=None, dashboard_dir=None, pipeline_stats=None, relay=None,
-               oplog=None, wall_clock=time.time):
+               oplog=None, wall_clock=time.time, history=None):
     """`hub` is the in-process `services.events.EventHub` carrying FR-A4 events; with it
     the app serves `/v1/calls` from a `CallRegistry` (a new one unless given) and
     `WS /v1/events`. Without it those routes answer 503: no live source is connected.
@@ -439,7 +462,11 @@ def create_app(service, *, hub=None, registry=None, dashboard_dir=None, pipeline
     `oplog` (optional, `services/api/oplog.ApiLog`, FR-O6) gets request, job,
     detector-ready and relay-loss lines; its faults never reach a request.
     `wall_clock` (seconds since the epoch, the clock of envelope `ts`) times each event's
-    WebSocket delivery for `ava_ws_delivery_seconds`; a fault in it is counted, never raised."""
+    WebSocket delivery for `ava_ws_delivery_seconds`; a fault in it is counted, never raised.
+    `history` (optional, `services.store.history.PostgresCallHistory`, FR-A3 "full history
+    in PostgreSQL") serves `GET /v1/calls/{id}/history` and `GET /v1/history/calls`;
+    without it they answer 503. It works without a hub: history needs no live source.
+    The app does not close it (its owner does)."""
     if registry is not None and hub is None:
         raise ValueError('a call registry needs the event hub that feeds it')
     if relay is not None and (hub is None or getattr(relay, 'hub', None) is not hub):
@@ -538,7 +565,8 @@ def create_app(service, *, hub=None, registry=None, dashboard_dir=None, pipeline
         relay_snapshot = None
         if relay_loops:
             relay_snapshot = {**relay_loops[-1].snapshot(), 'relay': dict(relay.stats)}
-        return PlainTextResponse(metrics.render(jobs, service, in_flight[0], live, pipeline_stats, relay_snapshot),
+        return PlainTextResponse(metrics.render(jobs, service, in_flight[0], live, pipeline_stats, relay_snapshot,
+                                                history=history is not None),
                                  media_type='text/plain; version=0.0.4; charset=utf-8')
 
     @app.middleware('http')
@@ -631,6 +659,55 @@ def create_app(service, *, hub=None, registry=None, dashboard_dir=None, pipeline
         if record is None:
             raise HTTPException(404, 'Unknown call')
         return record
+
+    def read_and_encode(read):
+        result = read()
+        if result is None:
+            return None
+        # Encoded here, in the worker thread: a long history must not hold the event loop
+        # (review M1). Non-finite numbers are already None, so this is strict JSON.
+        try:
+            return json.dumps(result, allow_nan=False, separators=(',', ':'))
+        except (TypeError, ValueError) as error:  # e.g. a column type JSON cannot hold
+            raise HistoryError(f'call history could not be encoded: {type(error).__name__}', reason='error') \
+                from error
+
+    # At most this many history requests use worker threads at once (re-review L2): the
+    # rest are refused as busy instead of waiting, so sync probes keep their threads.
+    history_slots = asyncio.Semaphore(MAX_HISTORY_REQUESTS)
+
+    async def read_history(read):
+        """Run one history read and its JSON encoding off the event loop; map failures to
+        503 with a fixed reason (never the driver's message) and count every outcome."""
+        if history is None:
+            raise HTTPException(503, 'No call history store is configured')
+        try:
+            if history_slots.locked():
+                raise HistoryError('too many call history requests', reason='busy')
+            async with history_slots:
+                body = await run_in_threadpool(read_and_encode, read)
+        except HistoryError as error:
+            metrics.count_history(error.reason)
+            raise HTTPException(503, f'Call history store unavailable ({error.reason})') from None
+        metrics.count_history('ok' if body is not None else 'not_found')
+        return None if body is None else Response(body, media_type='application/json')
+
+    @app.get('/v1/calls/{call_id}/history')
+    async def call_history(call_id: str):
+        response = await read_history(lambda: history.call(call_id))
+        if response is None:
+            raise HTTPException(404, 'No stored history for this call')
+        return response
+
+    @app.get('/v1/history/calls')
+    async def history_calls(status: str = 'all', limit: int = DEFAULT_HISTORY_LIMIT, before: int | None = None):
+        if status not in HISTORY_STATUSES:
+            raise HTTPException(422, "status must be 'all', 'active' or 'ended'")
+        if not 1 <= limit <= MAX_HISTORY_LIMIT:
+            raise HTTPException(422, f'limit must be from 1 to {MAX_HISTORY_LIMIT}')
+        if before is not None and not 1 <= before < 2 ** 63:
+            raise HTTPException(422, 'before must be a positive session number')
+        return await read_history(lambda: history.recent(status, limit, before))
 
     def read_wall_clock():
         try:

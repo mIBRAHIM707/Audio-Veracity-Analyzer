@@ -69,8 +69,10 @@ compaction is incremental (front of a deque), so per-event work does not grow wi
 the number of points; a point stamped earlier than newer points (a clock step) can
 stay at full resolution until those newer points leave the window.
 
-Known limits: in memory only (PostgreSQL history is backlog 5.1), so a restart
-forgets ended calls and alerts raised before it; a call spanning an event-hub
+Known limits: in memory only, so a restart forgets ended calls and alerts raised
+before it (since 19 Nov the API serves the stored history separately from PostgreSQL,
+`GET /v1/calls/{id}/history`, `services/store/history.py`; this registry does not read
+it); a call spanning an event-hub
 restart ignores events until `seq` passes its old value (no restart marker yet,
 FR-I11); `system.health` is not stored; a reused call ID after `call.ended` is
 ignored until the ended call is forgotten, unless it begins with a later

@@ -96,6 +96,9 @@ def build_parser():
                         help='environment variable with the Redis URL the live service publishes on')
     parser.add_argument('--event-log', choices=('stderr', 'off'), default='stderr',
                         help='structured JSON operations log (services/api/oplog.py) on stderr (default) or off')
+    parser.add_argument('--database-url-env', type=_env_name,
+                        help='environment variable with the PostgreSQL URL the live service stores calls in; '
+                             'serves the read-only call history routes (needs requirements-store.txt)')
     return parser
 
 
@@ -117,6 +120,46 @@ def _open_redis(url):
     except Exception:  # unreachable now; the relay thread keeps retrying
         reachable = False
     return client, reachable
+
+
+DB_CONNECT_TIMEOUT_S = 5
+# As the live process (services/live/__main__.py): a database that stops answering must
+# not hold a request thread for the OS TCP timeout.
+DB_KEEPALIVES = {'keepalives': 1, 'keepalives_idle': 5, 'keepalives_interval': 2, 'keepalives_count': 3,
+                 'tcp_user_timeout': 10_000}
+DB_TIMEOUTS_MS = {'statement_timeout': 10_000, 'lock_timeout': 10_000}
+
+
+def _open_history(dsn):
+    """Return (PostgresCallHistory, reachable). Raises ImportError, or ValueError for a
+    URL that does not parse. One probe read at start-up; a database that is down or not
+    migrated is reported, not refused (the history routes answer 503 until it is)."""
+    import psycopg
+    from psycopg.conninfo import conninfo_to_dict
+    from services.store.history import HistoryError, PostgresCallHistory
+    try:
+        given = conninfo_to_dict(dsn)
+    except psycopg.ProgrammingError as error:
+        raise ValueError('database URL is not valid') from error
+    defaults = {key: value for key, value in {'connect_timeout': DB_CONNECT_TIMEOUT_S, **DB_KEEPALIVES}.items()
+                if key not in given}
+
+    def connect():
+        connection = psycopg.connect(dsn, **defaults)
+        try:
+            for name, value in DB_TIMEOUTS_MS.items():
+                connection.execute(f'SET {name} = {int(value)}')  # names from the constant above only
+            connection.commit()  # idle: the history opens its own read-only transaction
+            return connection
+        except BaseException:
+            connection.close()
+            raise
+    history = PostgresCallHistory(connect)
+    try:
+        history.recent(limit=1)
+        return history, True
+    except HistoryError as error:
+        return history, error.reason
 
 
 def _bind(host, port):
@@ -151,7 +194,8 @@ def _serve(app, sock):
 
 
 def default_parts():
-    return {'service': _open_service, 'redis': _open_redis, 'bind': _bind, 'serve': _serve}
+    return {'service': _open_service, 'redis': _open_redis, 'history': _open_history, 'bind': _bind,
+            'serve': _serve}
 
 
 def _say(stream, record):
@@ -164,7 +208,7 @@ def main(argv=None, *, environ=None, stderr=None, made=None):
     stderr = sys.stderr if stderr is None else stderr
     made = {**default_parts(), **(made or {})}
     args = build_parser().parse_args(argv)
-    held = {'sock': None, 'redis': None}
+    held = {'sock': None, 'redis': None, 'history': None}
     try:
         return _run(args, environ, stderr, made, held)
     except KeyboardInterrupt:  # Ctrl+C before serving (e.g. during the Redis ping)
@@ -210,6 +254,20 @@ def _run(args, environ, stderr, made, held):
         except Exception as error:  # any other client error: the type name only
             return refuse(f'Redis client: {type(error).__name__}')
         held['redis'] = redis_client
+    history = history_reachable = None
+    if args.database_url_env:
+        dsn = environ.get(args.database_url_env)
+        if not dsn:
+            return refuse(f'database URL not set: put it in the {args.database_url_env} environment variable')
+        try:
+            history, history_reachable = made['history'](dsn)
+        except ImportError as error:
+            return refuse(f'missing dependency: {error.name or error} (requirements-store.txt)')
+        except ValueError:  # the URL itself is never printed
+            return refuse('database URL is not valid')
+        except Exception as error:  # any other driver error: the type name only
+            return refuse(f'database client: {type(error).__name__}')
+        held['history'] = history
     try:
         service = made['service'](args)
     except ImportError as error:
@@ -224,7 +282,8 @@ def _run(args, environ, stderr, made, held):
     from services.api.oplog import ApiLog
     oplog = ApiLog(stderr) if args.event_log == 'stderr' else None
     try:
-        app = create_app(service, hub=hub, relay=relay, dashboard_dir=args.dashboard, oplog=oplog)
+        app = create_app(service, hub=hub, relay=relay, dashboard_dir=args.dashboard, oplog=oplog,
+                         history=history)
     except ValueError as error:
         return refuse(str(error))
     record = {'event': 'starting', 'host': args.host, 'port': port, 'pid': os.getpid(),
@@ -233,6 +292,9 @@ def _run(args, environ, stderr, made, held):
               'event_log': args.event_log}
     if relay is not None:
         record['redis_reachable'] = redis_reachable
+    record['call_history'] = history is not None
+    if history is not None:  # True, or why the probe read failed: unavailable, schema or error
+        record['history_reachable'] = history_reachable
     _say(stderr, record)
     if oplog is not None:  # after the starting record, so that record stays the first line
         oplog.start()

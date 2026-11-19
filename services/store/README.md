@@ -89,6 +89,41 @@ database for ordering, and what `start_data`/`end_data` may hold (they keep what
 `call.started`/`call.ended` carry, indefinitely; caller numbers or SIP headers would
 need a privacy and retention decision).
 
+## History reader (`history.py`, 19 Nov; FR-A3 "full history in PostgreSQL")
+
+`PostgresCallHistory(connect)` reads what the event store wrote, for the API's
+`GET /v1/calls/{id}/history` and `GET /v1/history/calls` (`services/api/README.md`):
+
+- `call(call_id)`: every stored session of the ID, newest first (at most 16; totals and
+  `*_truncated` flags say what was left out), each with its alerts (at most 256, by
+  raise time) and its `window_scores` rows in `scored_at`, direction, window order. At
+  most 10,800 window rows per answer, shared across its sessions (newest session first,
+  oldest rows of each session first): 6 h of one direction or 3 h of both at a 2 s hop,
+  so the end of a longer call is what is left out. None if nothing is stored, or for an
+  ID the store could never hold (empty, over 128 characters, NUL).
+- `recent(status, limit, before)`: session summaries newest first by row ID with alert,
+  open-alert, window and scored-window counts and the highest score; `next_before` is
+  the keyset cursor (null on the last page). The counts are computed per page; their
+  cost on many long calls is not measured.
+
+`status: active` means the row is open. A row whose `call.ended` was lost and whose call
+is never re-tapped stays open (see "Not done" below), so check `last_event_ts`.
+
+Each read is one `READ ONLY, REPEATABLE READ` transaction (a consistent snapshot; no
+write is possible whatever the role) with `SET LOCAL statement_timeout` (10 s). It needs
+migration 0002 and never migrates. One connection serves one read at a time: a read
+waits at most 2 s for it, and one that passes 15 s stops before its next statement, so
+an answer takes at most about 25 s. Failures raise `HistoryError` with `reason`
+`unavailable` (no or lost connection; the next read reconnects), `busy`, `timeout`
+(statement or lock timeout, or the 15 s deadline), `schema` (not migrated) or `error`,
+and only the driver's error class in the message. `close()` waits at most 2 s for a
+read in progress, which then closes the connection itself. `start_data`/`end_data` are
+not read; a non-finite number (the writer refuses them) would be served as null. Status-only updates were
+never stored (see above), so the window rows are the whole stored timeline; the
+in-memory registry's 10 s downsampling is not applied here. Not done: paging inside one
+long session's windows (the bound and `windows_truncated` stand in), filters by time or
+state (FR-A6/FR-U6, P1).
+
 ## Pump (`pump.py`, 15 Nov)
 
 `StorePump(subscription, store).pump()` moves an unfiltered hub subscription into the
@@ -116,6 +151,9 @@ refused by the transaction-control check (fail closed).
 used unmodified), typing-extensions, tzdata. Tested on PostgreSQL 16.16
 (`postgres:16-alpine` image, digest
 `sha256:f377d590e5474681d4d7838635031a2b50647923b7abfa803ce9b5ff35d5c663`).
+
+`tests/unit/test_store_history.py` (Claude-authored, 19 Nov 2026) follows the same
+rules for the history reader (its API and CLI cases also need requirements-api.txt).
 
 `tests/unit/test_store_postgres.py` (Claude-authored, 15 Nov 2026): pure migration and
 plan tests always run; database tests need `AVA_TEST_POSTGRES_DSN` pointing at a
