@@ -74,6 +74,11 @@ minimum confidence) and exports them as CSV. Human: confirm in the PRD that FR-A
 19 Nov (attempt 6): no data change. The dashboard has a History page (`#history`): stored
 calls, alert search with CSV export, and every stored session of a call, from PostgreSQL.
 Times are shown in UTC.
+19 Nov (attempt 7): no data change. The API can require a login (`--auth on`): local
+accounts with Argon2 passwords, two roles, an audit log (logins, exports, uploads,
+account changes). Accounts are created by an operator (`python -m services.auth`). Human:
+decide audit-log retention, and whether analysts may upload files (FR-U7 says
+"read, feedback"; they can today). The dashboard login page is the next step.
 
 Updated 4 October 2026. This is the active sequence; evidence lives in
 `current-state.md` and `handoffs/`. Check marks mean the stated bounded task passed

@@ -473,6 +473,13 @@ items needing that data are listed at the end and stay out of the queue.
   ends, alerts, timeline); 10 pure + 13 Playwright Claude-authored cases (HB01-HB07 on
   real PostgreSQL 16 via `serve_dashboard_api.py --history-dsn-env`). Remaining: FR-A7
   feedback, FR-U5, FR-U7 auth/audit, FR-A5; UTC-only times.
+  19 Nov (attempt 7): FR-U7 local accounts and the PRD §6.3 audit log, API side:
+  migration 0003, `services/auth/` (Argon2id, PostgreSQL store, login decisions, operator
+  CLI), `python -m services.api --auth on` (session cookie, 401 on /v1, cross-site
+  refusal, WebSocket check, audited logins/exports/uploads/account changes); Claude-authored
+  tests incl. PostgreSQL 16; review and re-review conditional pass, all findings fixed or
+  documented. Remaining: the
+  dashboard login page, admin settings (FR-A9), FR-A7 feedback, FR-U5, FR-A5.
 - [ ] 7.QA Astra-designed Playwright suite, offline assets, failures/reconnects.
 
 ## 8 — CPU capacity (FR-I9/I10)

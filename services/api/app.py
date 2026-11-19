@@ -1,4 +1,5 @@
-"""Local analysis API (backlog 2.2; PRD FR-A1/FR-A2 subset). No auth, no persistence yet.
+"""Local analysis API (backlog 2.2; PRD FR-A1/FR-A2 subset; FR-A3/A6 history and FR-U7
+accounts from PostgreSQL when configured, see below).
 
 POST /v1/analyze  multipart field `file` (PCM16 WAV). Files up to 60 s return 200 with
                   the analysis; longer files (up to 10 minutes) return 202 with a job ID.
@@ -23,6 +24,10 @@ GET  /v1/history/calls[?status=&limit=&before=]  stored sessions, newest first, 
 GET  /v1/alerts[?state=&since=&until=&min_confidence=&limit=&cursor=&format=json|csv]
                   FR-A6 stored alerts, newest raised first, filtered and paged; `csv`
                   downloads the page (next cursor in `X-AVA-Next-Cursor`) (19 Nov).
+POST /v1/auth/login, POST /v1/auth/logout, GET /v1/auth/me  PRD FR-U7 local accounts
+                  (19 Nov, attempt 7), only when `create_app(..., auth=)` is given: then
+                  every other /v1 route and the WebSocket need a valid session cookie,
+                  and a CSV export is written to the audit log (see "Authentication").
 The calls and events routes need an `EventHub` passed to `create_app`; otherwise
 they answer 503 / close with 1011. With a `RedisRelay` on that hub the scorer's events
 arrive from Redis pub/sub (16 Nov). The history routes need a `PostgresCallHistory`
@@ -34,6 +39,25 @@ Jobs live in a bounded in-memory store served by one worker thread: they are los
 on restart (durable jobs are backlog 5.2). Multipart parsing keeps uploads over
 1 MB in a temporary file that is deleted when the request ends; the bytes are then
 held in memory only while queued or analysed (architecture §2.5 batch path).
+
+Authentication (FR-U7, architecture §2.5, §6; 19 Nov). Without `auth` the API behaves
+as before (no accounts; the command line keeps it on loopback). With an
+`services.auth.service.Authenticator`: login sets an `ava_session` cookie (HttpOnly,
+SameSite=Strict, Secure unless `cookie_secure=False` for a plain-HTTP lab, Path=/,
+lifetime the session's absolute limit). Every /v1 route except login answers 401
+without a valid session, and the WebSocket refuses the handshake (403) and closes a
+socket whose session has ended (1008) within `SESSION_RECHECK_S`. A POST/PUT/PATCH/
+DELETE or WebSocket with an `Origin` (or `Sec-Fetch-Site: cross-site`) from another
+host is refused 403 (CSRF/cross-site WebSocket defence on top of SameSite); this
+compares with the `Host` header, so a reverse proxy must pass it through unchanged.
+Every mutating request with a session gets an audit row after it is answered
+(architecture §2.5 audit middleware; `api.analyze` for uploads; a row that cannot be
+written is counted in `ava_audit_write_failures_total`). Both roles may use every
+route that exists today; `admin` is for the settings routes that are not built yet.
+/healthz, /readyz, /metrics, /openapi.json and the dashboard's static files stay open
+(no call data; /metrics belongs on the internal network). A store failure answers 503,
+never a pass; at most `MAX_ACCOUNT_CALLS` session checks and audit writes run at once
+(more are refused busy), so a stalled database cannot take every worker thread.
 """
 import asyncio
 from collections import OrderedDict
@@ -45,7 +69,9 @@ import threading
 import time
 import uuid
 
-from fastapi import FastAPI, File, HTTPException, UploadFile, WebSocket, WebSocketDisconnect
+from urllib.parse import urlsplit
+
+from fastapi import FastAPI, File, HTTPException, Request, UploadFile, WebSocket, WebSocketDisconnect
 from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import JSONResponse, PlainTextResponse, Response
 from fastapi.staticfiles import StaticFiles
@@ -54,6 +80,7 @@ from services.calls.registry import CallRegistry, RegistryFeed
 from services.events.fanout import HubFull
 from services.events.relay_loop import RelayLoop
 from services.api.alert_csv import alerts_csv
+from services.auth.store import AuthStoreError
 from services.store.history import (DEFAULT_LIMIT as DEFAULT_HISTORY_LIMIT, MAX_LIMIT as MAX_HISTORY_LIMIT,
                                     REASONS as HISTORY_REASONS, STATUSES as HISTORY_STATUSES, HistoryError,
                                     check_alert_filters)
@@ -98,7 +125,23 @@ MULTIPART_OVERHEAD = 64 * 1024
 MAX_CONCURRENT_UPLOADS = 2
 JOB_STATES = ('queued', 'running', 'done', 'failed')
 ROUTES = ('/healthz', '/readyz', '/metrics', '/v1/analyze', '/v1/jobs/:id', '/v1/calls',
-          '/v1/calls/:id', '/v1/calls/:id/history', '/v1/history/calls', '/v1/alerts')
+          '/v1/calls/:id', '/v1/calls/:id/history', '/v1/history/calls', '/v1/alerts', '/v1/auth/login',
+          '/v1/auth/logout', '/v1/auth/me')
+# FR-U7 local accounts (19 Nov, attempt 7).
+SESSION_COOKIE = 'ava_session'
+LOGIN_OUTCOMES = ('ok', 'invalid', 'locked', 'busy', 'unavailable')  # as services.auth.service
+AUTH_REFUSALS = ('no_session', 'cross_origin', 'store_unavailable')
+UNSAFE_METHODS = frozenset({'POST', 'PUT', 'PATCH', 'DELETE'})
+MAX_LOGIN_BYTES = 4096
+SESSION_RECHECK_S = 60.0  # an open WebSocket re-checks its session this often
+MAX_ACCOUNT_CALLS = 8  # session checks and audit writes in worker threads at once (review M1)
+# Audit action per mutating route (architecture §2.5); any other mutating route is 'api.request'.
+AUDITED_ROUTES = {'/v1/analyze': 'api.analyze'}
+AUDIT_SLOT_WAIT_S = 2.0  # an audit write waits this long for an account slot before it is skipped/refused
+
+
+class LoginBusy:  # stands in for an Authenticator result when no account slot is free
+    outcome, token, principal = 'busy', None, None
 STATUS_CLASSES = ('2xx', '3xx', '4xx', '5xx')
 HTTP_METHODS = frozenset({'GET', 'HEAD', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'})  # others logged as 'other'
 # Mutually exclusive outcomes of a PostgreSQL history read (19 Nov, FR-A3).
@@ -168,6 +211,23 @@ class Metrics:
         self.ws_slow_closes = 0
         self.history = {outcome: 0 for outcome in HISTORY_OUTCOMES}
         self.alert_reads = {outcome: 0 for outcome in ALERT_READ_OUTCOMES}
+        self.logins = {outcome: 0 for outcome in LOGIN_OUTCOMES}
+        self.auth_refusals = {reason: 0 for reason in AUTH_REFUSALS}
+        self.audit_failures = 0
+
+    def count_audit_failure(self):
+        with self._lock:
+            self.audit_failures += 1
+
+    def count_login(self, outcome):
+        with self._lock:
+            if outcome in self.logins:
+                self.logins[outcome] += 1
+
+    def count_auth_refusal(self, reason):
+        with self._lock:
+            if reason in self.auth_refusals:
+                self.auth_refusals[reason] += 1
 
     def count_history(self, outcome, kind='history'):
         counts = self.alert_reads if kind == 'alerts' else self.history
@@ -208,13 +268,15 @@ class Metrics:
                 for stage in ANALYSIS_STAGES:
                     self.stages.observe(stages.get(stage), stage)
 
-    def render(self, jobs, service, uploads_in_flight, live=None, pipeline=None, relay=None, history=False):
+    def render(self, jobs, service, uploads_in_flight, live=None, pipeline=None, relay=None, history=False,
+               auth=False):
         stats = jobs.stats()
         lines = ['# HELP ava_api_requests_total HTTP responses by route and status class.',
                  '# TYPE ava_api_requests_total counter']
         with self._lock:
             history_reads = dict(self.history)
             alert_reads = dict(self.alert_reads)
+            logins, auth_refusals, audit_failures = dict(self.logins), dict(self.auth_refusals), self.audit_failures
             requests = dict(self.requests)
             analysis = self.analysis.render('ava_analysis_seconds')
             stages = self.stages.render('ava_analysis_stage_seconds', 'stage')
@@ -274,6 +336,18 @@ class Metrics:
                       '# TYPE ava_alert_search_reads_total counter']
             lines += [f'ava_alert_search_reads_total{{outcome="{outcome}"}} {alert_reads[outcome]}'
                       for outcome in ALERT_READ_OUTCOMES]
+        if auth:
+            lines += ['# HELP ava_auth_logins_total Login attempts by mutually exclusive outcome (FR-U7; invalid '
+                      'covers unknown names, wrong passwords and disabled users alike).',
+                      '# TYPE ava_auth_logins_total counter']
+            lines += [f'ava_auth_logins_total{{outcome="{outcome}"}} {logins[outcome]}' for outcome in LOGIN_OUTCOMES]
+            lines += ['# HELP ava_auth_refused_requests_total Requests and WebSocket handshakes refused before a '
+                      'route ran, by reason.', '# TYPE ava_auth_refused_requests_total counter']
+            lines += [f'ava_auth_refused_requests_total{{reason="{reason}"}} {auth_refusals[reason]}'
+                      for reason in AUTH_REFUSALS]
+            lines += ['# HELP ava_audit_write_failures_total Mutating requests answered whose audit row could not '
+                      'be written (the account store failed or was busy).',
+                      '# TYPE ava_audit_write_failures_total counter', f'ava_audit_write_failures_total {audit_failures}']
         if pipeline is not None:
             try:
                 snapshot, age = pipeline.read()
@@ -425,6 +499,39 @@ def relay_lines(snapshot):
     return lines
 
 
+def same_origin(headers):
+    """False for a browser request from another site: `Sec-Fetch-Site: cross-site`, or an
+    `Origin` whose host:port is not this request's `Host` (scheme ignored, so a TLS proxy
+    in front does not matter). A request with no `Origin` (not a browser, or a browser
+    GET) passes: SameSite=Strict keeps the cookie off cross-site requests anyway."""
+    if headers.get('sec-fetch-site', '').lower() == 'cross-site':
+        return False
+    origin = headers.get('origin')
+    if origin is None:
+        return True
+    host = headers.get('host')
+    if not host or origin == 'null':
+        return False
+    try:
+        netloc = urlsplit(origin).netloc
+    except ValueError:
+        return False
+    return bool(netloc) and netloc.lower() == host.lower()
+
+
+async def read_small_body(request, limit):
+    """The request body, or None if it is larger than `limit` bytes (chunked bodies too)."""
+    length = request.headers.get('content-length')
+    if length is not None and (not length.isdigit() or int(length) > limit):
+        return None
+    body = bytearray()
+    async for chunk in request.stream():
+        body.extend(chunk)
+        if len(body) > limit:
+            return None
+    return bytes(body)
+
+
 class _SlowClient(Exception):
     """A WebSocket send did not complete within `WS_SEND_TIMEOUT_S`."""
 
@@ -465,7 +572,7 @@ async def read_bounded(upload):
 
 
 def create_app(service, *, hub=None, registry=None, dashboard_dir=None, pipeline_stats=None, relay=None,
-               oplog=None, wall_clock=time.time, history=None):
+               oplog=None, wall_clock=time.time, history=None, auth=None, cookie_secure=True):
     """`hub` is the in-process `services.events.EventHub` carrying FR-A4 events; with it
     the app serves `/v1/calls` from a `CallRegistry` (a new one unless given) and
     `WS /v1/events`. Without it those routes answer 503: no live source is connected.
@@ -483,7 +590,10 @@ def create_app(service, *, hub=None, registry=None, dashboard_dir=None, pipeline
     `history` (optional, `services.store.history.PostgresCallHistory`, FR-A3 "full history
     in PostgreSQL") serves `GET /v1/calls/{id}/history` and `GET /v1/history/calls`;
     without it they answer 503. It works without a hub: history needs no live source.
-    The app does not close it (its owner does)."""
+    The app does not close it (its owner does).
+    `auth` (optional, `services.auth.service.Authenticator`, FR-U7) turns on accounts:
+    see "Authentication" in the module docstring. `cookie_secure=False` drops the
+    cookie's Secure flag (plain HTTP on a non-loopback lab address only)."""
     if registry is not None and hub is None:
         raise ValueError('a call registry needs the event hub that feeds it')
     if relay is not None and (hub is None or getattr(relay, 'hub', None) is not hub):
@@ -583,7 +693,7 @@ def create_app(service, *, hub=None, registry=None, dashboard_dir=None, pipeline
         if relay_loops:
             relay_snapshot = {**relay_loops[-1].snapshot(), 'relay': dict(relay.stats)}
         return PlainTextResponse(metrics.render(jobs, service, in_flight[0], live, pipeline_stats, relay_snapshot,
-                                                history=history is not None),
+                                                history=history is not None, auth=auth is not None),
                                  media_type='text/plain; version=0.0.4; charset=utf-8')
 
     @app.middleware('http')
@@ -604,6 +714,73 @@ def create_app(service, *, hub=None, registry=None, dashboard_dir=None, pipeline
                 finally:
                     in_flight[0] -= 1
         return await call_next(request)
+
+    # At most this many session checks and audit writes use worker threads at once
+    # (review M1): the rest are refused busy at once, so a stalled database cannot fill
+    # the thread pool that /healthz, /readyz and /metrics need.
+    account_slots = asyncio.Semaphore(MAX_ACCOUNT_CALLS)
+
+    async def account_call(function, *args, wait_s=0.0):
+        """Run one account-store call off the event loop. AuthStoreError('busy') when every
+        slot is taken (after waiting up to `wait_s` for one: audit writes wait, so a
+        moment of dashboard load does not skip a row; re-review L)."""
+        if account_slots.locked() and wait_s <= 0:
+            raise AuthStoreError('too many account store calls', reason='busy')
+        try:
+            await asyncio.wait_for(account_slots.acquire(), wait_s if wait_s > 0 else None)
+        except asyncio.TimeoutError:
+            raise AuthStoreError('too many account store calls', reason='busy') from None
+        try:
+            return await run_in_threadpool(function, *args)
+        finally:
+            account_slots.release()
+
+    async def resolve_session(token):
+        """(Principal or None, None) or (None, response) when the account store failed."""
+        try:
+            return await account_call(auth.store.resolve, token), None
+        except AuthStoreError as error:
+            metrics.count_auth_refusal('store_unavailable')
+            return None, JSONResponse({'detail': f'Account store unavailable ({error.reason})'}, status_code=503)
+
+    async def audit_request(request, principal, status):
+        """Architecture §2.5 "audit middleware writes every mutating request": one row after
+        the route answered (actor, route, method, status; never a body). Login, logout and
+        exports write their own rows. A row that cannot be written is counted
+        (`ava_audit_write_failures_total`); the answer already stands."""
+        route = route_label(request.url.path)
+        outcome = 'ok' if status < 400 else 'refused' if status < 500 else 'failed'
+        detail = {'route': route, 'method': request.method, 'status': status}
+        try:
+            await account_call(auth.store.audit, principal.username, AUDITED_ROUTES.get(route, 'api.request'),
+                               outcome, detail, wait_s=AUDIT_SLOT_WAIT_S)
+        except (AuthStoreError, ValueError):
+            metrics.count_audit_failure()
+
+    if auth is not None:
+        # FR-U7: outside reject_oversize, so an upload without a session is refused before
+        # its body is read; inside count_responses, so refusals are counted and logged.
+        # Registered only with accounts on: without them the middleware stack is unchanged.
+        @app.middleware('http')
+        async def require_session(request, call_next):
+            if not request.url.path.startswith('/v1/'):
+                return await call_next(request)
+            if request.method in UNSAFE_METHODS and not same_origin(request.headers):
+                metrics.count_auth_refusal('cross_origin')
+                return JSONResponse({'detail': 'Cross-origin request refused'}, status_code=403)
+            if request.url.path == '/v1/auth/login':
+                return await call_next(request)
+            principal, failed = await resolve_session(request.cookies.get(SESSION_COOKIE))
+            if failed is not None:
+                return failed
+            if principal is None:
+                metrics.count_auth_refusal('no_session')
+                return JSONResponse({'detail': 'Login required'}, status_code=401)
+            request.state.principal = principal
+            response = await call_next(request)
+            if request.method in UNSAFE_METHODS and request.url.path != '/v1/auth/logout':
+                await audit_request(request, principal, response.status_code)
+            return response
 
     # Registered last, so it is the outermost middleware and also counts early refusals.
     @app.middleware('http')
@@ -655,6 +832,56 @@ def create_app(service, *, hub=None, registry=None, dashboard_dir=None, pipeline
         if record is None:
             raise HTTPException(404, 'Unknown job')
         return record
+
+    if auth is not None:
+        @app.post('/v1/auth/login')
+        async def login(request: Request):
+            body = await read_small_body(request, MAX_LOGIN_BYTES)
+            if body is None:
+                raise HTTPException(413, f'Login body exceeds {MAX_LOGIN_BYTES} bytes')
+            try:
+                fields = json.loads(body)
+            except (ValueError, UnicodeDecodeError):
+                fields = None
+            if not isinstance(fields, dict) or set(fields) != {'username', 'password'} \
+                    or not all(isinstance(fields[k], str) for k in fields):
+                raise HTTPException(422, 'Send a JSON object with text fields username and password only')
+            try:  # within the account slots too (re-review L): it reads and writes the store
+                result = await account_call(auth.login, fields['username'], fields['password'])
+            except AuthStoreError:
+                result = LoginBusy
+            metrics.count_login(result.outcome)
+            if result.outcome == 'ok':
+                principal = result.principal
+                response = JSONResponse({'username': principal.username, 'role': principal.role,
+                                         'expires_ts': principal.expires_ts})
+                response.set_cookie(SESSION_COOKIE, result.token, max_age=auth.store.absolute_s, path='/',
+                                    secure=cookie_secure, httponly=True, samesite='strict')
+                return response
+            if result.outcome == 'invalid':
+                return JSONResponse({'detail': 'Invalid username or password'}, status_code=401)
+            if result.outcome == 'locked':
+                return JSONResponse({'detail': 'Too many failed attempts; try again later'}, status_code=429)
+            reason = 'busy' if result.outcome == 'busy' else 'unavailable'
+            return JSONResponse({'detail': f'Login unavailable ({reason}); retry later'}, status_code=503,
+                                headers={'Retry-After': '1'})
+
+        @app.post('/v1/auth/logout')
+        async def logout(request: Request):
+            try:
+                await account_call(auth.store.close_session, request.cookies.get(SESSION_COOKIE),
+                                   request.state.principal)
+            except AuthStoreError as error:  # the cookie stays: the session is still open
+                raise HTTPException(503, f'Account store unavailable ({error.reason})') from None
+            response = Response(status_code=204)
+            response.delete_cookie(SESSION_COOKIE, path='/', secure=cookie_secure, httponly=True,
+                                   samesite='strict')
+            return response
+
+        @app.get('/v1/auth/me')
+        def me(request: Request):
+            principal = request.state.principal
+            return {'username': principal.username, 'role': principal.role, 'expires_ts': principal.expires_ts}
 
     def current_registry():
         if not feeds:
@@ -736,7 +963,7 @@ def create_app(service, *, hub=None, registry=None, dashboard_dir=None, pipeline
         return Response(alerts_csv(page['alerts']), media_type='text/csv; charset=utf-8', headers=headers)
 
     @app.get('/v1/alerts')
-    async def alerts(state: str = 'all', since: float | None = None, until: float | None = None,
+    async def alerts(request: Request, state: str = 'all', since: float | None = None, until: float | None = None,
                      min_confidence: float | None = None, limit: int | None = None, cursor: str | None = None,
                      format: str = 'json'):
         """PRD FR-A6: stored alerts newest first, filtered; `format=csv` exports the page."""
@@ -751,8 +978,24 @@ def create_app(service, *, hub=None, registry=None, dashboard_dir=None, pipeline
             check_alert_filters(state, since, until, min_confidence, cursor)
         except ValueError as error:
             raise HTTPException(422, str(error)) from None
-        return await read_history(lambda: history.alerts(state, since, until, min_confidence, limit, cursor),
-                                  encode_alert_csv if format == 'csv' else encode_json, kind='alerts')
+        rows = []
+
+        def encode_csv(page):
+            rows.append(len(page['alerts']))
+            return encode_alert_csv(page)
+        response = await read_history(lambda: history.alerts(state, since, until, min_confidence, limit, cursor),
+                                      encode_csv if format == 'csv' else encode_json, kind='alerts')
+        if format == 'csv' and auth is not None:
+            # PRD §6.3: exports are audited. Recorded before the file is sent: an export
+            # that cannot be recorded is not sent (503).
+            detail = {'state': state, 'since': since, 'until': until, 'min_confidence': min_confidence,
+                      'limit': limit, 'continued': cursor is not None, 'rows': rows[0] if rows else None}
+            try:
+                await account_call(auth.store.audit, request.state.principal.username, 'alerts.export', 'ok', detail,
+                                   wait_s=AUDIT_SLOT_WAIT_S)
+            except AuthStoreError as error:
+                raise HTTPException(503, f'Export not recorded in the audit log ({error.reason})') from None
+        return response
 
     def read_wall_clock():
         try:
@@ -762,6 +1005,19 @@ def create_app(service, *, hub=None, registry=None, dashboard_dir=None, pipeline
 
     @app.websocket('/v1/events')
     async def events(websocket: WebSocket, call_id: str | None = None):
+        token = None
+        if auth is not None:  # before anything else: a refused handshake is HTTP 403
+            if not same_origin(websocket.headers):
+                metrics.count_auth_refusal('cross_origin')
+                await websocket.close(code=1008)
+                return
+            token = websocket.cookies.get(SESSION_COOKIE)
+            principal, failed = await resolve_session(token)
+            if principal is None:
+                if failed is None:
+                    metrics.count_auth_refusal('no_session')
+                await websocket.close(code=1008)
+                return
         if hub is None:
             await websocket.accept()
             await websocket.close(code=1011, reason='No live event source is connected')
@@ -778,7 +1034,14 @@ def create_app(service, *, hub=None, registry=None, dashboard_dir=None, pipeline
         try:
             await websocket.accept()
             receiver = asyncio.create_task(websocket.receive())  # watches for the client leaving
+            checked = time.monotonic()
             while True:
+                if auth is not None and time.monotonic() - checked >= SESSION_RECHECK_S:
+                    principal, _ = await resolve_session(token)
+                    if principal is None:  # logged out, revoked, expired, disabled, or the store failed
+                        await _close_quietly(websocket, 1008, 'Session ended; log in again')
+                        break
+                    checked = time.monotonic()
                 if receiver.done():
                     if receiver.result()['type'] == 'websocket.disconnect':
                         break

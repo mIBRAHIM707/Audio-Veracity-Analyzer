@@ -132,8 +132,32 @@ history reads `busy`).
 Not yet wired into the Compose or k3s deployments: their network policies keep the API
 away from PostgreSQL, and a read-only role is an operator step (backlog 10.2).
 
+`--auth on` (19 Nov, attempt 7; PRD FR-U7; add `--with-requirements
+requirements-auth.txt`) needs `--database-url-env`: accounts, sessions and the audit log
+are in that database (migration 0003; `python -m services.auth migrate`, then
+`add-user`, see `services/auth/README.md`). The accounts use their own read-write
+connection, separate from the read-only history connection, so the role needs
+`SELECT, INSERT, UPDATE` on `users`, `SELECT, INSERT, UPDATE, DELETE` on
+`auth_sessions` (DELETE for the purge of old sessions; without it the purge is skipped,
+logins still work) and `INSERT, SELECT` on `audit_log` (and the sequences). Every /v1 route then needs a login (401 without one;
+login, logout and `GET /v1/auth/me` are added); cross-site writes and WebSocket
+handshakes are refused 403; CSV exports of `/v1/alerts` are audited (`alerts.export`,
+filters and row count; not sent if the row cannot be written), and so is every other
+mutating request after it is answered (`api.analyze`; failures counted in
+`ava_audit_write_failures_total`). At most 8 session checks/audit writes run at once
+(more answer 503). Deployment notes (TLS, `Host` header, one database role) are in
+`services/auth/README.md`. The `starting` record
+has `auth` (always) and, with it on, `auth_reachable` (true, `unavailable`, `schema` or
+`error`; a failing store answers 503, never lets a request through) and
+`cookie_secure`. The cookie is Secure unless `--cookie-insecure` (plain HTTP on a lab
+address; browsers accept Secure cookies from http://localhost). `/metrics` adds
+`ava_auth_logins_total{outcome=ok|invalid|locked|busy|unavailable}` and
+`ava_auth_refused_requests_total{reason=no_session|cross_origin|store_unavailable}`.
+Not yet: the dashboard login page (the dashboard answers 401 everywhere with auth on),
+admin-only settings routes (FR-A9/FR-U7 settings page), TLS (the operator's proxy).
+
 `services/api/__main__.py` serves the app with uvicorn on `--host` (default 127.0.0.1);
-a non-loopback address is refused without `--allow-non-loopback` (no authentication).
+a non-loopback address is refused without `--auth on` or `--allow-non-loopback`.
 Start-up checks: torch is installed and the model directory holds `model.safetensors`
 (the baseline is hash-verified and loaded on first use; `/readyz` runs the warm-up),
 the dashboard has `index.html`, the listening socket binds (a port in use refuses;

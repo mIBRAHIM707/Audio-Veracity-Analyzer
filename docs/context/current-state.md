@@ -222,6 +222,19 @@ and about 50,000 original clips, excluding codec copies.
   the real event store (skipped without `AVA_TEST_POSTGRES_DSN`). Times are UTC only.
   Still open in 7.3: FR-A7 feedback, FR-U5 call detail with codec/snippets, FR-U7 login
   and audit.
+- **19 Nov (attempt 7), 7.3 FR-U7 local accounts and §6.3 audit log (P1), API side.**
+  Migration 0003 (`users`, `auth_sessions`, `audit_log`); `services/auth/` (Argon2id
+  t=3/64 MiB/p=4 via argon2-cffi 25.1.0, `requirements-auth.txt`; store; login decisions
+  with equal work for unknown names, 5-failure/15-min lockout per name, at most 2 hashes
+  at once; operator CLI with no default account). API `--auth on`: login/logout/me, an
+  HttpOnly SameSite=Strict Secure session cookie (token SHA-256 stored; 30 min idle,
+  12 h absolute), 401 on every other /v1 route, cross-site writes and WebSocket
+  handshakes refused, open WebSockets closed when the session ends, audit rows for
+  logins, logouts, CSV exports, uploads and account changes. Claude-authored tests
+  (PostgreSQL 16 cases included); independent review conditional pass, findings fixed.
+  Not yet: dashboard login page, admin settings (FR-A9), feedback (FR-A7), Compose/k3s
+  wiring, TLS (operator proxy), audit retention (decision). Analysts may upload files
+  (PRD says "read, feedback"; decision to record).
 - **17 Nov daily run (details in `daily-runs/2026-11-17.md`).** FR-O6 per-stage latency
   for the live loop (7.2/8.1): `ava_live_stage_seconds{stage}` with `queue_wait`,
   `batch_wait`, `apply` (scorer and hub publish) and `window_to_result` (offer to

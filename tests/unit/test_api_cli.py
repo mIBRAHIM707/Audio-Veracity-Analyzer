@@ -182,7 +182,7 @@ class ApiCliTests(unittest.TestCase):
         self.assertEqual(records, [{'event': 'starting', 'host': '127.0.0.1', 'port': port, 'pid': os.getpid(),
                                     'model_id': 'fx-model', 'threads': 4, 'dashboard': True,
                                     'allow_non_loopback': False, 'live_events': False, 'event_log': 'off',
-                                    'call_history': False},
+                                    'call_history': False, 'auth': False},
                                    {'event': 'stopped', 'signal': 'SIGTERM'}])
         self.assertGreater(port, 0, '--port 0 reports the port actually bound')
         self.assert_sockets_closed()

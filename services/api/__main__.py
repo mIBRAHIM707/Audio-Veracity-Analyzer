@@ -21,6 +21,13 @@ the command line and never printed. The API then serves `/v1/calls` and
 at-most-once; the loss reaches WebSocket clients as `stream.gap`). Without it the calls
 and events routes answer 503 / close 1011 (no live source).
 
+`--auth on` (FR-U7, 19 Nov) needs `--database-url-env`: accounts, sessions and the
+audit log are in that database (migration 0003, applied by `python -m services.auth
+migrate` or the live process; users are created with `python -m services.auth
+add-user`). Every /v1 route then needs a login, so a non-loopback `--host` is allowed
+without `--allow-non-loopback`. The session cookie is Secure unless `--cookie-insecure`
+(plain HTTP on a lab address; browsers accept Secure cookies from http://localhost).
+
 Records (JSON lines on stderr): `starting` (with the port and pid) before serving;
 `stopped` (with the stop signal and the relay counters) after a graceful shutdown on
 SIGINT, SIGTERM or (Windows) SIGBREAK, exit 0; `refused`, exit 2; `interrupted` for
@@ -99,6 +106,11 @@ def build_parser():
     parser.add_argument('--database-url-env', type=_env_name,
                         help='environment variable with the PostgreSQL URL the live service stores calls in; '
                              'serves the read-only call history routes (needs requirements-store.txt)')
+    parser.add_argument('--auth', choices=('off', 'on'), default='off',
+                        help='FR-U7 local accounts in the --database-url-env database (needs requirements-auth.txt '
+                             'and migration 0003: python -m services.auth migrate); every /v1 route then needs a login')
+    parser.add_argument('--cookie-insecure', action='store_true',
+                        help='session cookie without the Secure flag, for plain HTTP on a non-loopback lab address')
     return parser
 
 
@@ -130,13 +142,11 @@ DB_KEEPALIVES = {'keepalives': 1, 'keepalives_idle': 5, 'keepalives_interval': 2
 DB_TIMEOUTS_MS = {'statement_timeout': 10_000, 'lock_timeout': 10_000}
 
 
-def _open_history(dsn):
-    """Return (PostgresCallHistory, reachable). Raises ImportError, or ValueError for a
-    URL that does not parse. One probe read at start-up; a database that is down or not
-    migrated is reported, not refused (the history routes answer 503 until it is)."""
+def _connect_factory(dsn):
+    """A psycopg connection factory with the timeouts above. Raises ImportError, or
+    ValueError for a URL that does not parse."""
     import psycopg
     from psycopg.conninfo import conninfo_to_dict
-    from services.store.history import HistoryError, PostgresCallHistory
     try:
         given = conninfo_to_dict(dsn)
     except psycopg.ProgrammingError as error:
@@ -149,17 +159,43 @@ def _open_history(dsn):
         try:
             for name, value in DB_TIMEOUTS_MS.items():
                 connection.execute(f'SET {name} = {int(value)}')  # names from the constant above only
-            connection.commit()  # idle: the history opens its own read-only transaction
+            connection.commit()  # idle: the reader/store opens its own transaction
             return connection
         except BaseException:
             connection.close()
             raise
-    history = PostgresCallHistory(connect)
+    return connect
+
+
+def _open_history(dsn):
+    """Return (PostgresCallHistory, reachable). Raises ImportError, or ValueError for a
+    URL that does not parse. One probe read at start-up; a database that is down or not
+    migrated is reported, not refused (the history routes answer 503 until it is)."""
+    from services.store.history import HistoryError, PostgresCallHistory
+    history = PostgresCallHistory(_connect_factory(dsn))
     try:
         history.recent(limit=1)
         return history, True
     except HistoryError as error:
         return history, error.reason
+
+
+def _open_auth(dsn):
+    """Return (Authenticator, reachable) for FR-U7 accounts on their own read-write
+    connection. Raises ImportError (argon2-cffi or psycopg missing) or ValueError. One
+    probe at start-up; a database that is down or not migrated (0003) is reported, not
+    refused: login and every /v1 route answer 503 until it is (never open)."""
+    from services.auth.passwords import Argon2Passwords
+    from services.auth.service import Authenticator
+    from services.auth.store import AuthStoreError, PostgresAuthStore
+    store = PostgresAuthStore(_connect_factory(dsn))
+    authenticator = Authenticator(store, Argon2Passwords())
+    authenticator.close = store.close  # held and closed like the other resources
+    try:
+        store.resolve('A' * 43)  # a well-formed token that matches nothing: one real query
+        return authenticator, True
+    except AuthStoreError as error:
+        return authenticator, error.reason
 
 
 def _bind(host, port):
@@ -194,8 +230,8 @@ def _serve(app, sock):
 
 
 def default_parts():
-    return {'service': _open_service, 'redis': _open_redis, 'history': _open_history, 'bind': _bind,
-            'serve': _serve}
+    return {'service': _open_service, 'redis': _open_redis, 'history': _open_history, 'auth': _open_auth,
+            'bind': _bind, 'serve': _serve}
 
 
 def _say(stream, record):
@@ -208,7 +244,7 @@ def main(argv=None, *, environ=None, stderr=None, made=None):
     stderr = sys.stderr if stderr is None else stderr
     made = {**default_parts(), **(made or {})}
     args = build_parser().parse_args(argv)
-    held = {'sock': None, 'redis': None, 'history': None}
+    held = {'sock': None, 'redis': None, 'history': None, 'auth': None}
     try:
         return _run(args, environ, stderr, made, held)
     except KeyboardInterrupt:  # Ctrl+C before serving (e.g. during the Redis ping)
@@ -229,8 +265,13 @@ def _run(args, environ, stderr, made, held):
         _say(stderr, {'event': 'refused', 'reason': reason})
         return EXIT_REFUSED
 
-    if not ipaddress.IPv4Address(args.host).is_loopback and not args.allow_non_loopback:
-        return refuse('the API has no authentication: listen on a loopback address or pass --allow-non-loopback')
+    if args.auth == 'on' and not args.database_url_env:
+        return refuse('--auth on needs --database-url-env: accounts live in PostgreSQL')
+    if args.cookie_insecure and args.auth != 'on':
+        return refuse('--cookie-insecure only applies with --auth on')
+    if not ipaddress.IPv4Address(args.host).is_loopback and not args.allow_non_loopback and args.auth != 'on':
+        return refuse('the API has no authentication: listen on a loopback address, pass --auth on, '
+                      'or pass --allow-non-loopback')
     if not (Path(args.model_root) / 'model.safetensors').is_file():
         return refuse('model root must be a directory holding model.safetensors')
     if args.dashboard is not None and not (Path(args.dashboard) / 'index.html').is_file():
@@ -268,6 +309,17 @@ def _run(args, environ, stderr, made, held):
         except Exception as error:  # any other driver error: the type name only
             return refuse(f'database client: {type(error).__name__}')
         held['history'] = history
+    auth = auth_reachable = None
+    if args.auth == 'on':
+        try:
+            auth, auth_reachable = made['auth'](dsn)
+        except ImportError as error:
+            return refuse(f'missing dependency: {error.name or error} (requirements-auth.txt)')
+        except ValueError:
+            return refuse('database URL is not valid')
+        except Exception as error:
+            return refuse(f'account store: {type(error).__name__}')
+        held['auth'] = auth
     try:
         service = made['service'](args)
     except ImportError as error:
@@ -283,7 +335,7 @@ def _run(args, environ, stderr, made, held):
     oplog = ApiLog(stderr) if args.event_log == 'stderr' else None
     try:
         app = create_app(service, hub=hub, relay=relay, dashboard_dir=args.dashboard, oplog=oplog,
-                         history=history)
+                         history=history, auth=auth, cookie_secure=not args.cookie_insecure)
     except ValueError as error:
         return refuse(str(error))
     record = {'event': 'starting', 'host': args.host, 'port': port, 'pid': os.getpid(),
@@ -295,6 +347,10 @@ def _run(args, environ, stderr, made, held):
     record['call_history'] = history is not None
     if history is not None:  # True, or why the probe read failed: unavailable, schema or error
         record['history_reachable'] = history_reachable
+    record['auth'] = auth is not None
+    if auth is not None:  # True, or why the probe failed: unavailable, schema or error
+        record['auth_reachable'] = auth_reachable
+        record['cookie_secure'] = not args.cookie_insecure
     _say(stderr, record)
     if oplog is not None:  # after the starting record, so that record stays the first line
         oplog.start()

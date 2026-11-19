@@ -179,11 +179,14 @@ class PostgresTests(unittest.TestCase):
         self.assertEqual(migrate.apply_migrations(connection), [])
         rows = self.query('SELECT version, name, sha256 FROM schema_migrations ORDER BY version')
         self.assertEqual(rows, [(m.version, m.name, m.sha256) for m in files])
-        self.assertEqual(rows[:2], [(1, '0001_live_records.sql', files[0].sha256),
-                                    (2, '0002_inferred_end.sql', files[1].sha256)])
+        self.assertEqual(rows[:3], [(1, '0001_live_records.sql', files[0].sha256),
+                                    (2, '0002_inferred_end.sql', files[1].sha256),
+                                    (3, '0003_local_auth.sql', files[2].sha256)])
         tables = {r[0] for r in self.query('SELECT table_name FROM information_schema.tables WHERE table_schema = %s',
                                            (self.schema,))}
-        self.assertEqual(tables, {'schema_migrations', 'calls', 'window_scores', 'alerts'})
+        # 0003 (19 Nov, attempt 7): FR-U7 accounts, sessions and the audit log.
+        self.assertEqual(tables, {'schema_migrations', 'calls', 'window_scores', 'alerts', 'users', 'auth_sessions',
+                                  'audit_log'})
 
     def test_changed_applied_migration_is_refused_without_changes(self):
         connection = self.connect()

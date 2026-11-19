@@ -19,8 +19,10 @@ be idle.
 IDs may be reused after an end; start/end data as JSONB; end columns all set or all
 null, relaxed by 0002 for inferred ends), `window_scores` (one row per call, direction and window index, flushed every
 hop), `alerts` (`open` -> `cleared` or `ended_open`). The architecture's other tables
-(`call_directions`, `alert_feedback`, `users`, `audit_log`, `batch_jobs`, `settings`)
-belong to later P0/P1 work and are not created yet.
+(`call_directions`, `alert_feedback`, `batch_jobs`, `settings`) belong to later P0/P1
+work and are not created yet. `users`, `auth_sessions` and `audit_log` come from
+`0003_local_auth.sql` (19 Nov, attempt 7; PRD FR-U7, §6.3) and are written by
+`services/auth/store.py` (see `services/auth/README.md`).
 
 `0002_inferred_end.sql` (19 Nov): `end_inferred` and `start_event_at` (the applied
 explicit start's time) columns; open explicit rows written before it get
