@@ -1,0 +1,58 @@
+# LAB ONLY: the Asterisk lab PBX (lab/asterisk, the same image as the Compose `lab`
+# profile) in its own namespace, standing in for the site's PBX network. It runs as
+# root (Asterisk drops to its own user) and is not part of AVA, so its namespace has
+# no Pod Security enforcement and no NetworkPolicy. Its ARI password comes from the
+# `ava-lab-ari` Secret in this namespace (letters and digits, 16 or more), the same
+# value as `ari-password` in `ava/ava-secrets`; the lab test creates both.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: ava-lab-pbx
+  labels: {app.kubernetes.io/part-of: ava-lab}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: asterisk
+  namespace: ava-lab-pbx
+  labels: {app.kubernetes.io/name: asterisk, app.kubernetes.io/part-of: ava-lab}
+spec:
+  selector: {app.kubernetes.io/name: asterisk}
+  ports:
+    - {name: ari, port: 8088, targetPort: 8088, protocol: TCP}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: asterisk
+  namespace: ava-lab-pbx
+  labels: {app.kubernetes.io/name: asterisk, app.kubernetes.io/part-of: ava-lab}
+spec:
+  replicas: 1
+  strategy: {type: Recreate}
+  selector:
+    matchLabels: {app.kubernetes.io/name: asterisk}
+  template:
+    metadata:
+      labels: {app.kubernetes.io/name: asterisk, app.kubernetes.io/part-of: ava-lab}
+    spec:
+      automountServiceAccountToken: false
+      enableServiceLinks: false
+      containers:
+        - name: asterisk
+          image: ava-lab-asterisk:dev  # built locally (lab/asterisk), imported, never pulled
+          imagePullPolicy: Never
+          env:
+            - name: AVA_ARI_PASSWORD
+              valueFrom: {secretKeyRef: {name: ava-lab-ari, key: password}}
+          readinessProbe:
+            tcpSocket: {port: 8088}
+            periodSeconds: 2
+          resources:
+            requests: {cpu: 100m, memory: 128Mi}
+            limits: {cpu: "1", memory: 512Mi}
+          volumeMounts:
+            - {name: io, mountPath: /lab/io}
+      volumes:
+        - name: io
+          emptyDir: {sizeLimit: 256Mi}

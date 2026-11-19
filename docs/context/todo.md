@@ -63,6 +63,9 @@ session is closed as `monitor_lost` with no invented speech time (migration 0002
 lab test kills the live service mid-call and checks the call still completes.
 19 Nov (attempt 2): no data change. A test shows a mu-law training copy with packet loss
 and the same call through the live tap give the detector identical audio.
+19 Nov (attempt 3): no data change. Kubernetes (k3s) manifests in `deploy/k8s` with a
+default-deny network policy; a lab node in Docker runs a real call through them and no
+AVA pod can reach the internet. Human: add `requirements-test.txt` to the CI workflow.
 
 Updated 4 October 2026. This is the active sequence; evidence lives in
 `current-state.md` and `handoffs/`. Check marks mean the stated bounded task passed

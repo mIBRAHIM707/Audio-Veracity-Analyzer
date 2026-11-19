@@ -570,6 +570,21 @@ items needing that data are listed at the end and stay out of the queue.
   with the real checkpoint, no egress) and a CI unit test of the pinning rules; review
   conditional pass fixed. Remaining: publishing the dashboard (auth decision), FR-I9 cap
   across containers, Kubernetes manifests and NetworkPolicy, hashed requirements/SBOM.
+  19 Nov (attempt 3): k3s manifests (PRD FR-O2/O3/O4, P0) in `deploy/k8s/`: `base/`
+  (namespace `ava` with Pod Security restricted enforced, ConfigMap, static read-only
+  model PV/PVC instead of hostPath, PostgreSQL and Redis StatefulSets with claims, live
+  (Recreate, RTP to `$(POD_IP)`) and api Deployments with startup/readiness/liveness
+  probes and limits, default-deny NetworkPolicy plus named flows; PBX placeholder
+  192.0.2.10) and `lab/` overlay (Asterisk in `ava-lab-pbx`); operator site overlay with
+  `secretGenerator` in the README. Claude-authored: 15 static tests
+  (`tests/unit/test_k8s_manifests.py`; PyYAML 6.0.3 in the new `requirements-test.txt`,
+  so 14 skip in CI until a human adds that file to the workflow) and a k3s-in-Docker lab
+  case (`tests/lab/test_k3s_stack_lab.py`, rancher/k3s v1.34.2 by digest): real call
+  tapped across namespaces, stored and ended in the API; no AVA pod connects out or
+  queries a public resolver; only the named in-namespace flows work. Review conditional
+  pass, M1-L5 fixed. Remaining: CoreDNS still forwards outside names (FR-O3 DNS part),
+  Ingress/TLS for the dashboard (auth decision), monitoring on k3s, how a PBX outside
+  the cluster reaches the pod network, hashed requirements/SBOM.
 - [ ] 10.QA Reproducible startup, CPU parity where measurable, rollback/readiness.
 
 ## 11 — Final software integration

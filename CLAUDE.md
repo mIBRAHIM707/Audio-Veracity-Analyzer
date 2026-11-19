@@ -36,7 +36,7 @@ human approval. See `data/collect/README.md` for scope and the balanced manifest
 
 ```text
 uv run --no-project --python 3.11 python scripts/check_foundation.py
-uv run --no-project --python 3.11 --with-requirements requirements-audio.txt python -m unittest discover -s tests/unit -v
+uv run --no-project --python 3.11 --with-requirements requirements-test.txt python -m unittest discover -s tests/unit -v
 python scripts/sync_agents.py --check
 python scripts/sync_bmad.py --check
 ```

@@ -185,6 +185,16 @@ and about 50,000 original clips, excluding codec copies.
   lost packets. A second case forces 4- and 5-packet bursts (repeat three, then
   silence). Not covered: late packets, first/last-packet loss (a known divergence),
   A-law (+8 silence), GSM/AMR, real VAD. Infrastructure evidence only.
+- **19 Nov (attempt 3), 10.2 k3s manifests (PRD FR-O2/O3/O4, P0).** `deploy/k8s/base`
+  (namespace `ava` with Pod Security restricted, read-only model PV/PVC, PostgreSQL and
+  Redis StatefulSets with claims, live and api Deployments with probes, limits, init
+  containers waiting for storage, default-deny NetworkPolicy plus named flows) and the
+  `lab` overlay (Asterisk in `ava-lab-pbx`). Claude-authored static tests (PyYAML from the
+  new `requirements-test.txt`; skipped in CI until a human adds that file to the
+  workflow) and a lab case on a digest-pinned k3s v1.34.2 node in Docker: a real call
+  tapped across namespaces, stored and shown in the API; no AVA pod connects to the
+  internet. Open: CoreDNS still forwards outside names (FR-O3 DNS part), Ingress/TLS
+  (auth decision), an external PBX's route to the pod network, monitoring on k3s.
 - **17 Nov daily run (details in `daily-runs/2026-11-17.md`).** FR-O6 per-stage latency
   for the live loop (7.2/8.1): `ava_live_stage_seconds{stage}` with `queue_wait`,
   `batch_wait`, `apply` (scorer and hub publish) and `window_to_result` (offer to

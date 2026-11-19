@@ -1,0 +1,5 @@
+# Test-only packages for the unit suite (never installed in a service image: the image
+# requirement files do not include this file). Python 3.11.
+-r requirements-audio.txt
+# Parses the Kubernetes manifests in tests/unit/test_k8s_manifests.py. PyYAML, MIT.
+pyyaml==6.0.3
