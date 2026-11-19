@@ -11,6 +11,10 @@ extension 700; the ARI tap receives the caller audio, the jitter buffer, the str
 publish FR-A4 events. The detector is a FAKE with a fixed score: this is evidence that
 real speech flows end to end and the call lifecycle closes, not detector evidence.
 No audio or clip path is written to the repository or to test output.
+19 Nov 2026 (Claude-authored): the same case for callers offering only A-law or only
+GSM 06.10 (6.QA). With the fake detector these show scoring-path plumbing and VAD on
+codec-degraded speech only; codec correctness of the tapped audio (negotiated format,
+correlation with the decode) is checked in tests/lab/test_ari_tap.py.
 """
 import json
 import os
@@ -68,12 +72,32 @@ class TapEndToEndTests(unittest.TestCase):
         cls.ari = AriClient(f'http://{cls.lab.port("8088/tcp")}', 'ava', password, 'ava-tap')
 
     def test_public_speech_through_a_lab_call_is_scored_and_the_call_closes(self):
+        self.check_call('ulaw')
+
+    # 19 Nov 2026 (Claude-authored; backlog 6.QA "codecs other than mu-law end to end";
+    # PRD FR-T2): the same public speech from callers offering only A-law or only GSM.
+    # Asterisk transcodes for the tap's mu-law ExternalMedia; the scoring path is the same.
+
+    def test_public_speech_from_an_alaw_caller_is_scored(self):
+        self.check_call('alaw')
+
+    def test_public_speech_from_a_gsm_caller_is_scored(self):
+        from data.prepare.ffmpeg_codecs import Ffmpeg
+        from tests.unit.test_ffmpeg_codecs import real_ffmpeg_path
+        path = real_ffmpeg_path()
+        if path is None:
+            self.skipTest('GSM payloads need the pinned ffmpeg')
+        self.check_call('gsm', Ffmpeg(path))
+
+    def check_call(self, codec, ffmpeg=None):
         from services.inference.silero_vad import SileroVad
         clips = json.loads(QA_CONFIG.read_text(encoding='utf-8'))['genuine'][:3]
         pcm8k = b''.join(rtp_pcap.wav_to_pcm8k(path) for path in clips)
         seconds = len(pcm8k) / 2 / 8000
-        payloads = rtp_pcap.rtp_payloads(pcm8k, 'ulaw')
-        rtp_pcap.write_pcap(payloads, 0, self.lab.path('inject.pcap'))  # temporary lab folder, removed after
+        payloads = rtp_pcap.rtp_payloads(pcm8k, codec, ffmpeg)
+        payload_type, codec_name = rtp_pcap.PAYLOAD_TYPES[codec]
+        # Temporary lab folder, removed after.
+        rtp_pcap.write_pcap(payloads, payload_type, self.lab.path('inject.pcap'))
 
         hub = EventHub()
         listener = hub.subscribe(buffer=4096)
@@ -87,7 +111,8 @@ class TapEndToEndTests(unittest.TestCase):
 
         token = f'e2e{secrets.token_hex(4)}'
         done = self.lab.command(['exec', self.lab.name, 'sipp', '127.0.0.1:5060', '-sf', '/lab/sipp/uac_inject.xml',
-                                 '-s', '700', '-key', 'caller', token, '-key', 'pt', '0', '-key', 'codec', 'PCMU',
+                                 '-s', '700', '-key', 'caller', token, '-key', 'pt', str(payload_type),
+                                 '-key', 'codec', codec_name,
                                  '-m', '1', '-d', str(len(payloads) * 20 + 1500), '-i', '127.0.0.1',
                                  '-mi', '127.0.0.1', '-min_rtp_port', '16000', '-max_rtp_port', '16100',
                                  '-timeout', '60s', '-timeout_error', '-nostdin'], check=False, timeout=180)
@@ -119,6 +144,8 @@ class TapEndToEndTests(unittest.TestCase):
         self.assertLessEqual(ended[0].data['speech_seconds'], seconds + 0.1)
         self.assertEqual((sink.counts['ended'], sink.counts['errors'], runner.app.stats['sink_errors']), (1, 0, 0))
         self.assertFalse(pipeline.has_work(started.call_id))
+        print(f'\nobserved ({codec}): {len(scored)} scored windows, speech {ended[0].data["speech_seconds"]:.1f} s '
+              f'of {seconds:.1f} s played')
 
 
 if __name__ == '__main__':

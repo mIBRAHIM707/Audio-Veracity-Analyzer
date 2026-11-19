@@ -10,6 +10,8 @@ RTP to this host (host.docker.internal). SIPp calls extension 700, which answers
 records what the caller sends without ever entering Stasis; the tap spies on it from
 outside, so each case can compare the tapped audio with the call's own recording.
 Synthetic signals only: tap plumbing evidence, not detector evidence.
+19 Nov 2026 (Claude-authored, 6.QA): callers offering only A-law or only GSM are tapped
+through Asterisk's transcoding to the tap's mu-law ExternalMedia.
 """
 import os
 import secrets
@@ -130,19 +132,21 @@ class AriTapTests(unittest.TestCase):
         cls.lab.start()
         cls.ari = AriClient(f'http://{cls.lab.port("8088/tcp")}', 'ava', password, 'ava-tap')
 
-    def call(self, pcm, extra_ms=1500, during=None, service='700', record=True):
-        """Place one mu-law call to `service` and return (token, injected reference,
+    def call(self, pcm, extra_ms=1500, during=None, service='700', record=True, codec='ulaw', ffmpeg=None):
+        """Place one call to `service` offering only `codec` (default mu-law; `ffmpeg`
+        for GSM) and return (token, injected reference = the decode of what SIPp sent,
         recording or None, the time SIPp finished). `during(token)` runs on this thread
         while SIPp runs."""
-        payloads = rtp_pcap.rtp_payloads(pcm, 'ulaw')
-        rtp_pcap.write_pcap(payloads, 0, self.lab.path('inject.pcap'))
+        payloads = rtp_pcap.rtp_payloads(pcm, codec, ffmpeg)
+        payload_type, codec_name = rtp_pcap.PAYLOAD_TYPES[codec]
+        rtp_pcap.write_pcap(payloads, payload_type, self.lab.path('inject.pcap'))
         token = f'tap{uuid.uuid4().hex[:8]}'
         result = {}
 
         def run():
             result['done'] = self.lab.command(
                 ['exec', self.lab.name, 'sipp', '127.0.0.1:5060', '-sf', '/lab/sipp/uac_inject.xml', '-s', service,
-                 '-key', 'caller', token, '-key', 'pt', '0', '-key', 'codec', 'PCMU', '-m', '1',
+                 '-key', 'caller', token, '-key', 'pt', str(payload_type), '-key', 'codec', codec_name, '-m', '1',
                  '-d', str(len(payloads) * 20 + extra_ms), '-i', '127.0.0.1', '-mi', '127.0.0.1',
                  '-min_rtp_port', '16000', '-max_rtp_port', '16100', '-timeout', '60s', '-timeout_error', '-nostdin'],
                 check=False, timeout=120)
@@ -154,8 +158,9 @@ class AriTapTests(unittest.TestCase):
         caller.join(timeout=150)
         done = result['done']
         self.assertEqual(done.returncode, 0, f'sipp: {done.stdout[-1200:]} {done.stderr[-1200:]}')
+        reference = rtp_pcap.reference_decode(payloads, codec, ffmpeg)
         if not record:
-            return token, rtp_pcap.reference_decode(payloads, 'ulaw'), None, result['finished']
+            return token, reference, None, result['finished']
         recording = self.lab.path(f'rec-{token}.wav')
         deadline, size = time.monotonic() + 30, -1
         while time.monotonic() < deadline:
@@ -166,7 +171,7 @@ class AriTapTests(unittest.TestCase):
         self.assertTrue(recording.exists(), 'the call itself must complete and record')
         with wave.open(str(recording), 'rb') as handle:
             recorded = handle.readframes(handle.getnframes())
-        return token, rtp_pcap.reference_decode(payloads, 'ulaw'), recorded, result['finished']
+        return token, reference, recorded, result['finished']
 
     def wait_for(self, sink, predicate, seconds=15):
         deadline = time.monotonic() + seconds
@@ -183,9 +188,9 @@ class AriTapTests(unittest.TestCase):
         channels = [c['name'] for c in self.ari.list_channels() if c['name'].startswith(('Snoop/', 'UnicastRTP/'))]
         return self.ari.list_bridges(), channels
 
-    def assert_call_unharmed(self, reference, recorded, share=0.9):
+    def assert_call_unharmed(self, reference, recorded, share=0.9, min_correlation=0.999):
         correlation, _, _, n = overlap(reference, recorded)
-        self.assertGreater(correlation, 0.999)
+        self.assertGreater(correlation, min_correlation)
         self.assertGreater(n, share * len(reference) // 2, 'the whole call was recorded')
 
     def test_tap_receives_the_caller_audio_and_the_call_lifecycle(self):
@@ -225,6 +230,69 @@ class AriTapTests(unittest.TestCase):
         self.assertFalse(frames[startup:].any(), f'differing frames after start-up: {np.flatnonzero(frames)[:20]}')
         self.assert_call_unharmed(reference, recorded)
         self.assertIsNone(runner.error)
+
+    # -- callers on other PBX codecs (Claude-authored, 19 Nov 2026; backlog 6.QA "codecs
+    #    other than mu-law end to end"; PRD FR-T2 G.711 A-law/mu-law and GSM) ------------
+
+    def check_transcoded_tap(self, codec, ffmpeg, seed, min_correlation):
+        """A caller offering only `codec`: the call runs on it (the PBX records the
+        decode of what was sent), and Asterisk transcodes it for the tap's mu-law
+        ExternalMedia, so the tap hears the caller's decoded audio through one more
+        mu-law step. Returns (correlation with the sent audio's decode, with the
+        original signal)."""
+        pcm = speechlike(4.0, seed)
+        sink = Sink()
+        runner = TapRunner(self.ari, sink)
+        self.addCleanup(runner.stop)
+        negotiated = {}
+
+        def read_format(token):
+            # Review M1: read the caller leg's negotiated native format while it runs.
+            found = self.wait_for(sink, lambda e: e[0] == 'started' and e[2] == token)
+            if found:
+                negotiated['format'] = self.ari.get_variable(found[0][1], 'CHANNEL(audionativeformat)')
+        token, reference, recorded, finished = self.call(pcm, codec=codec, ffmpeg=ffmpeg, during=read_format)
+        # Asterisk prints the native format capabilities in parentheses, e.g. "(alaw)".
+        self.assertEqual(negotiated.get('format'), f'({codec})', 'the call ran on the offered codec only')
+        started = self.wait_for(sink, lambda e: e[0] == 'started' and e[2] == token)
+        self.assertEqual(len(started), 1, sink.events)
+        call_id = started[0][1]
+        self.assertEqual(self.wait_for(sink, lambda e: e[0] == 'ended' and e[1] == call_id), [('ended', call_id, 'bye')])
+        self.assertLess(sink.times[call_id] - finished, 5.0)
+        self.assertEqual(runner.app.calls, {})
+        self.assertEqual(self.asterisk_tap_objects(), ([], []))
+        tapped = sink.audio_by_call.get(call_id, b'')
+        self.assertGreater(len(tapped), 0, 'no tapped audio reached the receiver')
+        correlation, ref_start, tap_start, n = overlap(reference, tapped)
+        receiver = sink.receiver_stats[call_id]
+        self.assertGreater(correlation, min_correlation, (correlation, ref_start, tap_start, n, receiver))
+        self.assertGreater(n, 0.85 * len(reference) // 2, (ref_start, tap_start, n))
+        self.assertEqual((receiver['jitter_concealed_frames'], receiver['jitter_late'], receiver['late_or_duplicate'],
+                          receiver['malformed'], receiver['other_source']), (0, 0, 0, 0, 0), receiver)
+        self.assertEqual(sink.concealed.get(call_id), 0)
+        self.assertFalse([e for e in sink.events if e[0] == 'quality'], 'no false media-quality report')
+        # The call itself ran on the offered codec and was not disturbed by the tap
+        # (Asterisk's own GSM decoder vs ffmpeg's: > 0.99 as in test_asterisk_lab).
+        self.assert_call_unharmed(reference, recorded, min_correlation=min(0.999, min_correlation))
+        self.assertIsNone(runner.error)
+        to_original, *_ = overlap(pcm, tapped)
+        return correlation, to_original
+
+    def test_an_alaw_caller_is_tapped_through_transcoding(self):
+        correlation, _ = self.check_transcoded_tap('alaw', None, 12, 0.999)
+        print(f'\nobserved: A-law caller, tap correlation with the A-law decode {correlation:.5f}')
+
+    def test_a_gsm_caller_is_tapped_through_transcoding(self):
+        from data.prepare.ffmpeg_codecs import Ffmpeg
+        from tests.unit.test_ffmpeg_codecs import real_ffmpeg_path
+        path = real_ffmpeg_path()
+        if path is None:
+            self.skipTest('GSM payloads need the pinned ffmpeg')
+        correlation, to_original = self.check_transcoded_tap('gsm', Ffmpeg(path), 13, 0.99)
+        # The tap hears the GSM-coded call, not the clean signal (lab review L5 rule).
+        self.assertGreater(correlation, to_original)
+        print(f'\nobserved: GSM caller, tap correlation with the GSM decode {correlation:.5f}, '
+              f'with the original {to_original:.5f}')
 
     def test_call_goes_on_when_the_tap_is_not_running(self):
         # FR-T4: no tap connected; the call never depends on it.

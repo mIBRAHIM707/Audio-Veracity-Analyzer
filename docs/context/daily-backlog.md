@@ -368,6 +368,11 @@ items needing that data are listed at the end and stay out of the queue.
   `call.ended bye`, no reconnect, nothing left in Asterisk); found and fixed `stop()`
   counted as a disconnect. Remaining: codecs other than mu-law end to end, the trained
   model.
+  19 Nov: A-law and GSM callers end to end (Claude-authored lab cases): the call
+  negotiates only the offered codec (read over ARI), Asterisk transcodes for the tap's
+  mu-law ExternalMedia, and the tapped audio matches the decode (A-law 0.9999, GSM
+  0.999). Public speech from those callers is scored through VAD and the pipeline
+  (fake detector: plumbing only). Remaining: the trained model (data-dependent).
 
 ## 7 — Dashboard and operations (FR-U, FR-A8)
 - [x] 7.1 Live board, alerts, timeline and batch job states.

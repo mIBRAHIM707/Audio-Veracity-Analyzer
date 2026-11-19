@@ -171,6 +171,12 @@ and about 50,000 original clips, excluding codec copies.
   live healthy again in 13 s, the call completed, registry `superseded_session` 1, rows
   `monitor_lost` (inferred, no speech seconds) and `bye`, no alert left open. Details in
   `daily-runs/2026-11-19.md`.
+- **19 Nov (attempt 1), 6.QA codecs.** Callers offering only A-law or only GSM are
+  tapped through Asterisk's transcoding to the mu-law ExternalMedia. The negotiated
+  format is asserted over ARI, and the tapped audio matches the sent audio's decode
+  (A-law 0.9999, GSM 0.999 vs 0.61 to the clean signal). Public CSALT speech from those
+  callers is scored end to end. This is codec plumbing evidence with a fake detector,
+  not detector accuracy on these codecs.
 - **17 Nov daily run (details in `daily-runs/2026-11-17.md`).** FR-O6 per-stage latency
   for the live loop (7.2/8.1): `ava_live_stage_seconds{stage}` with `queue_wait`,
   `batch_wait`, `apply` (scorer and hub publish) and `window_to_result` (offer to
