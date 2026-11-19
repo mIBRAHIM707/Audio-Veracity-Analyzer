@@ -14,6 +14,7 @@ persistence yet; bind it to localhost.
 | `GET /v1/calls/{id}` | FR-A3 detail: alerts (`open`, `cleared`, `ended_open`) and the timeline (`full_resolution`, `downsampled`); 404 unknown |
 | `GET /v1/calls/{id}/history` | FR-A3 full stored history from PostgreSQL (19 Nov): `{call_id, sessions, sessions_total, sessions_truncated}`, every session newest first (a restarted or killed scorer leaves one per session; `end_inferred` marks an end inferred after an abrupt stop) with its alerts and per-window scores in time order; at most 10,800 window rows per answer (`windows_truncated`); 404 nothing stored; 503 without `history=` or when the database is unavailable (`unavailable`), another read holds the connection for 2 s (`busy`), a read runs too long (`timeout`), the database is not migrated to 0002 (`schema`) or fails (`error`). The body is encoded in a worker thread, not on the event loop; at most 4 history requests run at once and further ones are `busy` at once (probes keep their threads); an answer that cannot be encoded is `error` |
 | `GET /v1/history/calls[?status=all\|active\|ended&limit=1..200&before=]` | stored session summaries newest first (counts of alerts, open alerts, windows, scored windows, highest score; no window rows); `next_before` is the cursor for the next page, null on the last; `active` means an open row, which a lost `call.ended` can leave open indefinitely (check `last_event_ts`); 422 bad parameters; 503 as above |
+| `GET /v1/alerts[?state=all\|open\|cleared\|ended_open&since=&until=&min_confidence=&limit=&cursor=&format=json\|csv]` | FR-A6 (19 Nov): stored alerts of every session, newest raised first, from PostgreSQL. `since`/`until` are Unix seconds on the raised time (since inclusive, until exclusive); `min_confidence` (0-1) is compared with each alert's `peak_ema`, the highest uncalibrated EMA it reached from raise to close (`services/store/README.md`), not a probability (alerts with no EMA never match). JSON `{alerts, next_cursor}`, limit 1-1,000 (default 100). `format=csv` downloads `ava-alerts.csv` (RFC 4180, ISO 8601 UTC times, IDs that would start a spreadsheet formula prefixed with `'`), limit 1-10,000 (default 1,000), next cursor in the `X-AVA-Next-Cursor` header (absent on the last page). Pass the cursor with the same filters. 422 bad parameters or cursor; 503 as above |
 | `WS /v1/events[?call_id=]` | FR-A4 envelopes as JSON text, oldest first; a `{"type": "stream.gap", "dropped": n}` control message when a slow client's 256-envelope buffer overflowed, with `upstream_missing` (events the Redis relay counted lost) and `upstream_interruptions` (Redis outages or scorer restarts, size unknown) added only when nonzero (re-read REST); closes 1013 at the subscriber limit, 1011 without an event hub; client messages are ignored |
 
 `GET /metrics` (FR-A8, FR-O6 subset, 14 Nov): `ava_analysis_seconds` is a histogram
@@ -114,7 +115,7 @@ uv run --no-project --python 3.11 --with-requirements requirements-api.txt --wit
 
 `--database-url-env NAME` (19 Nov; add `--with-requirements requirements-store.txt`)
 names the variable holding the PostgreSQL URL the live service stores calls in, and
-serves the two history routes from `services/store/history.py`. The URL is never printed.
+serves the history routes and `/v1/alerts` from `services/store/history.py`. The URL is never printed.
 One probe read runs at start-up; a database that is down, not migrated or failing is
 reported in the `starting` record (`history_reachable`: true, `unavailable`, `schema` or
 `error`), not refused, and the routes answer 503 until it is fixed. Every `starting`
@@ -124,7 +125,10 @@ TCP keepalives and 10 s statement/lock timeouts as in the live process; the API 
 applies migrations, so it can use a read-only role (recommended: `SELECT` on `calls`,
 `window_scores`, `alerts`, `schema_migrations`). `start_data`/`end_data` are never served.
 `/metrics` then adds
-`ava_call_history_reads_total{outcome=ok|not_found|unavailable|busy|timeout|schema|error}`.
+`ava_call_history_reads_total{outcome=ok|not_found|unavailable|busy|timeout|schema|error}`
+and `ava_alert_search_reads_total{outcome=ok|unavailable|busy|timeout|schema|error}`
+(`/v1/alerts`; it shares the one history connection, so a 10,000-row export can make
+history reads `busy`).
 Not yet wired into the Compose or k3s deployments: their network policies keep the API
 away from PostgreSQL, and a read-only role is an operator step (backlog 10.2).
 
@@ -215,4 +219,5 @@ expose call IDs and scores without authentication, like `/v1/calls`: bind to loc
 
 Tests for the history routes and option: `tests/unit/test_store_history.py`
 (Claude-authored, 19 Nov; the PostgreSQL cases need `AVA_TEST_POSTGRES_DSN`, see
-`services/store/README.md`).
+`services/store/README.md`); for `/v1/alerts` and its CSV export
+`tests/unit/test_alert_search.py` (Claude-authored, 19 Nov).

@@ -68,6 +68,9 @@ default-deny network policy; a lab node in Docker runs a real call through them 
 AVA pod can reach the internet. Human: add `requirements-test.txt` to the CI workflow.
 19 Nov (attempt 4): no data change. The API can now show a call's full stored history
 from PostgreSQL (every session, alerts and window scores), read-only.
+19 Nov (attempt 5): no data change. `GET /v1/alerts` searches stored alerts (state, time,
+minimum confidence) and exports them as CSV. Human: confirm in the PRD that FR-A6
+"confidence" means the alert's peak (uncalibrated) EMA.
 
 Updated 4 October 2026. This is the active sequence; evidence lives in
 `current-state.md` and `handoffs/`. Check marks mean the stated bounded task passed

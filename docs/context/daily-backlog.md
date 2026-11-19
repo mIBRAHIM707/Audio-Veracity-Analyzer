@@ -458,6 +458,14 @@ items needing that data are listed at the end and stay out of the queue.
   run, mean 151 ms); review conditional pass fixed. Done: every FR-O6 item has a metric
   and a panel. Not measured: browser render time and a load-test p95 (8.QA).
 - [ ] 7.3 P1 history/search/local authentication/audit and feedback after P0.
+  Progress (19 Nov, attempt 5): PRD FR-A6 `GET /v1/alerts` from PostgreSQL
+  (`PostgresCallHistory.alerts`: state, raised-time range, minimum confidence = the
+  alert's peak EMA from raise to close, uncalibrated; opaque exact keyset cursor) and
+  `format=csv` export (`services/api/alert_csv.py`, RFC 4180, formula neutralisation,
+  cursor in `X-AVA-Next-Cursor`), `ava_alert_search_reads_total`; Claude-authored tests
+  (PostgreSQL 16); review conditional pass, M and lows fixed, re-review pass. Remaining:
+  FR-U6 dashboard history/search, FR-A7 feedback, FR-A5, local auth/audit; PRD wording
+  for "confidence"; cost of the peak query not measured.
 - [ ] 7.QA Astra-designed Playwright suite, offline assets, failures/reconnects.
 
 ## 8 — CPU capacity (FR-I9/I10)

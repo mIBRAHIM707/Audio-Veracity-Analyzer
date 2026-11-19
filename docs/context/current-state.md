@@ -204,6 +204,14 @@ and about 50,000 original clips, excluding codec copies.
   PostgreSQL cases on a local 16 container; rows written by the real event store incl. a
   superseded session). Not yet wired into Compose/k3s (their policies keep the API off
   PostgreSQL; a read-only role is an operator step); the dashboard does not use it yet.
+- **19 Nov (attempt 5), 7.3 FR-A6 alert search and CSV export (P1).** `GET /v1/alerts`
+  (state, raised-time range, minimum confidence, JSON or `format=csv`) from
+  `PostgresCallHistory.alerts`; "confidence" is implemented as the alert's peak EMA from
+  raise to close (uncalibrated, provisional while open) because the EMA at the raise
+  sits at the threshold; this interpretation needs PRD wording. Exact keyset cursor;
+  CSV with formula neutralisation; `ava_alert_search_reads_total`. Claude-authored tests
+  (23, PostgreSQL cases on a local 16 container). Not measured: the peak query's cost on
+  large stores. Same deployment gap as the history routes.
 - **17 Nov daily run (details in `daily-runs/2026-11-17.md`).** FR-O6 per-stage latency
   for the live loop (7.2/8.1): `ava_live_stage_seconds{stage}` with `queue_wait`,
   `batch_wait`, `apply` (scorer and hub publish) and `window_to_result` (offer to

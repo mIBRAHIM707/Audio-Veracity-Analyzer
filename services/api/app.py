@@ -20,10 +20,13 @@ WS   /v1/events[?call_id=]  FR-A4 envelopes as JSON text; a `stream.gap` control
 GET  /v1/calls/{id}/history  FR-A3 full stored history of a call from PostgreSQL: every
                   session with its alerts and per-window scores (19 Nov).
 GET  /v1/history/calls[?status=&limit=&before=]  stored sessions, newest first, paged.
+GET  /v1/alerts[?state=&since=&until=&min_confidence=&limit=&cursor=&format=json|csv]
+                  FR-A6 stored alerts, newest raised first, filtered and paged; `csv`
+                  downloads the page (next cursor in `X-AVA-Next-Cursor`) (19 Nov).
 The calls and events routes need an `EventHub` passed to `create_app`; otherwise
 they answer 503 / close with 1011. With a `RedisRelay` on that hub the scorer's events
 arrive from Redis pub/sub (16 Nov). The history routes need a `PostgresCallHistory`
-(`services/store/history.py`); otherwise they answer 503.
+(`services/store/history.py`); otherwise they answer 503. So does `/v1/alerts`.
 
 Errors: 411 no Content-Length, 413 oversize/too long, 422 undecodable/unsupported,
 503 busy, too many concurrent uploads or job queue full, 500 detector failure.
@@ -50,8 +53,10 @@ from fastapi.staticfiles import StaticFiles
 from services.calls.registry import CallRegistry, RegistryFeed
 from services.events.fanout import HubFull
 from services.events.relay_loop import RelayLoop
+from services.api.alert_csv import alerts_csv
 from services.store.history import (DEFAULT_LIMIT as DEFAULT_HISTORY_LIMIT, MAX_LIMIT as MAX_HISTORY_LIMIT,
-                                    REASONS as HISTORY_REASONS, STATUSES as HISTORY_STATUSES, HistoryError)
+                                    REASONS as HISTORY_REASONS, STATUSES as HISTORY_STATUSES, HistoryError,
+                                    check_alert_filters)
 from services.inference.analysis import (AnalysisError, AnalyzerBusy, MAX_ASYNC_SECONDS, MAX_BYTES,
                                          NeedsAsyncJob, decode_wav)
 # FR-O6 live-pipeline families, shared with the live service process (moved 16 Nov).
@@ -93,12 +98,16 @@ MULTIPART_OVERHEAD = 64 * 1024
 MAX_CONCURRENT_UPLOADS = 2
 JOB_STATES = ('queued', 'running', 'done', 'failed')
 ROUTES = ('/healthz', '/readyz', '/metrics', '/v1/analyze', '/v1/jobs/:id', '/v1/calls',
-          '/v1/calls/:id', '/v1/calls/:id/history', '/v1/history/calls')
+          '/v1/calls/:id', '/v1/calls/:id/history', '/v1/history/calls', '/v1/alerts')
 STATUS_CLASSES = ('2xx', '3xx', '4xx', '5xx')
 HTTP_METHODS = frozenset({'GET', 'HEAD', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'})  # others logged as 'other'
 # Mutually exclusive outcomes of a PostgreSQL history read (19 Nov, FR-A3).
 HISTORY_OUTCOMES = ('ok', 'not_found') + HISTORY_REASONS
+ALERT_READ_OUTCOMES = ('ok',) + HISTORY_REASONS  # an alert search always has a page, maybe empty
 MAX_HISTORY_REQUESTS = 4  # well below the 40 worker threads Starlette's thread pool has
+# FR-A6 alert search page sizes (19 Nov, attempt 5); the store allows up to 10,000.
+DEFAULT_ALERT_LIMIT, MAX_ALERT_JSON_LIMIT = 100, 1_000
+DEFAULT_ALERT_CSV_LIMIT, MAX_ALERT_CSV_LIMIT = 1_000, 10_000
 
 
 def route_label(path):
@@ -158,11 +167,13 @@ class Metrics:
         self.ws_unmeasured = 0
         self.ws_slow_closes = 0
         self.history = {outcome: 0 for outcome in HISTORY_OUTCOMES}
+        self.alert_reads = {outcome: 0 for outcome in ALERT_READ_OUTCOMES}
 
-    def count_history(self, outcome):
+    def count_history(self, outcome, kind='history'):
+        counts = self.alert_reads if kind == 'alerts' else self.history
         with self._lock:
-            if outcome in self.history:
-                self.history[outcome] += 1
+            if outcome in counts:
+                counts[outcome] += 1
 
     def observe_ws_delivery(self, sent_at, event_ts):
         """One FR-A4 envelope finished sending on a WebSocket at wall-clock `sent_at`
@@ -203,6 +214,7 @@ class Metrics:
                  '# TYPE ava_api_requests_total counter']
         with self._lock:
             history_reads = dict(self.history)
+            alert_reads = dict(self.alert_reads)
             requests = dict(self.requests)
             analysis = self.analysis.render('ava_analysis_seconds')
             stages = self.stages.render('ava_analysis_stage_seconds', 'stage')
@@ -257,6 +269,11 @@ class Metrics:
                       '# TYPE ava_call_history_reads_total counter']
             lines += [f'ava_call_history_reads_total{{outcome="{outcome}"}} {history_reads[outcome]}'
                       for outcome in HISTORY_OUTCOMES]
+            lines += ['# HELP ava_alert_search_reads_total PostgreSQL alert searches (GET /v1/alerts, FR-A6) by '
+                      'mutually exclusive outcome; they share the history connection.',
+                      '# TYPE ava_alert_search_reads_total counter']
+            lines += [f'ava_alert_search_reads_total{{outcome="{outcome}"}} {alert_reads[outcome]}'
+                      for outcome in ALERT_READ_OUTCOMES]
         if pipeline is not None:
             try:
                 snapshot, age = pipeline.read()
@@ -660,15 +677,18 @@ def create_app(service, *, hub=None, registry=None, dashboard_dir=None, pipeline
             raise HTTPException(404, 'Unknown call')
         return record
 
-    def read_and_encode(read):
+    def encode_json(result):
+        return Response(json.dumps(result, allow_nan=False, separators=(',', ':')), media_type='application/json')
+
+    def read_and_encode(read, encode=encode_json):
         result = read()
         if result is None:
             return None
         # Encoded here, in the worker thread: a long history must not hold the event loop
         # (review M1). Non-finite numbers are already None, so this is strict JSON.
         try:
-            return json.dumps(result, allow_nan=False, separators=(',', ':'))
-        except (TypeError, ValueError) as error:  # e.g. a column type JSON cannot hold
+            return encode(result)
+        except (TypeError, ValueError, KeyError, ArithmeticError, OSError) as error:  # e.g. a column type
             raise HistoryError(f'call history could not be encoded: {type(error).__name__}', reason='error') \
                 from error
 
@@ -676,21 +696,21 @@ def create_app(service, *, hub=None, registry=None, dashboard_dir=None, pipeline
     # rest are refused as busy instead of waiting, so sync probes keep their threads.
     history_slots = asyncio.Semaphore(MAX_HISTORY_REQUESTS)
 
-    async def read_history(read):
-        """Run one history read and its JSON encoding off the event loop; map failures to
-        503 with a fixed reason (never the driver's message) and count every outcome."""
+    async def read_history(read, encode=encode_json, kind='history'):
+        """Run one history read and its encoding off the event loop; map failures to 503
+        with a fixed reason (never the driver's message) and count every outcome."""
         if history is None:
             raise HTTPException(503, 'No call history store is configured')
         try:
             if history_slots.locked():
                 raise HistoryError('too many call history requests', reason='busy')
             async with history_slots:
-                body = await run_in_threadpool(read_and_encode, read)
+                response = await run_in_threadpool(read_and_encode, read, encode)
         except HistoryError as error:
-            metrics.count_history(error.reason)
+            metrics.count_history(error.reason, kind)
             raise HTTPException(503, f'Call history store unavailable ({error.reason})') from None
-        metrics.count_history('ok' if body is not None else 'not_found')
-        return None if body is None else Response(body, media_type='application/json')
+        metrics.count_history('ok' if response is not None else 'not_found', kind)
+        return response
 
     @app.get('/v1/calls/{call_id}/history')
     async def call_history(call_id: str):
@@ -708,6 +728,31 @@ def create_app(service, *, hub=None, registry=None, dashboard_dir=None, pipeline
         if before is not None and not 1 <= before < 2 ** 63:
             raise HTTPException(422, 'before must be a positive session number')
         return await read_history(lambda: history.recent(status, limit, before))
+
+    def encode_alert_csv(page):
+        headers = {'Content-Disposition': 'attachment; filename="ava-alerts.csv"'}
+        if page['next_cursor'] is not None:  # base64url: always a valid header value
+            headers['X-AVA-Next-Cursor'] = page['next_cursor']
+        return Response(alerts_csv(page['alerts']), media_type='text/csv; charset=utf-8', headers=headers)
+
+    @app.get('/v1/alerts')
+    async def alerts(state: str = 'all', since: float | None = None, until: float | None = None,
+                     min_confidence: float | None = None, limit: int | None = None, cursor: str | None = None,
+                     format: str = 'json'):
+        """PRD FR-A6: stored alerts newest first, filtered; `format=csv` exports the page."""
+        if format not in ('json', 'csv'):
+            raise HTTPException(422, "format must be 'json' or 'csv'")
+        if limit is None:
+            limit = DEFAULT_ALERT_CSV_LIMIT if format == 'csv' else DEFAULT_ALERT_LIMIT
+        highest = MAX_ALERT_CSV_LIMIT if format == 'csv' else MAX_ALERT_JSON_LIMIT
+        if not 1 <= limit <= highest:
+            raise HTTPException(422, f'limit must be from 1 to {highest}')
+        try:  # every other check (finite times, order, range, cursor) is the store's own
+            check_alert_filters(state, since, until, min_confidence, cursor)
+        except ValueError as error:
+            raise HTTPException(422, str(error)) from None
+        return await read_history(lambda: history.alerts(state, since, until, min_confidence, limit, cursor),
+                                  encode_alert_csv if format == 'csv' else encode_json, kind='alerts')
 
     def read_wall_clock():
         try:

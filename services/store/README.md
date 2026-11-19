@@ -105,6 +105,26 @@ need a privacy and retention decision).
   open-alert, window and scored-window counts and the highest score; `next_before` is
   the keyset cursor (null on the last page). The counts are computed per page; their
   cost on many long calls is not measured.
+- `alerts(state, since, until, min_confidence, limit, cursor)` (19 Nov, attempt 5; PRD
+  FR-A6): alerts of every stored session, newest raised first (ties by alert ID), each
+  with its `call_id` and `session`. Filters: `state` (`all`, `open`, `cleared`,
+  `ended_open`), raised time `since <= t < until` in Unix seconds (exact to the
+  microsecond), and `min_confidence` (0-1) compared with `peak_ema`: the highest EMA the
+  alert reached, from its raise to its close (or the session's last event while open),
+  over the scored windows of its direction (all directions if it has none) and its EMA
+  at the raise (used only if it is from 0 to 1; that column has no range check). The EMA
+  at the raise alone is at or above the alert threshold, so it barely separates alerts
+  (review, 19 Nov). Uncalibrated, not a probability; an alert with no EMA at all never
+  matches. An open alert's peak is provisional: it can rise while the call runs, so the
+  same filter can match it later. The peak is a correlated query per returned (and, with
+  `min_confidence`, per candidate) row; with only the `raised_at` index a rare filter or
+  a 10,000-row export over long calls can reach the 10 s statement timeout (`timeout`).
+  Cost not measured; a writer-maintained peak column would be the fix if it is slow.
+  The served `raised_ema` is the stored value even when out of range.
+  At most 10,000 per page. `next_cursor` is opaque (base64url of the
+  exact raised time in integer microseconds and the alert ID), so paging neither repeats
+  nor skips tied alerts, and alerts raised after the first page do not shift later
+  pages; pass the same filters with it. A malformed cursor is a ValueError.
 
 `status: active` means the row is open. A row whose `call.ended` was lost and whose call
 is never re-tapped stays open (see "Not done" below), so check `last_event_ts`.
@@ -121,8 +141,8 @@ read in progress, which then closes the connection itself. `start_data`/`end_dat
 not read; a non-finite number (the writer refuses them) would be served as null. Status-only updates were
 never stored (see above), so the window rows are the whole stored timeline; the
 in-memory registry's 10 s downsampling is not applied here. Not done: paging inside one
-long session's windows (the bound and `windows_truncated` stand in), filters by time or
-state (FR-A6/FR-U6, P1).
+long session's windows (the bound and `windows_truncated` stand in), search of calls by
+time or state (FR-U6, P1; alerts have it, above).
 
 ## Pump (`pump.py`, 15 Nov)
 
@@ -153,7 +173,9 @@ used unmodified), typing-extensions, tzdata. Tested on PostgreSQL 16.16
 `sha256:f377d590e5474681d4d7838635031a2b50647923b7abfa803ce9b5ff35d5c663`).
 
 `tests/unit/test_store_history.py` (Claude-authored, 19 Nov 2026) follows the same
-rules for the history reader (its API and CLI cases also need requirements-api.txt).
+rules for the history reader (its API and CLI cases also need requirements-api.txt);
+`tests/unit/test_alert_search.py` (Claude-authored, 19 Nov 2026) for the alert search,
+its cursor and the CSV export.
 
 `tests/unit/test_store_postgres.py` (Claude-authored, 15 Nov 2026): pure migration and
 plan tests always run; database tests need `AVA_TEST_POSTGRES_DSN` pointing at a

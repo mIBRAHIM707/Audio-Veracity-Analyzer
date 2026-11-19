@@ -13,6 +13,11 @@ can answer for any stored call:
   order, or None when nothing is stored.
 - `PostgresCallHistory.recent(status, limit, before)` -> session summaries, newest
   first, with a keyset cursor (`next_before`) for the next page.
+- `PostgresCallHistory.alerts(state, since, until, min_confidence, limit, cursor)` ->
+  PRD FR-A6 alert search (19 Nov, attempt 5): stored alerts of every session, newest
+  raised first, filtered by state, raised-time range and minimum confidence, with an
+  opaque keyset cursor (`next_cursor`). "Confidence" here is `peak_ema`, the highest
+  uncalibrated detector EMA the alert reached (see `PEAK_EMA`), not a probability.
 
 Read only: every query runs in a `READ ONLY, REPEATABLE READ` transaction (one
 consistent snapshot per answer, and no write is possible through this object whatever
@@ -41,7 +46,11 @@ ran too long), `schema` (tables or columns missing: the database is not migrated
 connection is reopened after a failure; `connect` is injected and must return a
 psycopg connection with no transaction open.
 """
+import base64
+import binascii
+from datetime import datetime, timedelta, timezone
 import math
+import re
 import threading
 import time
 
@@ -63,6 +72,25 @@ SESSION_COLUMNS = ('id, call_id, started_at, implicit_start, state, driving_dire
                    'speech_seconds, verdict')
 ALERT_COLUMNS = ('alert_id, direction, status, raised_at, raised_window, raised_ema, closed_at, cleared_window, '
                  'cleared_ema')
+# FR-A6 alert search (19 Nov, attempt 5).
+ALERT_STATES = ('all', 'open', 'cleared', 'ended_open')
+DEFAULT_ALERT_LIMIT, MAX_ALERT_LIMIT = 100, 10_000
+MAX_TS = 32_503_680_000.0  # 3000-01-01 UTC: far beyond any stored row, inside datetime's range
+MAX_CURSOR = 1_024
+EPOCH = datetime(1970, 1, 1, tzinfo=timezone.utc)
+_CURSOR = re.compile(r'(-?[0-9]{1,18}):(.+)', re.DOTALL)
+_BASE64URL = re.compile(r'[A-Za-z0-9_-]+')
+# FR-A6 "confidence" (review M, 19 Nov): the highest EMA the alert reached, i.e. the
+# larger of its EMA at the raise (only if it is a number from 0 to 1: that column has no
+# range check) and the highest EMA of the scored windows of its direction (any direction
+# if it has none) from the raise to its close, or to the session's last event while it
+# is open. The EMA at the raise alone is at or above the alert threshold, so it barely
+# separates alerts. Uncalibrated, not a probability; NULL if there is neither. While the
+# alert is open its peak can still rise (provisional). Computed per returned row.
+PEAK_EMA = ('GREATEST(CASE WHEN a.raised_ema BETWEEN 0 AND 1 THEN a.raised_ema END, '
+            '(SELECT max(w.ema) FROM window_scores w WHERE w.call_pk = a.call_pk AND w.scored '
+            'AND (a.direction IS NULL OR w.direction = a.direction) AND w.scored_at >= a.raised_at '
+            'AND w.scored_at <= COALESCE(a.closed_at, c.last_event_at)))')
 WINDOW_COLUMNS = ('direction, window_idx, scored_at, seq, scored, score, ema, provisional, direction_state, '
                   'call_state, quality, degraded, effective_stride_s, concealed_fraction')
 
@@ -124,6 +152,58 @@ def _window(row):
             'score': _num(score), 'ema': _num(ema), 'provisional': provisional, 'direction_state': direction_state,
             'state': call_state, 'quality': quality, 'degraded': degraded, 'effective_stride_s': _num(stride),
             'concealed_fraction': _num(concealed)}
+
+
+def encode_cursor(raised_at, alert_id):
+    """An opaque, URL- and header-safe position after which the next alert page starts:
+    the exact raised time (integer microseconds, as PostgreSQL stores it) and the alert ID."""
+    micros = (raised_at - EPOCH) // timedelta(microseconds=1)
+    return base64.urlsafe_b64encode(f'{micros}:{alert_id}'.encode()).decode('ascii').rstrip('=')
+
+
+def decode_cursor(cursor):
+    """(raised_at, alert_id) from `encode_cursor`; ValueError for anything else."""
+    if not isinstance(cursor, str) or not 0 < len(cursor) <= MAX_CURSOR or not _BASE64URL.fullmatch(cursor):
+        raise ValueError('cursor is not valid')
+    try:
+        text = base64.urlsafe_b64decode(cursor + '=' * (-len(cursor) % 4)).decode()
+        micros, alert_id = _CURSOR.fullmatch(text).groups()
+        raised_at = EPOCH + timedelta(microseconds=int(micros))
+    except (binascii.Error, UnicodeDecodeError, AttributeError, OverflowError, ValueError):
+        raise ValueError('cursor is not valid') from None
+    if not valid_call_id(alert_id):  # alert IDs follow the same 1-128 characters rule
+        raise ValueError('cursor is not valid')
+    return raised_at, alert_id
+
+
+def _epoch(name, value):
+    """Unix seconds -> aware UTC datetime for a query parameter."""
+    if value is None:
+        return None
+    if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value) \
+            or not 0 <= value <= MAX_TS:
+        raise ValueError(f'{name} must be Unix seconds from 0 to {MAX_TS:.0f}')
+    return EPOCH + timedelta(microseconds=round(value * 1_000_000))
+
+
+def check_alert_filters(state='all', since=None, until=None, min_confidence=None, cursor=None):
+    """Validate FR-A6 alert filters without reading: (since, until, cursor position) as
+    query parameters, or ValueError with a message safe to show a client."""
+    if state not in ALERT_STATES:
+        raise ValueError(f'state must be one of {", ".join(ALERT_STATES)}')
+    start, end = _epoch('since', since), _epoch('until', until)
+    if start is not None and end is not None and start >= end:
+        raise ValueError('since must be earlier than until')
+    if min_confidence is not None and (isinstance(min_confidence, bool)
+                                       or not isinstance(min_confidence, (int, float))
+                                       or not 0 <= min_confidence <= 1):  # NaN fails both comparisons
+        raise ValueError('min_confidence must be from 0 to 1')
+    return start, end, None if cursor is None else decode_cursor(cursor)
+
+
+def _alert_row(row):
+    *alert, call_id, call_pk, peak_ema = row
+    return {**_alert(alert), 'peak_ema': _num(peak_ema), 'call_id': call_id, 'session': call_pk}
 
 
 def _bounded(name, value, low, high):
@@ -203,6 +283,17 @@ class PostgresCallHistory:
         if before is not None:
             _bounded('before', before, 1, 2 ** 63 - 1)
         return self._read(lambda db: self._recent(db, status, limit, before))
+
+    def alerts(self, state='all', since=None, until=None, min_confidence=None, limit=DEFAULT_ALERT_LIMIT,
+               cursor=None):
+        """FR-A6 alert search: stored alerts newest first by raised time (ties by alert ID),
+        each with its call ID and session. Filters: `state` (`ALERT_STATES`), raised time
+        `since <= t < until` (Unix seconds), `min_confidence` (0-1, compared with
+        `peak_ema`, see `PEAK_EMA`; an alert with no EMA at all never matches it).
+        `cursor` is the previous page's `next_cursor`; the same filters must be passed."""
+        start, end, after = check_alert_filters(state, since, until, min_confidence, cursor)
+        _bounded('limit', limit, 1, MAX_ALERT_LIMIT)
+        return self._read(lambda db: self._alerts(db, state, start, end, min_confidence, limit, after))
 
     # -- one read-only snapshot per answer -------------------------------------------
 
@@ -310,3 +401,35 @@ class PostgresCallHistory:
             summaries.append(summary)
         more = len(rows) > limit
         return {'calls': summaries, 'next_before': summaries[-1]['session'] if more else None}
+
+    @staticmethod
+    def _alerts(db, state, start, end, min_confidence, limit, after):
+        where, params = [], []
+        if state != 'all':
+            where.append('a.status = %s')
+            params.append(state)
+        if start is not None:
+            where.append('a.raised_at >= %s')
+            params.append(start)
+        if end is not None:
+            where.append('a.raised_at < %s')
+            params.append(end)
+        if after is not None:
+            where.append('(a.raised_at, a.alert_id) < (%s, %s)')
+            params.extend(after)
+        clause = f'WHERE {" AND ".join(where)} ' if where else ''
+        columns = ', '.join(f'a.{name.strip()}' for name in ALERT_COLUMNS.split(','))
+        query = (f'SELECT {columns}, c.call_id, a.call_pk, {PEAK_EMA} AS peak_ema '
+                 f'FROM alerts a JOIN calls c ON c.id = a.call_pk {clause}')
+        if min_confidence is not None:  # NULL never matches; the peak is computed only for candidates
+            query = f'SELECT * FROM ({query}) s WHERE s.peak_ema >= %s '
+            params.append(float(min_confidence))
+            order = 'ORDER BY s.raised_at DESC, s.alert_id DESC'
+        else:
+            order = 'ORDER BY a.raised_at DESC, a.alert_id DESC'
+        rows = db.execute(f'{query}{order} LIMIT %s', (*params, limit + 1)).fetchall()
+        page = rows[:limit]
+        more = len(rows) > limit
+        # The cursor is taken from the stored datetime (exact), not the float served.
+        return {'alerts': [_alert_row(row) for row in page],
+                'next_cursor': encode_cursor(page[-1][3], page[-1][0]) if more else None}
