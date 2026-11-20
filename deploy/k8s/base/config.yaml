@@ -21,4 +21,7 @@ data:
   # The password is not in the URL: libpq reads PGPASSWORD (from the Secret), so any
   # character works in it (as in the Compose stack).
   AVA_DATABASE_URL: postgresql://ava@postgres:5432/ava
+  # 20 Nov (backlog 5.1): the API reads history as this read-only login, created by the
+  # API pod's `db-reader-role` init container; its password is `db-reader-password`.
+  AVA_HISTORY_DATABASE_URL: postgresql://ava_reader@postgres:5432/ava
   AVA_REDIS_URL: redis://redis:6379/0

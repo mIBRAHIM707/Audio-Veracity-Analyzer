@@ -53,6 +53,7 @@ builds imported into the node).
        files:
          - ari-password=secrets/ari-password   # the PBX's ARI password for user `ava`
          - db-password=secrets/db-password     # any characters; never inside a URL
+         - db-reader-password=secrets/db-reader-password  # 12-1024 printable ASCII
    patches:
      - target: {kind: ConfigMap, name: ava-config}
        patch: |-
@@ -72,6 +73,24 @@ The PBX must send tapped RTP to the live pod's own address (the tap passes
 `$(POD_IP)` to ExternalMedia), so the PBX needs a route to the pod network. On a
 single k3s node with the PBX outside the cluster that is a host route to the node's
 pod CIDR; this is a site decision, not settled here.
+
+## Stored history through a read-only login (20 Nov 2026; backlog 5.1; PRD FR-A3, FR-A6)
+
+The API serves the stored history and alert search (`--database-url-env
+AVA_HISTORY_DATABASE_URL`) as `ava_reader`, never as the owner `ava`. The API pod's
+init container `db-reader-role` runs `python -m services.store reader-role` before the
+API starts, at every pod start. It applies the migrations, then creates or updates the
+role: login only, read-only by default, SELECT on the four history tables and nothing
+else (`services/store/README.md`). It is the only container that gets `db-password`
+besides `live`. The API container gets `db-reader-password`. The NetworkPolicy admits
+`api` to PostgreSQL (5432) for this. Two ways it can fail:
+- a missing `db-reader-password` key stops the pod before the init container runs
+  (`CreateContainerConfigError` in `kubectl -n ava describe pod`; there is no log line);
+- a refusal, for example a password shorter than 12 characters, leaves the pod in
+  `Init:Error` or `Init:CrashLoopBackOff`, with one JSON line in
+  `kubectl -n ava logs deploy/api -c db-reader-role`.
+`live` does not depend on it. `--auth on` would need a login that can write the
+accounts, audit and feedback tables, and is not configured here.
 
 ## Scoring settings: ConfigMap plus reload (20 Nov 2026; PRD FR-A9, FR-I4)
 

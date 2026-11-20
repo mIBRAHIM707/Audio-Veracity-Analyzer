@@ -97,8 +97,9 @@ class ImagePinTests(unittest.TestCase):
         self.assertEqual(options, ALLOWED_OPTIONS)
         # What the API process imports at start-up and at model load (services/api,
         # services/inference/baseline.py, models/smoke/antideepfake.py).
+        # 20 Nov: psycopg (with its bundled libpq) for the history routes and db-setup.
         for package in ('fastapi', 'uvicorn', 'websockets', 'python-multipart', 'redis', 'numpy', 'soxr',
-                        'safetensors', 'psutil'):
+                        'safetensors', 'psutil', 'psycopg', 'psycopg-binary'):
             self.assertIn(package, pins)
 
     def test_the_reader_refuses_what_the_image_rules_forbid(self):

@@ -34,6 +34,9 @@ inside the stack, and checks:
   registry supersedes the old session); see each case's docstring.
 - (20 Nov, PRD FR-A9) an edit of the scoring file in a host folder reaches live through
   the folder bind mount and is applied, refused or reported, with no restart.
+- (20 Nov, backlog 5.1) the API reads stored history as the read-only `ava_reader`
+  created by the one-shot `db-setup`, cannot write or read account tables, and a new
+  reader password rotates on the next `up`; the full-stack call is in the history too.
 The project and its volumes are removed afterwards.
 """
 import base64
@@ -173,6 +176,8 @@ class ComposeStackLabTests(unittest.TestCase):
         # Review M1: a database password with URL-hostile characters must still work.
         self.ari_password, self.db_password = secrets.token_hex(16), f'{secrets.token_hex(8)}/@+=%#x'
         self.grafana_password = secrets.token_hex(16)
+        # 20 Nov: the API's read-only login (db-setup); printable ASCII, URL-hostile too.
+        self.reader_password = f'{secrets.token_hex(10)}/@+=%x'
         # Re-review: a run-specific scrape subnet, so another AVA stack on this host (with
         # the 10.231.250.0/24 default) does not collide with the test's.
         octet = 1 + secrets.randbelow(254)
@@ -180,6 +185,7 @@ class ComposeStackLabTests(unittest.TestCase):
         self.env_file = folder / 'stack.env'
         self.env_file.write_text('\n'.join([
             f'AVA_ARI_PASSWORD={self.ari_password}', f'AVA_DB_PASSWORD={self.db_password}',
+            f'AVA_DB_READER_PASSWORD={self.reader_password}',
             f'AVA_GRAFANA_ADMIN_PASSWORD={self.grafana_password}',
             f'AVA_METRICS_SUBNET=10.232.{octet}.0/24', f'AVA_METRICS_DYNAMIC_RANGE=10.232.{octet}.128/25',
             f'AVA_LIVE_METRICS_IP={self.live_metrics_ip}',
@@ -393,16 +399,25 @@ class ComposeStackLabTests(unittest.TestCase):
         self.assertIn(('call_started', call_id), events)
         self.assertIn(('call_ended', call_id), events)
         starting = next(r for r in records if r.get('event') == 'starting')
-        self.assertEqual((starting['ari_reachable'], starting['redis_reachable'], starting['database_migrations_applied']),
-                         (True, True, [m.version for m in load_migrations()]))
+        self.assertEqual((starting['ari_reachable'], starting['redis_reachable']), (True, True))
+        # 20 Nov: db-setup (for the API's reader role) and live both migrate at start, under
+        # one advisory lock; whichever comes first applies them, and each applies once.
+        [setup] = [json.loads(line) for line in self.compose('logs', '--no-color', '--no-log-prefix',
+                                                             'db-setup').stdout.splitlines() if line.startswith('{')]
+        applied = starting['database_migrations_applied'] + setup['migrated']
+        self.assertEqual(sorted(applied), [m.version for m in load_migrations()], (starting, setup))
         api_logs = self.compose('logs', '--no-color', '--no-log-prefix', 'api').stdout
         api_start = next(json.loads(line) for line in api_logs.splitlines() if '"starting"' in line)
         self.assertEqual((api_start['live_events'], api_start['redis_reachable'], api_start['dashboard']),
                          (True, True, True))
         monitoring = self.check_monitoring(int(windows), len(seen))
         all_logs = self.compose('logs', '--no-color').stdout
-        for secret in (self.ari_password, self.db_password, self.grafana_password):
+        for secret in (self.ari_password, self.db_password, self.grafana_password, self.reader_password):
             self.assertNotIn(secret, all_logs, 'no password in any container log')
+        # 20 Nov: the call is also in the stored history the API reads as `ava_reader`.
+        stored = self.api_get('/v1/history/calls')
+        self.assertEqual(stored['status'], 200, stored)
+        self.assertIn(call_id, [c['call_id'] for c in json.loads(stored['body'])['calls']])
         # The lab PBX's own console logs caller IDs (Asterisk's business); AVA's must not.
         self.assertNotIn(caller, logs + api_logs, 'the caller number is not in the AVA service logs')
         self.assertNotIn('telemetry', logs.lower(), 'no ONNX Runtime telemetry client started (1DS message)')
@@ -499,6 +514,101 @@ class ComposeStackLabTests(unittest.TestCase):
             if isinstance(record, dict):
                 records.append(record)
         return records
+
+    def test_the_api_reads_stored_history_through_the_read_only_login(self):
+        """Backlog 5.1 read-only role through the Compose wiring (Claude-authored, 20 Nov
+        2026; PRD FR-A3, FR-A6, §6.3). `up api` runs the one-shot `db-setup` first (as the
+        owner: migrations, then `ava_reader`), then the API with the reader's login only:
+        - db-setup exits 0 with one `reader_role` record (created, every migration);
+        - a call row written by the owner is served by `/v1/history/calls`,
+          `/v1/calls/{id}/history` and `/v1/alerts`;
+        - inside the api container, its own login is `ava_reader`: it cannot write any
+          history table even after turning read-only off, cannot read `users` or
+          `audit_log`, and the owner password is not in its environment;
+        - a new reader password in the env file plus `up` again rotates it (db-setup
+          reruns with `created: false`) and the API reads with the new one;
+        - no password appears in any log. Live is not started: it does not depend on this."""
+        def up():
+            self.compose('up', '-d', '--wait', '--wait-timeout', '360', 'api', timeout=600)
+            self.wait_healthy('api', 240)
+
+        def setup_records():
+            lines = self.compose('logs', '--no-color', '--no-log-prefix', 'db-setup').stdout.splitlines()
+            return [json.loads(line) for line in lines if line.startswith('{')]
+
+        def psql(sql):
+            return self.compose('exec', '-T', 'postgres', 'psql', '-U', 'ava', '-d', 'ava', '-v', 'ON_ERROR_STOP=1',
+                                '-tAc', sql).stdout.strip()
+
+        up()
+        [record] = setup_records()
+        self.assertEqual({k: record[k] for k in ('event', 'role', 'created', 'schema', 'migrated')},
+                         {'event': 'reader_role', 'role': 'ava_reader', 'created': True, 'schema': 'public',
+                          'migrated': [m.version for m in load_migrations()]}, record)
+        state = self.compose('ps', '-a', '--format', '{{.Service}} {{.State}} {{.ExitCode}}', 'db-setup').stdout
+        self.assertIn('db-setup exited 0', state)
+
+        call_id = f'lab-hist-{secrets.token_hex(4)}'
+        psql('INSERT INTO calls (call_id, started_at, last_event_at, last_seq) '
+             f"VALUES ('{call_id}', now(), now(), 1)")
+        listed = self.api_get('/v1/history/calls')
+        self.assertEqual(listed['status'], 200, listed)
+        self.assertEqual([c['call_id'] for c in json.loads(listed['body'])['calls']], [call_id])
+        detail = self.api_get(f'/v1/calls/{call_id}/history')
+        self.assertEqual(detail['status'], 200, detail)
+        self.assertEqual(json.loads(detail['body'])['sessions'][0]['call_id'], call_id)
+        alerts = self.api_get('/v1/alerts')
+        self.assertEqual((alerts['status'], json.loads(alerts['body'])['alerts']), (200, []), alerts)
+
+        probe = textwrap.dedent(r'''
+            import json, os, psycopg
+            from psycopg import errors
+            out = {}
+            with psycopg.connect(os.environ['AVA_DATABASE_URL'], autocommit=True) as c:
+                out['user'] = c.execute('SELECT current_user').fetchone()[0]
+                out['read_only'] = c.execute('SHOW default_transaction_read_only').fetchone()[0]
+                c.execute('SET default_transaction_read_only = off')
+                for sql in ("DELETE FROM calls", "UPDATE calls SET verdict = 'x'", "DELETE FROM window_scores",
+                            "DELETE FROM alerts", "TRUNCATE calls", "SELECT * FROM users", "SELECT * FROM audit_log",
+                            "CREATE TABLE stolen (x int)", "CREATE TEMP TABLE stolen_temp (x int)",
+                            "SELECT lo_create(0)"):
+                    try:
+                        c.execute(sql)
+                        out[sql] = 'allowed'
+                    except errors.InsufficientPrivilege:
+                        out[sql] = 'denied'
+            print(json.dumps(out))
+        ''')
+        result = json.loads(self.compose('exec', '-T', 'api', 'python', '-c', probe).stdout)
+        self.assertEqual((result.pop('user'), result.pop('read_only')), ('ava_reader', 'on'))
+        self.assertEqual(set(result.values()), {'denied'}, result)
+        environment = self.compose('exec', '-T', 'api', 'env').stdout
+        self.assertNotIn(self.db_password, environment, 'the API container never has the owner password')
+        self.assertIn(call_id, psql(f"SELECT call_id FROM calls WHERE call_id = '{call_id}'"), 'nothing deleted')
+
+        # Rotation: a new reader password, `up` again.
+        old_password = self.reader_password
+        self.reader_password = f'{secrets.token_hex(10)}+rotated'
+        text = self.env_file.read_text(encoding='utf-8').replace(f'AVA_DB_READER_PASSWORD={old_password}',
+                                                                 f'AVA_DB_READER_PASSWORD={self.reader_password}')
+        self.env_file.write_text(text, encoding='utf-8')
+        up()
+        records = setup_records()
+        self.assertEqual([r.get('created') for r in records][-1], False, records)
+        again = self.api_get('/v1/history/calls')
+        self.assertEqual(again['status'], 200, again)
+        self.assertEqual([c['call_id'] for c in json.loads(again['body'])['calls']], [call_id])
+        old_login = self.compose('exec', '-T', '-e', f'PGPASSWORD={old_password}', 'api', 'python', '-c',
+                                 'import os, psycopg; psycopg.connect(os.environ["AVA_DATABASE_URL"]).close()',
+                                 check=False)
+        self.assertNotEqual(old_login.returncode, 0, 'the old reader password no longer logs in')
+        self.assertIn('password authentication failed', old_login.stderr)
+
+        logs = self.compose('logs', '--no-color').stdout
+        for secret in (self.db_password, old_password, self.reader_password):
+            self.assertNotIn(secret, logs, 'no password in any container log')
+        print(f'\nobserved: db-setup records {[(r["event"], r["created"]) for r in records]}; history served '
+              f'through ava_reader; writes and account tables denied; rotation applied')
 
     def test_a_scoring_config_edit_on_the_host_reaches_live_without_a_restart(self):
         """FR-A9 config file plus reload through the Compose wiring (Claude-authored, 20 Nov

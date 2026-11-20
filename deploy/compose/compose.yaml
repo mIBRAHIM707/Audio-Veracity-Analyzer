@@ -132,17 +132,53 @@ services:
     # a restarting container with one `refused` JSON line per attempt in its log.
     restart: unless-stopped
 
+  db-setup:
+    # 20 Nov (backlog 5.1; PRD FR-A3, §6.3): a one-shot job, run at every `up`, that
+    # applies the migrations as the owner and then creates or updates `ava_reader`, the
+    # login the API reads history with: SELECT on the four history tables only, nothing
+    # else (services/store/roles.py). Safe to rerun; a changed reader password rotates.
+    # The owner password stays here and in `live`; the API never receives it.
+    image: ava-api:dev
+    pull_policy: never
+    depends_on:
+      postgres: {condition: service_healthy}
+    environment:
+      AVA_DATABASE_URL: postgresql://ava@postgres:5432/ava
+      PGPASSWORD: ${AVA_DB_PASSWORD:?set AVA_DB_PASSWORD in the env file}
+      AVA_DB_READER_PASSWORD: ${AVA_DB_READER_PASSWORD:?set AVA_DB_READER_PASSWORD in the env file}
+    entrypoint: ["python", "-m", "services.store"]
+    command:
+      - --database-url-env
+      - AVA_DATABASE_URL
+      - reader-role
+      - --role
+      - ava_reader
+      - --password-env
+      - AVA_DB_READER_PASSWORD
+    networks: [backend]
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    pids_limit: 64
+    restart: "no"
+
   api:
     # The analysis API and the dashboard (architecture §2.5, §2.6): file analysis with
-    # the AntiDeepfake baseline, and /v1/calls + WS /v1/events relayed from Redis.
+    # the AntiDeepfake baseline, /v1/calls + WS /v1/events relayed from Redis, and (20
+    # Nov) the stored history and alert search from PostgreSQL as `ava_reader`.
     # It has NO authentication, so it is published nowhere: only containers on the
     # internal network reach it (see README "Reaching the dashboard").
     image: ava-api:dev
     pull_policy: never
     depends_on:
       redis: {condition: service_healthy}
+      postgres: {condition: service_healthy}
+      db-setup: {condition: service_completed_successfully}
     environment:
       AVA_REDIS_URL: redis://redis:6379/0
+      # The read-only login (db-setup above), never the owner; libpq reads PGPASSWORD.
+      AVA_DATABASE_URL: postgresql://ava_reader@postgres:5432/ava
+      PGPASSWORD: ${AVA_DB_READER_PASSWORD:?set AVA_DB_READER_PASSWORD in the env file}
     command:
       - --model-root
       - /models/antideepfake
@@ -157,6 +193,8 @@ services:
       - /app/dashboard
       - --redis-url-env
       - AVA_REDIS_URL
+      - --database-url-env
+      - AVA_DATABASE_URL
     volumes:
       - ${AVA_MODEL_ROOT:?set AVA_MODEL_ROOT (the AntiDeepfake checkpoint folder)}:/models/antideepfake:ro
     networks: [backend, metrics]  # metrics: scraped by Prometheus (profile `monitoring`)

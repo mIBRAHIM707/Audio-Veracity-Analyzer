@@ -11,7 +11,8 @@ local, CPU-only LAB stack:
 | `redis` | `redis:7-alpine@sha256:7f7d30b7…`, AOF on | live event fan-out to the API |
 | `live` | `ava-live:dev`, built from `deploy/live/Dockerfile` | the tap + scorer (`python -m services.live`) |
 | `asterisk` (profile `lab`) | `ava-lab-asterisk:dev`, built from `lab/asterisk` | the lab PBX |
-| `api` | `ava-api:dev`, built from `deploy/api/Dockerfile` | the analysis API and dashboard (`python -m services.api`): file analysis with the AntiDeepfake baseline, `/v1/calls` and `WS /v1/events` relayed from Redis |
+| `db-setup` | `ava-api:dev` (`python -m services.store`) | one-shot at every `up`: migrations, then the read-only `ava_reader` login (20 Nov) |
+| `api` | `ava-api:dev`, built from `deploy/api/Dockerfile` | the analysis API and dashboard (`python -m services.api`): file analysis with the AntiDeepfake baseline, `/v1/calls` and `WS /v1/events` relayed from Redis, stored history and alert search read from PostgreSQL as `ava_reader` |
 | `prometheus` (profile `monitoring`) | `prom/prometheus:v3.16.0@sha256:e0498764…` | scrapes `live` and `api` every 15 s (FR-O6) |
 | `grafana` (profile `monitoring`) | `grafana/grafana-oss:13.0.2@sha256:5dad0df1…` | the provisioned "AVA overview (lab)" dashboard (FR-O6) |
 
@@ -19,7 +20,8 @@ The `api` image (17 Nov, attempt 2) is built in two stages:
 - `node:22-bookworm-slim@sha256:e9f565d3…` builds the dashboard from the committed
   lockfile (`npm ci --ignore-scripts`, then `tsc` and `vite build`);
 - the runtime is the same `python:3.11-slim` digest as `live`, with
-  `deploy/api/requirements-api-image.txt`. That is 32 packages, including
+  `deploy/api/requirements-api-image.txt`. That is 35 packages (32 until psycopg joined
+  on 20 Nov), including
   `torch==2.8.0+cpu` from the PyTorch CPU index, so there are no CUDA wheels.
 The image is 1.44 GB on disk (305 MB compressed) and took about 6 minutes to build here
 on a slow link. The checkpoint (`AVA_MODEL_ROOT`) is mounted read-only. `/readyz`
@@ -61,6 +63,37 @@ URL so any character works) and the Redis URL only as environment variables, and
 never prints them. Anyone with Docker access can read them (`docker compose config`,
 `docker inspect`). Check the host first with
 `python -m lab.preflight` (`lab/asterisk/README.md`).
+
+## Stored history through a read-only login (20 Nov 2026; backlog 5.1; PRD FR-A3, FR-A6)
+
+`api` serves `GET /v1/history/calls`, `GET /v1/calls/{id}/history` and `GET /v1/alerts`
+(with CSV export) from PostgreSQL. It logs in as `ava_reader`, never as the owner `ava`.
+The one-shot `db-setup` service runs before it at every `up`
+(`python -m services.store reader-role`, `services/store/README.md`):
+- it applies the migrations as the owner (live does the same; an advisory lock keeps
+  them from interleaving);
+- it creates `ava_reader`, or updates it if it exists: login, no other attributes,
+  `default_transaction_read_only = on`, at most 8 connections;
+- it grants SELECT on `calls`, `window_scores`, `alerts` and `schema_migrations` only, and
+  revokes any other table or sequence privilege in the schema;
+- it takes TEMP and large-object creation from `PUBLIC` in the `ava` database. That
+  covers every non-superuser login there; the owner `ava` is a superuser.
+
+So the accounts, sessions, audit and feedback tables are out of the API's reach, and so
+are writes to the database. Two exceptions remain:
+- the login can still connect to the cluster's other databases, which pg_hba.conf would
+  restrict;
+- it reads whole `calls` rows, including the start and end data the routes never serve.
+
+The reader password (`AVA_DB_READER_PASSWORD`) is set as a SCRAM verifier computed in
+the job, so the plain text never reaches a server log. Changing it in the env file and
+running `up` again rotates it. `api` starts only after `db-setup` exits 0; a
+refusal (for example, a reader password shorter than 12 characters) is one JSON line in
+`docker compose logs db-setup`. Live does not depend on it.
+
+Not covered: `--auth on` (FR-U7 accounts, feedback and the audit log) needs a login
+that can write those tables. It stays off in this stack, which is also why the API is
+published nowhere.
 
 ## Scoring settings: file plus reload (20 Nov 2026; PRD FR-A9, FR-I4)
 

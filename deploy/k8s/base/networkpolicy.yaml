@@ -2,7 +2,7 @@
 # namespace is denied in both directions, then each needed flow is allowed by name:
 #   all pods  -> cluster DNS (kube-system/kube-dns, 53)
 #   live      -> postgres:5432, redis:6379, the PBX's ARI (TCP 8088)
-#   api       -> redis:6379
+#   api       -> redis:6379, postgres:5432 (20 Nov: history as the read-only `ava_reader`)
 #   PBX       -> live (UDP 32768-60999: tapped RTP on ephemeral ports)
 #   api-client pods in this namespace -> api:8000 (none by default)
 # Kubelet probes come from the node itself, which k3s's policy controller admits.
@@ -46,6 +46,7 @@ spec:
   ingress:
     - from:
         - podSelector: {matchLabels: {app.kubernetes.io/name: live}}
+        - podSelector: {matchLabels: {app.kubernetes.io/name: api}}
       ports:
         - {protocol: TCP, port: 5432}
 ---
@@ -116,6 +117,10 @@ spec:
         - podSelector: {matchLabels: {app.kubernetes.io/name: redis}}
       ports:
         - {protocol: TCP, port: 6379}
+    - to:
+        - podSelector: {matchLabels: {app.kubernetes.io/name: postgres}}
+      ports:
+        - {protocol: TCP, port: 5432}
   ingress:
     - from:
         - podSelector: {matchLabels: {ava.giki/api-client: "true"}}

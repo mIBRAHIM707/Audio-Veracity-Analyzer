@@ -37,7 +37,8 @@ spec:
         runAsGroup: 10001
         seccompProfile: {type: RuntimeDefault}
       initContainers:
-        # The relay starts against Redis; wait for it (at most 5 minutes; see live.yaml).
+        # The relay starts against Redis and the history routes read PostgreSQL; wait for
+        # both (at most 5 minutes; see live.yaml).
         - name: wait-for-storage
           image: ava-api:dev
           imagePullPolicy: Never
@@ -57,10 +58,41 @@ spec:
                           if time.monotonic() > deadline:
                               sys.exit(f'{target} unreachable: {type(error).__name__}')
                           time.sleep(1)
-          args: [redis:6379]
+          args: [redis:6379, postgres:5432]
           resources:
             requests: {cpu: 10m, memory: 32Mi}
             limits: {cpu: 100m, memory: 64Mi}
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: {drop: [ALL]}
+        # 20 Nov (backlog 5.1; PRD FR-A3, §6.3): migrations, then the read-only login
+        # `ava_reader` (SELECT on the four history tables only; services/store/roles.py).
+        # Idempotent, so it runs at every pod start; a changed `db-reader-password`
+        # rotates it. Only this init container gets the owner password: it has exited
+        # before the API container starts, and the API container gets the reader's.
+        - name: db-reader-role
+          image: ava-api:dev
+          imagePullPolicy: Never
+          command: [python, -m, services.store]
+          args:
+            - --database-url-env
+            - AVA_DATABASE_URL
+            - reader-role
+            - --role
+            - ava_reader
+            - --password-env
+            - AVA_DB_READER_PASSWORD
+          envFrom:
+            - configMapRef: {name: ava-config}
+          env:
+            - name: PGPASSWORD
+              valueFrom: {secretKeyRef: {name: ava-secrets, key: db-password}}
+            - name: AVA_DB_READER_PASSWORD
+              valueFrom: {secretKeyRef: {name: ava-secrets, key: db-reader-password}}
+          resources:
+            requests: {cpu: 50m, memory: 64Mi}
+            limits: {cpu: 500m, memory: 128Mi}
           securityContext:
             allowPrivilegeEscalation: false
             readOnlyRootFilesystem: true
@@ -71,6 +103,9 @@ spec:
           imagePullPolicy: Never
           envFrom:
             - configMapRef: {name: ava-config}
+          env:
+            - name: PGPASSWORD  # the reader's, never the owner's
+              valueFrom: {secretKeyRef: {name: ava-secrets, key: db-reader-password}}
           args:
             - --model-root
             - /models/antideepfake
@@ -85,6 +120,8 @@ spec:
             - /app/dashboard
             - --redis-url-env
             - AVA_REDIS_URL
+            - --database-url-env
+            - AVA_HISTORY_DATABASE_URL
           ports:
             - {name: http, containerPort: 8000, protocol: TCP}
           # /readyz verifies the checkpoint's hashes, loads it and runs one warm-up

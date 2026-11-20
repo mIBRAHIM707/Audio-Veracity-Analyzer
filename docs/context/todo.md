@@ -99,6 +99,11 @@ used, as Asterisk reports it to the tap (FR-U5); older sessions say "not detecte
 settings file (the §7.3 defaults) and reread it every 10 s (FR-A9): a host folder in
 Compose, the `ava-scoring` ConfigMap on k3s. Editing it changes new calls without a
 restart.
+20 Nov (attempt 4): no data change. In Compose and k3s the API now shows stored call
+history and alert search, reading PostgreSQL as `ava_reader`, a login that can only
+read the four history tables. Operators set a new password, `AVA_DB_READER_PASSWORD` or
+the Secret key `db-reader-password`. Human: decide whether `--auth on` gets its own
+writer login in the deployments.
 
 Human decisions:
 - Should reloads be written to the audit log?

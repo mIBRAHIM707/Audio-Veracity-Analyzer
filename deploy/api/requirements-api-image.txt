@@ -8,6 +8,8 @@
 -r requirements-api.txt
 -r requirements-model.txt
 -r requirements-redis.txt
+# 20 Nov: psycopg for the history routes and the db-setup job (python -m services.store).
+-r requirements-store.txt
 # fastapi / starlette / pydantic
 starlette==0.41.3
 pydantic==2.14.3

@@ -25,8 +25,12 @@ generates the Secrets from files. Then:
   internet while a pod without the policy can (control); live and api cannot query a
   public DNS resolver directly (cluster DNS still forwards names: README "Egress");
   the PBX namespace cannot reach postgres, redis or the api although it resolves
-  them; inside the namespace only the allowed flows work (api -> redis yes, api ->
-  postgres no, live -> api no); each "blocked" has a positive control (review L2);
+  them; inside the namespace only the allowed flows work (api -> redis yes, live -> api
+  no; api -> postgres yes since 20 Nov, for history); each "blocked" has a positive
+  control (review L2);
+- (20 Nov, backlog 5.1) the API serves the stored call from `/v1/history/calls` as the
+  read-only `ava_reader` set up by its `db-reader-role` init container; that login
+  cannot delete from `calls` or read `users`;
 - (20 Nov, PRD FR-A9) a patch of the `ava-scoring` ConfigMap reaches the running live
   pod through the kubelet's update of the mounted folder and is applied (one
   `config_reloaded`, `ava_live_config_version` + 1), with no restart;
@@ -52,6 +56,24 @@ from lab.asterisk import rtp_pcap
 from models.export import model_card as mc
 from tests.lab.test_compose_stack_lab import EGRESS_PROBE, HTTP_GET, MODEL_ROOT
 from tests.lab.test_live_service_lab import ONNX, QA_CONFIG, VAD_MODEL
+
+# Run inside the api pod (20 Nov, backlog 5.1): its own database login, a write after
+# turning read-only off, and a read of the accounts table; prints JSON.
+READER_PROBE = textwrap.dedent(r'''
+    import json, os, psycopg
+    from psycopg import errors
+    out = {}
+    with psycopg.connect(os.environ['AVA_HISTORY_DATABASE_URL'], autocommit=True) as c:
+        out['user'] = c.execute('SELECT current_user').fetchone()[0]
+        c.execute('SET default_transaction_read_only = off')
+        for key, sql in (('delete', 'DELETE FROM calls'), ('users', 'SELECT * FROM users')):
+            try:
+                c.execute(sql)
+                out[key] = 'allowed'
+            except errors.InsufficientPrivilege:
+                out[key] = 'denied'
+    print(json.dumps(out))
+''')
 
 LAB = unittest.skipIf(os.environ.get('AVA_TEST_K3S_LAB') != '1', 'set AVA_TEST_K3S_LAB=1')
 ROOT = Path(__file__).resolve().parents[2]
@@ -142,6 +164,8 @@ class K3sStackLabTests(unittest.TestCase):
         (site / 'secrets').mkdir(parents=True)
         (site / 'secrets' / 'ari-password').write_text(self.ari_password, encoding='ascii')
         (site / 'secrets' / 'db-password').write_text(self.db_password, encoding='ascii')
+        self.reader_password = f'{secrets.token_hex(10)}/@+=%x'  # 20 Nov: the API's read-only login
+        (site / 'secrets' / 'db-reader-password').write_text(self.reader_password, encoding='ascii')
         (site / 'kustomization.yaml').write_text(textwrap.dedent(f'''\
             apiVersion: kustomize.config.k8s.io/v1beta1
             kind: Kustomization
@@ -155,6 +179,7 @@ class K3sStackLabTests(unittest.TestCase):
                 files:
                   - ari-password=secrets/ari-password
                   - db-password=secrets/db-password
+                  - db-reader-password=secrets/db-reader-password
               - name: ava-lab-ari
                 namespace: ava-lab-pbx
                 files:
@@ -284,6 +309,17 @@ class K3sStackLabTests(unittest.TestCase):
             time.sleep(1)
         self.assertEqual(record.get('status'), 'ended', f'the API registry ends the call (via Redis): {record}')
 
+        # 20 Nov (backlog 5.1): the API serves the stored call from PostgreSQL as the
+        # read-only `ava_reader` its init container set up; that login cannot write.
+        stored = self.api_get('/v1/history/calls')
+        self.assertEqual(stored['status'], 200, stored)
+        self.assertIn(call_id, [c['call_id'] for c in json.loads(stored['body'])['calls']])
+        setup_log = self.kubectl('-n', 'ava', 'logs', 'deploy/api', '-c', 'db-reader-role', check=False).stdout
+        [setup] = [json.loads(line) for line in setup_log.splitlines() if line.startswith('{')]
+        self.assertEqual((setup['event'], setup['role'], setup['schema']), ('reader_role', 'ava_reader', 'public'))
+        login = self.in_pod('ava', 'deploy/api', 'python', '-c', READER_PROBE).stdout
+        self.assertEqual(json.loads(login), {'user': 'ava_reader', 'delete': 'denied', 'users': 'denied'}, login)
+
         # FR-O3: no AVA pod reaches the internet; the control pod (no policy) does.
         control = self.in_pod('ava-lab-pbx', 'deploy/asterisk', 'bash', '-c', BASH_CONNECT, '1.1.1.1', '443',
                               check=False).stdout.strip()
@@ -322,7 +358,8 @@ class K3sStackLabTests(unittest.TestCase):
         # Inside the namespace only the named flows work.
         flows = {}
         for workload, host, port, expected in (('deploy/api', 'redis', '6379', 'open'),
-                                               ('deploy/api', 'postgres', '5432', 'blocked'),
+                                               ('deploy/api', 'postgres', '5432', 'open'),  # 20 Nov: history
+                                               ('deploy/live', 'postgres', '5432', 'open'),
                                                ('deploy/live', 'api', '8000', 'blocked'),
                                                ('deploy/live', 'redis', '6379', 'open')):
             result = self.in_pod('ava', workload, 'python', '-c', PY_CONNECT, host, port, check=False).stdout.strip()
@@ -385,7 +422,8 @@ class K3sStackLabTests(unittest.TestCase):
                                  'statefulset/redis': '999'})
         logs = ''.join(self.kubectl('-n', 'ava', 'logs', w, check=False).stdout
                        for w in ('deploy/live', 'deploy/api', 'statefulset/postgres', 'statefulset/redis'))
-        for secret in (self.ari_password, self.db_password):
+        logs += self.kubectl('-n', 'ava', 'logs', 'deploy/api', '-c', 'db-reader-role', check=False).stdout
+        for secret in (self.ari_password, self.db_password, self.reader_password):
             self.assertNotIn(secret, logs, 'no password in any AVA pod log')
         self.assertNotIn(caller, logs, 'the caller number is not in the AVA logs')
         kubectl_version = self.kubectl('version', '-o', 'json', check=False).stdout

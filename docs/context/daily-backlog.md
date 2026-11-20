@@ -220,6 +220,15 @@ items needing that data are listed at the end and stay out of the queue.
   `GET /v1/history/calls` (keyset paging), `--database-url-env`, history metric;
   Claude-authored tests (PostgreSQL 16); review conditional pass, M1-M2 and lows fixed.
   Remaining: Compose/k3s wiring with a read-only role, dashboard use, durable job table.
+  20 Nov (attempt 4): Compose/k3s wiring with a read-only role. `services/store/roles.py`
+  and `python -m services.store reader-role` (migrate, then `ava_reader`: SELECT on the
+  four history tables only, read-only default, settings and stray rights removed, PUBLIC
+  TEMP/large-object creation revoked with an outcome check, SCRAM verifier, unsafe roles
+  refused); Compose one-shot `db-setup` + API as `ava_reader`; k3s `db-reader-role` init
+  container, `db-reader-password`, api->postgres policy; API image + psycopg.
+  Claude-authored unit (PostgreSQL 16, SCRAM), static, Compose and k3s lab cases; review
+  and re-review findings fixed. (Dashboard use was done 19 Nov, attempt 6.) Remaining:
+  durable job table (5.2 scope decision), scorer resume (topology decision).
 - [ ] 5.2 Jobs/cancellation/idempotency, calls/alerts API and WebSocket events.
   Progress (10 Nov): `services/scorer/ordered.py` per-call serialized boundary
   (phase-4 QA M1/L3): monotonic per-direction `window_idx`, duplicate/stale results

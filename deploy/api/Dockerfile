@@ -33,7 +33,8 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     PIP_DISABLE_PIP_VERSION_CHECK=1 \
     ORT_DISABLE_TELEMETRY=1
 
-# --no-deps: exactly the pinned set in requirements-api-image.txt (32 packages), so a
+# --no-deps: exactly the pinned set in requirements-api-image.txt (35 packages since psycopg
+# joined on 20 Nov), so a
 # build never pulls an unpinned dependency; --only-binary: no source builds.
 COPY requirements-*.txt deploy/api/requirements-api-image.txt /tmp/requirements/
 RUN pip install --no-cache-dir --no-deps --only-binary=:all: -r /tmp/requirements/requirements-api-image.txt \

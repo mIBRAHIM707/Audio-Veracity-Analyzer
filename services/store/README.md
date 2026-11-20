@@ -167,6 +167,76 @@ in-memory registry's 10 s downsampling is not applied here. Not done: paging ins
 long session's windows (the bound and `windows_truncated` stand in), search of calls by
 time or state (FR-U6, P1; alerts have it, above).
 
+## Read-only history login (`roles.py`, `__main__.py`, 20 Nov; backlog 5.1)
+
+In a deployment the API reads history as its own PostgreSQL login, not as the owner the
+live service writes with. One command sets it up and is safe to run at every start
+(the Compose `db-setup` job and the k3s API init container run it):
+
+```text
+python -m services.store --database-url-env AVA_DATABASE_URL reader-role --role ava_reader --password-env AVA_DB_READER_PASSWORD
+```
+
+It connects with the owner URL (libpq reads the owner password from `PGPASSWORD`) and
+applies the pending migrations. Then `ensure_history_reader` does the rest in one
+transaction, under an advisory lock (two concurrent runs create the role once):
+- it creates the role, or updates it if it exists, as LOGIN, NOSUPERUSER, NOCREATEDB,
+  NOCREATEROLE, NOINHERIT, NOREPLICATION, NOBYPASSRLS, with a connection limit (default
+  8). It resets the role's earlier settings, role-wide and for this database, and sets
+  `default_transaction_read_only = on`;
+- it revokes every privilege granted to the role on the database;
+- in the current schema it revokes every table and sequence privilege and CREATE, and
+  grants USAGE plus SELECT on `calls`, `window_scores`, `alerts` and
+  `schema_migrations`, the tables `history.py` reads;
+- in the current database it takes TEMP and the large-object creation functions
+  (`lo_creat`, `lo_create`, `lo_from_bytea`) from `PUBLIC` (review M1, 20 Nov). Without
+  this, any login could still fill the disk with temporary tables or large objects.
+  This applies to every non-superuser role in the database. The AVA owner is a
+  superuser and is not affected. A REVOKE by a non-owner is only a warning in
+  PostgreSQL, so the job checks the outcome (`has_database_privilege`,
+  `has_function_privilege`) and refuses if the reader could still do either.
+
+The role therefore cannot read `users`, `auth_sessions`, `audit_log` or
+`alert_feedback`, and cannot write to the database. The read-only default is a
+convenience the session could turn off; the privileges are the boundary. The password
+goes to the server as a SCRAM-SHA-256 verifier computed in Python (RFC 5802/7677), so
+the plain text never reaches a log. The verifier itself is logged with
+`log_statement=ddl`; treat it like a password hash. The password must be 12-1024
+printable ASCII characters, because SASLprep is not applied. A new password rotates it,
+and every run writes a fresh salt.
+
+It refuses, changing nothing:
+- a role name that is not a plain lowercase identifier, or starts with `pg_`;
+- a password outside the rule (both rules are checked before connecting);
+- the connected user itself;
+- an existing superuser or replication role;
+- a member of any other role (for example `pg_read_all_data`);
+- a role that owns database objects, large objects included;
+- an existing role holding rights the revocations above do not reach: on other schemas
+  or their tables, on columns or functions, default privileges, large objects, or
+  other databases. Revoke them, or choose a new role name;
+- a schema without the four tables;
+- a connected user without the rights to do all this (CREATEROLE, plus a superuser for
+  the `PUBLIC` revocations).
+
+One JSON record goes to stdout (`reader_role`, with `migrated`, `created` and
+`tables`). A refusal exits 2. A failure exits 1: an unreachable database, or a lock wait
+over 60 s or a statement over 120 s (for example behind a stalled migration). Each
+gives one JSON record on stderr. The URL and the passwords are never printed.
+
+Not covered:
+- CONNECT on the cluster's other databases (`postgres`, `template1`), which `PUBLIC`
+  has by default; restrict it in `pg_hba.conf`;
+- the advisory-lock functions, which `PUBLIC` may execute. A compromised reader could
+  hold the migration lock and delay a later start's migration. This job gives up after
+  60 s, and calls are never affected;
+- review L4: the role reads whole `calls` rows, including `start_data` and `end_data`,
+  which the history routes never serve (only `start_data.codec`). A compromised API
+  could read them; column grants or a view would close this;
+- a login for `--auth on`, which writes accounts, sessions, audit rows and feedback.
+  With this role, such writes would fail with "permission denied" at request time
+  (503), not at start-up.
+
 ## Pump (`pump.py`, 15 Nov)
 
 `StorePump(subscription, store).pump()` moves an unfiltered hub subscription into the
@@ -199,6 +269,21 @@ used unmodified), typing-extensions, tzdata. Tested on PostgreSQL 16.16
 rules for the history reader (its API and CLI cases also need requirements-api.txt);
 `tests/unit/test_alert_search.py` (Claude-authored, 19 Nov 2026) for the alert search,
 its cursor and the CSV export.
+
+`tests/unit/test_store_roles.py` (Claude-authored, 20 Nov 2026) for the reader login:
+- the SCRAM verifier against the RFC 7677 worked example;
+- logging in as the role, and every write and account-table read refused even after
+  the session turns read-only off;
+- temporary tables and large objects refused (review M1; a mutant without the `PUBLIC`
+  revocations fails four cases);
+- rotation, removal of hand-added grants and settings, the refusals (including rights
+  elsewhere, a large-object owner and an owner without CREATEROLE), and two concurrent
+  runs;
+- the real history reader through the role, and the command line.
+The password checks need a server with password authentication. Under `trust` they
+fail with `AVA_REQUIRE_POSTGRES=1`, and skip otherwise. Run a container with
+`-e POSTGRES_PASSWORD=<local value> -e POSTGRES_HOST_AUTH_METHOD=scram-sha-256` and put
+that password in the gitignored DSN.
 
 `tests/unit/test_store_postgres.py` (Claude-authored, 15 Nov 2026): pure migration and
 plan tests always run; database tests need `AVA_TEST_POSTGRES_DSN` pointing at a

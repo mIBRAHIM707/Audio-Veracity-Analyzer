@@ -327,6 +327,35 @@ and about 50,000 original clips, excluding codec copies.
     - Review: conditional pass. M1/M2 (k3s lab bugs) and L1-L4 docs fixed.
   - **Limits:** a missing file at start-up refuses start (as before for an invalid
     one); the k3s file update waits for the kubelet (often 60-90 s).
+- **20 Nov (attempt 4), 5.1 Compose/k3s wiring of history with a read-only role.**
+  - **What:** the API now serves the stored history and alert search in both
+    deployments, logged in as `ava_reader`, never as the owner.
+    `python -m services.store reader-role` (`services/store/roles.py`) migrates, then
+    creates or updates the role. It gets SELECT on `calls`, `window_scores`, `alerts`
+    and `schema_migrations` only, a read-only default, earlier settings and rights
+    removed, and a client-side SCRAM verifier. In the database, PUBLIC loses TEMP and
+    large-object creation, and the outcome is checked.
+    - It refuses unsafe existing roles (superuser, member, owner, rights elsewhere) and
+      an owner that cannot do all this.
+    - Compose runs it as a one-shot `db-setup`, which `api` waits for. k3s runs it as
+      the API pod's `db-reader-role` init container, with Secret key
+      `db-reader-password` and api to postgres 5432 in the NetworkPolicy. The API image
+      gains psycopg (35 packages). Live depends on none of it.
+  - **Evidence:**
+    - Claude-authored `test_store_roles.py`: 21 cases on PostgreSQL 16 with SCRAM,
+      including the RFC 7677 verifier example. Mutants were caught: no lock, no table
+      revoke, no PUBLIC revoke, no outcome check.
+    - Static Compose and k8s checks.
+    - Compose lab: a new history case (writes, account tables, temp tables and large
+      objects denied; rotation), and the full stack with the call in history.
+    - k3s lab: OK in 283 s, history served in-cluster.
+    - Unit suite: 1449 OK (227 skipped), before the review fixes.
+  - **Review:** M1 and M2 and L1-L6 were fixed. The re-review raised a Medium (a
+    non-superuser revoke is only a warning); it was fixed with an outcome check and a
+    test. That last fix was not re-reviewed.
+  - **Limits:** CONNECT on other databases (use pg_hba), whole `calls` rows readable
+    (including start/end data), advisory-lock delay, and `--auth on` still needs a
+    writer login.
 - **17 Nov daily run (details in `daily-runs/2026-11-17.md`).** FR-O6 per-stage latency
   for the live loop (7.2/8.1): `ava_live_stage_seconds{stage}` with `queue_wait`,
   `batch_wait`, `apply` (scorer and hub publish) and `window_to_result` (offer to

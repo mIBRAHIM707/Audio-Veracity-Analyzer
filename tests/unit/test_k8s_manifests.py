@@ -161,12 +161,16 @@ class BaseManifestTests(unittest.TestCase):
         load), so a stop would wait out the grace period; the pod's pause process takes
         PID 1 instead (Compose uses `init: true`). Review L3: the services wait for their
         storage in an init container instead of crash-looping until it is up."""
-        for name, needs in (('live', {'postgres:5432', 'redis:6379'}), ('api', {'redis:6379'})):
+        for name, needs in (('live', {'postgres:5432', 'redis:6379'}), ('api', {'redis:6379', 'postgres:5432'})):
             spec = self.by_kind['Deployment'][name]['spec']['template']['spec']
             self.assertIs(spec.get('shareProcessNamespace'), True, name)
-            [wait] = spec['initContainers']
-            self.assertEqual(wait['image'], spec['containers'][0]['image'], f'{name}: no extra image')
+            wait = spec['initContainers'][0]  # first: later init containers need the storage
+            self.assertEqual(wait['name'], 'wait-for-storage', name)
+            for init in spec['initContainers']:
+                self.assertEqual(init['image'], spec['containers'][0]['image'], f'{name}: no extra image')
             self.assertEqual(set(wait['args']), needs, name)
+        self.assertEqual([c['name'] for c in self.by_kind['Deployment']['live']['spec']['template']['spec']
+                          ['initContainers']], ['wait-for-storage'], 'live never waits on the API\'s reader role')
 
     def test_every_variable_reference_resolves(self):
         """Kubernetes leaves an unknown `$(NAME)` in args as literal text: a typo would
@@ -193,9 +197,42 @@ class BaseManifestTests(unittest.TestCase):
                 if ref:
                     refs.add((ref['name'], ref['key']))
                 self.assertFalse(env['name'].endswith('PASSWORD') and 'value' in env, env['name'])
-        self.assertEqual(refs, {('ava-secrets', 'ari-password'), ('ava-secrets', 'db-password')})
-        self.assertNotRegex(self.by_kind['ConfigMap']['ava-config']['data']['AVA_DATABASE_URL'], r'//[^/@]*:[^/@]*@',
-                            'no password inside the database URL')
+        self.assertEqual(refs, {('ava-secrets', 'ari-password'), ('ava-secrets', 'db-password'),
+                                ('ava-secrets', 'db-reader-password')})
+        for key in ('AVA_DATABASE_URL', 'AVA_HISTORY_DATABASE_URL'):
+            self.assertNotRegex(self.by_kind['ConfigMap']['ava-config']['data'][key], r'//[^/@]*:[^/@]*@',
+                                'no password inside the database URL')
+
+    def test_the_api_reads_history_as_the_read_only_login_only(self):
+        """20 Nov (backlog 5.1; Claude-authored): the owner password reaches only live and
+        the API's reader-role init container; the API container gets the reader's and
+        connects with the reader URL; the init container's command line is the one the
+        real parser accepts, for the role the URL names."""
+        from services.store.__main__ import build_parser
+        config = self.by_kind['ConfigMap']['ava-config']['data']
+        owner_user = re.match(r'^postgresql://([a-z_]+)@', config['AVA_DATABASE_URL']).group(1)
+        reader_user = re.match(r'^postgresql://([a-z_]+)@', config['AVA_HISTORY_DATABASE_URL']).group(1)
+        self.assertEqual((owner_user, reader_user), ('ava', 'ava_reader'))
+        holders = {}
+        for obj, _, container in containers(self.objects):
+            for env in container.get('env', []):
+                ref = env.get('valueFrom', {}).get('secretKeyRef')
+                if ref and ref['key'].startswith('db-'):
+                    holders.setdefault(ref['key'], set()).add((obj['metadata']['name'], container['name'], env['name']))
+        self.assertEqual(holders['db-password'], {('postgres', 'postgres', 'POSTGRES_PASSWORD'),
+                                                  ('live', 'live', 'PGPASSWORD'),
+                                                  ('api', 'db-reader-role', 'PGPASSWORD')})
+        self.assertEqual(holders['db-reader-password'], {('api', 'db-reader-role', 'AVA_DB_READER_PASSWORD'),
+                                                         ('api', 'api', 'PGPASSWORD')})
+        spec = self.by_kind['Deployment']['api']['spec']['template']['spec']
+        api = spec['containers'][0]
+        index = api['args'].index('--database-url-env')
+        self.assertEqual(api['args'][index + 1], 'AVA_HISTORY_DATABASE_URL')
+        [setup] = [c for c in spec['initContainers'] if c['name'] == 'db-reader-role']
+        self.assertEqual(setup['command'], ['python', '-m', 'services.store'])
+        parsed = build_parser().parse_args(setup['args'])
+        self.assertEqual((parsed.command, parsed.database_url_env, parsed.role, parsed.password_env),
+                         ('reader-role', 'AVA_DATABASE_URL', reader_user, 'AVA_DB_READER_PASSWORD'))
 
     def test_selectors_match_their_pods(self):
         pods = {obj['metadata']['name']: template['metadata']['labels'] for obj, template in pod_specs(self.objects)}
@@ -250,10 +287,15 @@ class BaseManifestTests(unittest.TestCase):
         self.assertEqual(external['ingress']['live-pbx'], (pbx, [{'protocol': 'UDP', 'port': 32768, 'endPort': 60999}]))
         self.assertIn('192.0.2.10', self.by_kind['ConfigMap']['ava-config']['data']['AVA_ARI_URL'])
 
-    def test_postgres_admits_only_live(self):
+    def test_postgres_admits_only_live_and_the_api(self):
+        """20 Nov: the API reads history (as the read-only login); nothing else connects."""
         ingress = self.by_kind['NetworkPolicy']['postgres']['spec']['ingress']
-        self.assertEqual(ingress, [{'from': [{'podSelector': {'matchLabels': {'app.kubernetes.io/name': 'live'}}}],
+        self.assertEqual(ingress, [{'from': [{'podSelector': {'matchLabels': {'app.kubernetes.io/name': 'live'}}},
+                                             {'podSelector': {'matchLabels': {'app.kubernetes.io/name': 'api'}}}],
                                     'ports': [{'protocol': 'TCP', 'port': 5432}]}])
+        egress = self.by_kind['NetworkPolicy']['api']['spec']['egress']
+        self.assertEqual(sorted((rule['to'][0]['podSelector']['matchLabels']['app.kubernetes.io/name'],
+                                 rule['ports'][0]['port']) for rule in egress), [('postgres', 5432), ('redis', 6379)])
 
 
 class TestRequirementsStayOutOfImagesTests(unittest.TestCase):
