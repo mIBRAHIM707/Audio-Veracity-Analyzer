@@ -16,7 +16,7 @@ import unittest
 from data.prepare import codecs as g711
 from services.tap.ari import AriClient, AriError, _id
 from services.tap.rtp_receiver import RtpError, RtpSession, parse_rtp
-from services.tap.tap_app import TAP_TAG, TapApp
+from services.tap.tap_app import NATIVE_FORMAT_VARIABLE, TAP_TAG, TapApp
 
 
 def rtp(seq, payload=b'\xff' * 160, pt=0, ssrc=7, ts=None, csrc=0, extension=None, padding=0):
@@ -205,8 +205,13 @@ class FakeAri:
     def list_channels(self):
         return self.channels
 
-    def get_variable(self, channel_id, name):
+    def get_variable(self, channel_id, name, timeout=None):
         self.calls.append(('get_variable', channel_id, name))
+        if name == NATIVE_FORMAT_VARIABLE:  # FR-U5 codec read (20 Nov)
+            self.codec_timeouts = getattr(self, 'codec_timeouts', []) + [timeout]
+            if 'get_variable' in self.fail:
+                raise AriError('get_variable failed', 500)
+            return getattr(self, 'formats', {}).get(channel_id)
         return self.variables.get(channel_id)
 
     def list_bridges(self):
@@ -277,7 +282,9 @@ class TapAppTests(unittest.TestCase):
         self.assertEqual(self.ari.calls, [])
         app.handle(answered('c1', number='ava-1'))
         # Bridge first, each channel into it at once (review M4: crash leftovers sweepable).
-        self.assertEqual([c[0] for c in self.ari.calls], ['bridge', 'snoop', 'add', 'external_media', 'add'])
+        # The codec is read last, once the tap is set up (FR-U5, 20 Nov).
+        self.assertEqual([c[0] for c in self.ari.calls],
+                         ['bridge', 'snoop', 'add', 'external_media', 'add', 'get_variable'])
         call = app.calls['c1']
         self.assertEqual(self.ari.calls[1][1:], ('c1', 'in', TAP_TAG))
         self.assertEqual(self.ari.calls[3][1], f'host.docker.internal:{call.session.port}')

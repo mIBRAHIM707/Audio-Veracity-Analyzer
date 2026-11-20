@@ -183,3 +183,18 @@ test('HS10 sessionTimeline: scored windows only, seconds since the session start
   const implicit = { ...parsed.sessions[0], startedTs: null };
   expect(sessionTimeline(implicit).slice(0, 2)).toMatchObject([{ t_start: 0, t_end: 2 }, { t_start: 2, t_end: 4 }]);
 });
+
+// Claude-authored, 20 November 2026 (PRD FR-U5 "codec detected").
+test('HS11 detected codec: format names kept; absent or unexpected values read as not detected', () => {
+  const codecOf = (codec: unknown) => parseCallPage({ calls: [callRow({ codec })], next_before: null }).calls[0].codec;
+  expect(codecOf('alaw')).toBe('alaw');
+  expect(codecOf('ulaw|alaw')).toBe('ulaw|alaw');
+  expect(codecOf('slin16')).toBe('slin16');
+  expect(parseCallPage({ calls: [callRow()], next_before: null }).calls[0].codec).toBeNull(); // older API: no field
+  for (const odd of [null, '', 'ALAW', '5', '<b>gsm</b>', 'a'.repeat(25), 'a|b|c|d|e', 7, true, ['alaw'], { name: 'alaw' }]) {
+    expect(codecOf(odd)).toBeNull(); // never refuses the whole answer for this one field
+  }
+  const history = parseCallHistory({ call_id: 'k1', sessions_total: 1, sessions: [{
+    ...session({ codec: 'gsm' }), alerts: [], alerts_total: 0, windows: [], windows_total: 0 }] });
+  expect(history.sessions[0].codec).toBe('gsm');
+});

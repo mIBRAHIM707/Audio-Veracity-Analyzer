@@ -2,8 +2,8 @@
 architecture §2.1-§2.4): a `TapApp` sink that feeds tapped caller audio into
 `LiveCalls` / `SpeechFeed` / `LivePipeline`.
 
-- `started(call)`: `LiveCalls.start(call_id, from_number=, to=, tap_format=)`; a refused
-  call (capacity) is not fed.
+- `started(call)`: `LiveCalls.start(call_id, from_number=, to=, tap_format=, codec=)`
+  (`codec`: the call's detected codec or None, FR-U5); a refused call (capacity) is not fed.
 - `audio(call_id, pcm16_8k, concealment)`: 8 kHz -> 16 kHz with a per-call
   `soxr.ResampleStream` (HQ, float64, round-half-even, clip): the same samples as the
   file path's one-shot `conditioning.canonicalize` on the same 8 kHz audio (train/serve
@@ -131,7 +131,8 @@ class TapScoringSink:
             # that session first so the new tap starts a fresh one (review M1).
             reason, _ = self._ending.pop(call.call_id)
             self._end_now(call.call_id, reason, forced=True)
-        admitted = self.live.start(call.call_id, from_number=call.caller, to=call.dialled, tap_format=call.codec)
+        admitted = self.live.start(call.call_id, from_number=call.caller, to=call.dialled, tap_format=call.codec,
+                                   codec=getattr(call, 'call_codec', None))
         if not admitted:
             self.counts['refused'] += 1  # the tap still runs (spec question: admission before tapping)
             return

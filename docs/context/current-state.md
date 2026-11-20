@@ -274,7 +274,7 @@ and about 50,000 original clips, excluding codec copies.
   2.5 s), SN01-SN02 [mock]. Review conditional pass; M1 (cap released before the audit
   wait) fixed with a test whose mutant fails. Known limits in `services/api/README.md`
   (retention switch-off not seen by the API until cleanup; refused playbacks not
-  audited). Not yet: codec detected (rest of FR-U5), Compose/k3s wiring.
+  audited). Not yet: codec detected (rest of FR-U5; done 20 Nov, below), Compose/k3s wiring.
 - **20 Nov (attempt 1), 7.3 FR-A9 config file plus reload.**
   - **What:** `services/live/config_reload.py` with
     `python -m services.live --scoring-config FILE --scoring-config-watch-s N`. The
@@ -293,6 +293,20 @@ and about 50,000 original clips, excluding codec copies.
     for the PRD.
   - **Open:** audit-log rows for reloads, config version on `call.started`, the
     optional API endpoint, Compose/k3s mounts.
+- **20 Nov (attempt 2), 7.3 FR-U5 codec detected.**
+  - **What:** the tap reads `CHANNEL(audionativeformat)` over ARI once a call's tap is
+    set up (1 s bound; failures give None and count `codec_unknown` on the live
+    `/metrics`; the tap and the call are never affected). `call.started` carries
+    `codec`; the history reader serves `codec` from `start_data` (JSON string matching
+    the format-name rule only, nothing else); the dashboard call detail shows "Codec
+    detected" per session.
+  - **Evidence:** Claude-authored `tests/unit/test_call_codec.py`, a PostgreSQL 16 case
+    in `test_store_history.py`, Playwright HS11 and HB08 (real PostgreSQL), and lab cases
+    on Asterisk 20.6: mu-law, A-law and GSM callers detected as `ulaw`/`alaw`/`gsm`; a
+    caller offering mu-law and A-law is reported as `(ulaw)`, the codec in use. Unit suite
+    1418 OK (219 skipped). Review conditional pass; M1 probed in the lab, L1-L4 fixed.
+  - **Limits:** read once at the start; a re-INVITE codec change is not tracked; calls
+    stored before 20 Nov show "not detected".
 - **17 Nov daily run (details in `daily-runs/2026-11-17.md`).** FR-O6 per-stage latency
   for the live loop (7.2/8.1): `ava_live_stage_seconds{stage}` with `queue_wait`,
   `batch_wait`, `apply` (scorer and hub publish) and `window_to_result` (offer to

@@ -23,7 +23,8 @@ Read only: every query runs in a `READ ONLY, REPEATABLE READ` transaction (one
 consistent snapshot per answer, and no write is possible through this object whatever
 the role). Never returned: `start_data`/`end_data` (they hold whatever the scorer put
 in `call.started`/`call.ended`; caller numbers or SIP headers would need a privacy
-decision) and nothing about audio (the store has none). A non-finite number (not
+decision), except `start_data`'s `codec` (FR-U5, 20 Nov) as `codec`, checked against a
+format-name pattern (None otherwise), and nothing about audio (the store has none). A non-finite number (not
 expected: the writer refuses them, but some columns would accept one) is returned as
 None so the answer stays valid JSON.
 
@@ -67,9 +68,17 @@ TRANSIENT = ('OperationalError', 'InterfaceError')
 SCHEMA_ERRORS = ('UndefinedTable', 'UndefinedColumn', 'InvalidSchemaName')
 TIMEOUT_ERRORS = ('QueryCanceled', 'LockNotAvailable')  # statement_timeout, lock_timeout
 
-SESSION_COLUMNS = ('id, call_id, started_at, implicit_start, state, driving_direction, quality, degraded, '
-                   'effective_stride_s, last_event_at, ended_at, final_state, end_reason, end_inferred, '
-                   'speech_seconds, verdict')
+_SESSION_NAMES = ('id, call_id, started_at, implicit_start, state, driving_direction, quality, degraded, '
+                  'effective_stride_s, last_event_at, ended_at, final_state, end_reason, end_inferred, '
+                  'speech_seconds, verdict')
+# A JSON string only (`->>` would turn a stored true or 5 into text).
+_CODEC_COLUMN = "CASE WHEN jsonb_typeof({p}start_data->'codec') = 'string' THEN {p}start_data->>'codec' END"
+SESSION_COLUMNS = f"{_SESSION_NAMES}, {_CODEC_COLUMN.format(p='')}"
+SESSION_WIDTH = 17
+# FR-U5 "codec detected" (20 Nov): the one `start_data` field served, and only when it is
+# an Asterisk format name as the tap records it (services/tap/tap_app.py CODEC_PATTERN);
+# anything else (absent, null, not a name) is served as None ("not detected").
+_CODEC = re.compile(r'[a-z][a-z0-9_]{0,23}(\|[a-z][a-z0-9_]{0,23}){0,3}')
 ALERT_COLUMNS = ('alert_id, direction, status, raised_at, raised_window, raised_ema, closed_at, cleared_window, '
                  'cleared_ema')
 # FR-A6 alert search (19 Nov, attempt 5).
@@ -129,13 +138,14 @@ def valid_call_id(call_id):
 
 def _session(row):
     (pk, call_id, started_at, implicit, state, driving, quality, degraded, stride, last_event_at, ended_at,
-     final_state, end_reason, end_inferred, speech_seconds, verdict) = row
+     final_state, end_reason, end_inferred, speech_seconds, verdict, codec) = row
     return {'session': pk, 'call_id': call_id, 'status': 'active' if ended_at is None else 'ended',
             'started_ts': _ts(started_at), 'started_seen': not implicit, 'state': state,
             'driving_direction': driving, 'quality': quality, 'degraded': degraded,
             'effective_stride_s': _num(stride), 'last_event_ts': _ts(last_event_at), 'ended_ts': _ts(ended_at),
             'final_state': final_state, 'end_reason': end_reason, 'end_inferred': end_inferred,
-            'speech_seconds': _num(speech_seconds), 'verdict': verdict}
+            'speech_seconds': _num(speech_seconds), 'verdict': verdict,
+            'codec': codec if isinstance(codec, str) and _CODEC.fullmatch(codec) else None}
 
 
 def _alert(row):
@@ -381,7 +391,8 @@ class PostgresCallHistory:
             where.append('c.id < %s')
             params.append(before)
         clause = f'WHERE {" AND ".join(where)} ' if where else ''
-        columns = ', '.join(f'c.{name.strip()}' for name in SESSION_COLUMNS.split(','))
+        columns = ', '.join(f'c.{name.strip()}' for name in _SESSION_NAMES.split(','))
+        columns += ', ' + _CODEC_COLUMN.format(p='c.')
         # One row more than asked tells whether another page exists. The counts are
         # computed per page (not stored): their cost on long calls is not measured yet.
         rows = db.execute(
@@ -394,8 +405,8 @@ class PostgresCallHistory:
             f'FROM calls c {clause}ORDER BY c.id DESC LIMIT %s', (*params, limit + 1)).fetchall()
         summaries = []
         for row in rows[:limit]:
-            summary = _session(row[:16])
-            alerts_total, alerts_open, windows_total, windows_scored, score_max = row[16:]
+            summary = _session(row[:SESSION_WIDTH])
+            alerts_total, alerts_open, windows_total, windows_scored, score_max = row[SESSION_WIDTH:]
             summary.update(alerts_total=alerts_total, alerts_open=alerts_open, windows_total=windows_total,
                            windows_scored=windows_scored, score_max=_num(score_max))
             summaries.append(summary)

@@ -139,7 +139,7 @@ class FakeAri:
     def list_channels(self):
         return []
 
-    def get_variable(self, channel_id, name):
+    def get_variable(self, channel_id, name, timeout=None):
         return None
 
 

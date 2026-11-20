@@ -43,6 +43,8 @@ export interface SessionSummary {
   verdict: string | null;
   degraded: boolean;
   quality: string | null;
+  /** FR-U5: the call's codec as the tap detected it (e.g. "alaw"); null = not detected or not recorded. */
+  codec: string | null;
 }
 
 export interface CallRow extends SessionSummary {
@@ -165,8 +167,15 @@ function parseSession(v: unknown): SessionSummary {
     startedSeen: v.started_seen, state: optString(v.state), endedTs: optNumber(v.ended_ts),
     lastEventTs: optNumber(v.last_event_ts), finalState: optString(v.final_state), endReason: optString(v.end_reason),
     endInferred: v.end_inferred === true, speechSeconds: optNumber(v.speech_seconds), verdict: optString(v.verdict),
-    degraded: v.degraded === true, quality: optString(v.quality),
+    degraded: v.degraded === true, quality: optString(v.quality), codec: codecName(v.codec),
   };
+}
+
+/** FR-U5 detected codec: an Asterisk format name (the API checks the same rule); any
+ *  other value is shown as not detected rather than refusing the whole answer. */
+const CODEC = /^[a-z][a-z0-9_]{0,23}(\|[a-z][a-z0-9_]{0,23}){0,3}$/;
+function codecName(v: unknown): string | null {
+  return typeof v === 'string' && CODEC.test(v) ? v : null;
 }
 
 export function parseCallPage(v: unknown): CallPage {

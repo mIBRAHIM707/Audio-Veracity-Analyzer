@@ -310,6 +310,36 @@ test.describe('HB stored history from PostgreSQL', () => {
     await expect(page.getByTestId('alert-row')).toHaveCount(60);
     await expect(page.getByTestId('alerts-more')).toHaveCount(0);
   });
+
+  // Claude-authored, 20 November 2026 (PRD FR-U5 "call detail view with codec detected").
+  // The codec is what the tap put in call.started (services/tap/tap_app.py), stored by the
+  // real writer and served by the real reader; runs after HB07, so its calls are newest.
+  test('HB08 FR-U5 detail: the detected codec per session; unknown or odd values say not detected', async ({ page }) => {
+    await store('call.started', 'codec1', { codec: 'gsm', from: CALLER_NUMBER, tap_format: 'ulaw' }, 1, T0 + 200);
+    await ended('codec1', 2, T0 + 201);
+    await store('call.started', 'codec1', { codec: 'alaw', tap_format: 'ulaw' }, 1, T0 + 210); // a later session
+    await store('call.started', 'codec2', { codec: '<img src=x onerror="window.__xss=2">' }, 1, T0 + 220);
+    const { errors } = await open(page, server.base);
+    await callRows(page).filter({ has: page.getByRole('button', { name: 'codec1', exact: true }) }).first()
+      .getByRole('button').click();
+    const detail = page.getByTestId('history-detail');
+    await expect(detail).toHaveAttribute('data-call-id', 'codec1');
+    await expect(detail.getByTestId('session')).toHaveCount(2);
+    await expect(detail.getByTestId('session-codec')).toHaveText(['alaw', 'gsm']); // newest session first
+    await expect(page.locator('body')).not.toContainText(CALLER_NUMBER);
+    await detail.getByRole('button', { name: 'Close' }).click();
+    await callRows(page).filter({ has: page.getByRole('button', { name: 'codec2', exact: true }) }).first()
+      .getByRole('button').click();
+    await expect(page.getByTestId('history-detail').getByTestId('session-codec'))
+      .toHaveText('Not detected (not recorded for this session)');
+    await page.getByTestId('history-detail').getByRole('button', { name: 'Close' }).click();
+    // A session stored before codecs were recorded (no field at all) says the same.
+    await page.locator('[data-testid="alert-row"][data-alert-id="k1-a1"]').getByRole('button', { name: 'k1' }).click();
+    await expect(page.getByTestId('history-detail').getByTestId('session-codec'))
+      .toHaveText(Array(2).fill('Not detected (not recorded for this session)'));
+    expect(await page.evaluate(() => window.__xss)).toBeUndefined();
+    expect(errors).toEqual([]);
+  });
 });
 
 test.describe('HM without a history database', () => {

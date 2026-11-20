@@ -19,8 +19,15 @@ the answer and the first frames after it are not tapped.
 
 Any tap failure is contained: partial tap resources are released and the call is
 reported `failed`. Call metadata (FR-T3): call ID (the call channel's ID), from
-(caller number), to (dialled extension), creation time and the tap's format (the
-call's negotiated codec is not in the ARI channel object). The call ends with
+(caller number), to (dialled extension), creation time, the tap's format and the
+call's detected codec (`call_codec`, PRD FR-U5, 20 Nov). The ARI channel object has no
+codec, so once the tap is set up it reads the channel's `CHANNEL(audionativeformat)`
+(e.g. `(alaw)`) and keeps it as `alaw` (`native_codec`); a failed, empty or
+unrecognised read leaves None ("not detected", counted in `codec_unknown`) and never
+fails the tap. Read once, at the tap's start: a later codec change (re-INVITE) is not
+tracked. Asterisk 20.6 in the lab reports one format even when the caller offers two
+(mu-law and A-law, measured 20 Nov); a list, if one is ever reported, is kept as
+"a|b". The call ends with
 `reason=bye` on the call channel's (hard) hangup request or destruction, or its snoop
 being destroyed; `timeout` when its RTP session received nothing for
 `silence_timeout_s` (30 s, FR-T2); `monitor_lost` when the ExternalMedia channel is
@@ -52,6 +59,7 @@ one step, so `receiver_live` never decreases.
 from collections import deque
 from dataclasses import dataclass
 import json
+import re
 import time
 
 from .ari import AriError
@@ -66,6 +74,25 @@ OWN_PREFIXES = ('Snoop/', 'UnicastRTP/')  # snoop and ExternalMedia channels are
 MARK_VARIABLE, MARK_VALUE = 'AVA_TAP', 'caller'
 END_DRAIN_S = 0.04
 RECEIVER_REFRESH_S = 1.0  # how often open calls' RTP/jitter counts are re-read for /metrics
+NATIVE_FORMAT_VARIABLE = 'CHANNEL(audionativeformat)'
+CODEC_READ_TIMEOUT_S = 1.0  # review L1: bounded, shorter than the client's 5 s
+# An Asterisk format name ("ulaw", "alaw", "gsm", "g722", "slin16", ...); a native format
+# with several audio formats is kept as their names joined by "|" (at most 4). The same
+# rule is applied again when stored calls are read (services/store/history.py).
+CODEC_PATTERN = re.compile(r'[a-z][a-z0-9_]{0,23}(\|[a-z][a-z0-9_]{0,23}){0,3}')
+
+
+def native_codec(value):
+    """`CHANNEL(audionativeformat)` as read over ARI (e.g. "(alaw)" or "(ulaw|alaw)") ->
+    "alaw" / "ulaw|alaw"; None for anything else (missing, empty, too long, unexpected
+    characters), so nothing a channel variable holds reaches events unchecked."""
+    if not isinstance(value, str) or len(value) > 128:
+        return None
+    text = value.strip()
+    if text.startswith('(') and text.endswith(')'):
+        text = text[1:-1]
+    text = text.strip().lower()
+    return text if CODEC_PATTERN.fullmatch(text) else None
 
 
 def _add_counts(totals, counts):
@@ -82,6 +109,7 @@ class TappedCall:
     dialled: str
     started: str
     codec: str = 'ulaw'  # the tap's ExternalMedia format, not the call's codec
+    call_codec: str = None  # the call's detected codec (FR-U5), None when not detected
     session: object = None
     monitor: object = None
     snoop_id: str = None
@@ -108,7 +136,7 @@ class TapApp:
         self._done_set = set()
         self._marked = {}  # channel IDs marked as inbound caller legs (insertion-ordered)
         self.stats = {'events': 0, 'bad_events': 0, 'tapped': 0, 'tap_failures': 0, 'refused_capacity': 0,
-                      'ended': 0, 'sink_errors': 0, 'cleanup_errors': 0, 'swept': 0}
+                      'ended': 0, 'sink_errors': 0, 'cleanup_errors': 0, 'swept': 0, 'codec_unknown': 0}
         # Receiver and `jitter_` buffer counts summed over ended calls (FR-I2, FR-O6).
         self.receiver_totals = {}
         # The same plus each open call's counts as last read (at most RECEIVER_REFRESH_S
@@ -207,9 +235,23 @@ class TapApp:
             self._remember(channel_id)
             self._emit('failed', channel_id, f'{type(error).__name__}')
             return
+        call.call_codec = self._read_codec(channel_id)
         self.calls[channel_id] = call
         self.stats['tapped'] += 1
         self._emit('started', call)
+
+    def _read_codec(self, channel_id):
+        """The call's detected codec (FR-U5), or None. Advisory: any failure is counted,
+        none is raised (the tap's resources exist already and must stay tracked), and the
+        read waits at most CODEC_READ_TIMEOUT_S, since this thread also polls every call's RTP."""
+        try:
+            codec = native_codec(self.ari.get_variable(channel_id, NATIVE_FORMAT_VARIABLE,
+                                                       timeout=CODEC_READ_TIMEOUT_S))
+        except Exception:  # advisory only (review L2)
+            codec = None
+        if codec is None:
+            self.stats['codec_unknown'] += 1
+        return codec
 
     def _end(self, call_id, reason):
         call = self.calls.pop(call_id, None)

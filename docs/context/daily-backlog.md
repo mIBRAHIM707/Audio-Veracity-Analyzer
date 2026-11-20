@@ -511,6 +511,14 @@ items needing that data are listed at the end and stay out of the queue.
   to the operations log and `/metrics`. Claude-authored tests. Remaining: FR-U5 codec
   detected, FR-A5, the optional FR-A9 endpoint (API, with accounts), Compose/k3s config
   mounts.
+  20 Nov (attempt 2): FR-U5 codec detected. The tap reads `CHANNEL(audionativeformat)`
+  over ARI once the tap is set up (1 s bound, failures contained, `codec_unknown`
+  counted), `call.started` carries `codec`, the history reader serves it (JSON string
+  and format-name rule only, nothing else from `start_data`), and the dashboard call
+  detail shows "Codec detected". Claude-authored unit, PostgreSQL, Playwright (HS11,
+  HB08) and lab cases (ulaw/alaw/gsm callers; a two-codec offer reported as the one in
+  use). Review conditional pass, findings fixed. Remaining: FR-A5, the optional FR-A9
+  endpoint, Compose/k3s config mounts.
 - [ ] 7.QA Astra-designed Playwright suite, offline assets, failures/reconnects.
 
 ## 8 — CPU capacity (FR-I9/I10)

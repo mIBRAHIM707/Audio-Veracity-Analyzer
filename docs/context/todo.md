@@ -93,6 +93,8 @@ hold the retention key (Compose/k3s wiring) and whether refused playbacks are au
 20 Nov: no data change. The live service can reread its scoring settings file while it
 runs (FR-A9, `--scoring-config-watch-s`). Valid changes apply to new calls only.
 Restart-only and caller-less settings are refused.
+20 Nov (attempt 2): no data change. The stored call detail shows the codec the call
+used, as Asterisk reports it to the tap (FR-U5); older sessions say "not detected".
 
 Human decisions:
 - Should reloads be written to the audit log?

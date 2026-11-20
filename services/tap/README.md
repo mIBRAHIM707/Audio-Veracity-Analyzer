@@ -83,9 +83,20 @@ owners).
   measure).
 
 TapApp sink contract: `started(call)` (call ID, caller number, dialled extension,
-creation time; `codec` is the tap's format, the call's codec is not in ARI's channel
-object), `audio(call_id, pcm16_8k, concealment)`, optional `quality(call_id, change)`,
+creation time; `codec` is the tap's format; `call_codec` the call's detected codec or
+None), `audio(call_id, pcm16_8k, concealment)`, optional `quality(call_id, change)`,
 `ended(call_id, reason, receiver_stats)`, `failed(call_id, error)`.
+
+Detected codec (PRD FR-U5, 20 Nov): ARI's channel object has no codec, so once a call's
+tap is set up the tap reads `CHANNEL(audionativeformat)` over ARI (at most 1 s), e.g.
+`(alaw)` -> `alaw`. A failed, empty or unexpected value gives None and counts
+`codec_unknown` (`ava_live_tap_events_total{kind="codec_unknown"}`); the tap goes on.
+It is read once, at the start (and again on a re-tap after reconnect); a later codec
+change (re-INVITE) is not tracked. `audioreadformat` is not used: it is the translation
+format, not the codec on the wire. The sink publishes it as `codec` in `call.started`;
+the history API and the dashboard call detail show it. Lab (20 Nov): mu-law, A-law and
+GSM callers are detected as `ulaw`/`alaw`/`gsm`; a caller offering mu-law and A-law is
+reported by Asterisk 20.6 as `(ulaw)`, the codec in use.
 
 `requirements-tap.txt`: websockets 17.4 (BSD-3-Clause).
 

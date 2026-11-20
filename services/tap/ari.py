@@ -96,10 +96,11 @@ class AriClient:
     def destroy_bridge(self, bridge_id):
         return self._request('DELETE', f'bridges/{_id(bridge_id)}', timeout=CLEANUP_TIMEOUT_S)
 
-    def get_variable(self, channel_id, name):
-        """A channel variable's value, or None if it is not set (HTTP 404)."""
+    def get_variable(self, channel_id, name, *, timeout=None):
+        """A channel variable's value, or None if it is not set (HTTP 404). `timeout`
+        (seconds) overrides the client's for this read."""
         try:
-            reply = self._request('GET', f'channels/{_id(channel_id)}/variable', {'variable': name})
+            reply = self._request('GET', f'channels/{_id(channel_id)}/variable', {'variable': name}, timeout=timeout)
         except AriError as error:
             if error.status == 404:
                 return None

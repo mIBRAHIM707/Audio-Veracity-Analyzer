@@ -14,6 +14,7 @@ Synthetic signals only: tap plumbing evidence, not detector evidence.
 through Asterisk's transcoding to the tap's mu-law ExternalMedia.
 """
 import os
+from pathlib import Path
 import secrets
 import threading
 import time
@@ -37,11 +38,12 @@ class Sink:
     def __init__(self):
         self.lock = threading.Lock()
         self.events, self.audio_by_call, self.receiver_stats, self.times = [], {}, {}, {}
-        self.concealed = {}
+        self.concealed, self.codecs = {}, {}
 
     def started(self, call):
         with self.lock:
             self.events.append(('started', call.call_id, call.caller, call.dialled))
+            self.codecs[call.call_id] = call.call_codec  # FR-U5 detected codec (20 Nov)
 
     def audio(self, call_id, pcm, concealment):
         with self.lock:
@@ -132,11 +134,12 @@ class AriTapTests(unittest.TestCase):
         cls.lab.start()
         cls.ari = AriClient(f'http://{cls.lab.port("8088/tcp")}', 'ava', password, 'ava-tap')
 
-    def call(self, pcm, extra_ms=1500, during=None, service='700', record=True, codec='ulaw', ffmpeg=None):
+    def call(self, pcm, extra_ms=1500, during=None, service='700', record=True, codec='ulaw', ffmpeg=None,
+             scenario='/lab/sipp/uac_inject.xml'):
         """Place one call to `service` offering only `codec` (default mu-law; `ffmpeg`
         for GSM) and return (token, injected reference = the decode of what SIPp sent,
         recording or None, the time SIPp finished). `during(token)` runs on this thread
-        while SIPp runs."""
+        while SIPp runs. `scenario` may name another SIPp scenario in the container."""
         payloads = rtp_pcap.rtp_payloads(pcm, codec, ffmpeg)
         payload_type, codec_name = rtp_pcap.PAYLOAD_TYPES[codec]
         rtp_pcap.write_pcap(payloads, payload_type, self.lab.path('inject.pcap'))
@@ -145,7 +148,7 @@ class AriTapTests(unittest.TestCase):
 
         def run():
             result['done'] = self.lab.command(
-                ['exec', self.lab.name, 'sipp', '127.0.0.1:5060', '-sf', '/lab/sipp/uac_inject.xml', '-s', service,
+                ['exec', self.lab.name, 'sipp', '127.0.0.1:5060', '-sf', scenario, '-s', service,
                  '-key', 'caller', token, '-key', 'pt', str(payload_type), '-key', 'codec', codec_name, '-m', '1',
                  '-d', str(len(payloads) * 20 + extra_ms), '-i', '127.0.0.1', '-mi', '127.0.0.1',
                  '-min_rtp_port', '16000', '-max_rtp_port', '16100', '-timeout', '60s', '-timeout_error', '-nostdin'],
@@ -202,6 +205,7 @@ class AriTapTests(unittest.TestCase):
         self.assertEqual(len(started), 1, sink.events)
         call_id = started[0][1]
         self.assertEqual(started[0][3], '700')  # FR-T3: from and to come from ARI fields
+        self.assertEqual(sink.codecs[call_id], 'ulaw')  # FR-U5 detected codec (Claude-authored, 20 Nov)
         ended = self.wait_for(sink, lambda e: e[0] == 'ended' and e[1] == call_id)
         self.assertEqual(ended, [('ended', call_id, 'bye')])
         # FR-T5: torn down within 5 s of the call's end, in Asterisk as well as here.
@@ -257,6 +261,8 @@ class AriTapTests(unittest.TestCase):
         started = self.wait_for(sink, lambda e: e[0] == 'started' and e[2] == token)
         self.assertEqual(len(started), 1, sink.events)
         call_id = started[0][1]
+        # Claude-authored, 20 Nov (FR-U5): the tap's own read gives the same codec.
+        self.assertEqual(sink.codecs[call_id], codec, 'the tap detected the call codec')
         self.assertEqual(self.wait_for(sink, lambda e: e[0] == 'ended' and e[1] == call_id), [('ended', call_id, 'bye')])
         self.assertLess(sink.times[call_id] - finished, 5.0)
         self.assertEqual(runner.app.calls, {})
@@ -293,6 +299,35 @@ class AriTapTests(unittest.TestCase):
         self.assertGreater(correlation, to_original)
         print(f'\nobserved: GSM caller, tap correlation with the GSM decode {correlation:.5f}, '
               f'with the original {to_original:.5f}')
+
+    def test_a_caller_offering_two_codecs_is_reported_with_the_one_in_use(self):
+        """Claude-authored, 20 Nov (FR-U5, review M1): an ordinary phone offers several
+        codecs. The caller offers mu-law then A-law (static payload types 0 and 8) and
+        sends mu-law; the detected codec must be the one the call runs on, not a list."""
+        source = Path(__file__).resolve().parents[2] / 'lab' / 'asterisk' / 'sipp' / 'uac_inject.xml'
+        text = source.read_text(encoding='iso-8859-1')
+        single = 'm=audio [media_port] RTP/AVP [pt]\n      a=rtpmap:[pt] [codec]/8000'
+        self.assertIn(single, text)
+        both = 'm=audio [media_port] RTP/AVP 0 8\n      a=rtpmap:0 PCMU/8000\n      a=rtpmap:8 PCMA/8000'
+        self.lab.path('uac_two_codecs.xml').write_text(text.replace(single, both), encoding='iso-8859-1')
+        sink = Sink()
+        runner = TapRunner(self.ari, sink)
+        self.addCleanup(runner.stop)
+        negotiated = {}
+
+        def read_format(token):
+            found = self.wait_for(sink, lambda e: e[0] == 'started' and e[2] == token)
+            if found:
+                negotiated['format'] = self.ari.get_variable(found[0][1], 'CHANNEL(audionativeformat)')
+        token, reference, recorded, _ = self.call(speechlike(3.0, 14), during=read_format,
+                                                  scenario='/lab/io/uac_two_codecs.xml')
+        started = self.wait_for(sink, lambda e: e[0] == 'started' and e[2] == token)
+        self.assertEqual(len(started), 1, sink.events)
+        print(f"\nobserved: two-codec offer, CHANNEL(audionativeformat) = {negotiated.get('format')!r}, "
+              f'detected {sink.codecs[started[0][1]]!r}')
+        self.assertEqual(sink.codecs[started[0][1]], 'ulaw')
+        self.assert_call_unharmed(reference, recorded)
+        self.assertIsNone(runner.error)
 
     def test_call_goes_on_when_the_tap_is_not_running(self):
         # FR-T4: no tap connected; the call never depends on it.

@@ -406,6 +406,25 @@ class PostgresHistoryTests(unittest.TestCase):
         self.assertNotIn('+923001234567', json.dumps(result), 'start/end data are never served')
         self.assertIsNone(self.history().call('never-stored'))
 
+    def test_detected_codec_is_served_and_nothing_else_from_start_data(self):
+        """Claude-authored, 20 Nov (FR-U5): `call.started` data `codec` as the writer stores
+        it; only a format-name JSON string is served, by both reads."""
+        cases = {'d1': ({'codec': 'alaw', 'from_number': '+923001234567', 'tap_format': 'ulaw'}, 'alaw'),
+                 'd2': ({'codec': None}, None), 'd3': ({}, None), 'd4': ({'codec': '<b>x</b>'}, None),
+                 'd5': ({'codec': True}, None), 'd6': ({'codec': ['alaw']}, None), 'd7': ({'codec': 'ulaw|alaw'},
+                                                                                        'ulaw|alaw')}
+        for k, (call_id, (data, _)) in enumerate(cases.items()):
+            self.assertEqual(self.store(env('call.started', call_id, data, 1, T0 + k)), ['stored'])
+        self.assertEqual(self.store(score('d8', 1, T0 + 9, 0, 0.2, 0.2)), ['stored'])  # implicit start: no data
+        history = self.history()
+        for call_id, (_, served) in cases.items():
+            result = history.call(call_id)
+            self.assertEqual(result['sessions'][0]['codec'], served, call_id)
+            self.assertNotIn('+923001234567', json.dumps(result))
+        self.assertIsNone(history.call('d8')['sessions'][0]['codec'])
+        listed = {row['call_id']: row['codec'] for row in history.recent(limit=20)['calls']}
+        self.assertEqual(listed, {**{c: s for c, (_, s) in cases.items()}, 'd8': None})
+
     def test_bounds_keep_the_newest_sessions_and_the_oldest_windows(self):
         self.killed_and_retapped_call()
         self.store(env('alert.raised', 'k1', {'alert_id': 'late'}, 9, T0 + 40))  # after the end: not stored

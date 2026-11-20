@@ -160,7 +160,8 @@ an answer takes at most about 25 s. Failures raise `HistoryError` with `reason`
 (statement or lock timeout, or the 15 s deadline), `schema` (not migrated) or `error`,
 and only the driver's error class in the message. `close()` waits at most 2 s for a
 read in progress, which then closes the connection itself. `start_data`/`end_data` are
-not read; a non-finite number (the writer refuses them) would be served as null. Status-only updates were
+not read, except `start_data`'s `codec` (FR-U5, 20 Nov: a JSON string matching the
+format-name rule, else null); a non-finite number (the writer refuses them) would be served as null. Status-only updates were
 never stored (see above), so the window rows are the whole stored timeline; the
 in-memory registry's 10 s downsampling is not applied here. Not done: paging inside one
 long session's windows (the bound and `windows_truncated` stand in), search of calls by

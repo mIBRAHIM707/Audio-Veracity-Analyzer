@@ -407,6 +407,8 @@ function SessionView({ session }: { session: StoredSession }) {
         <dt>Final state</dt><dd>{session.finalState ?? session.state ?? '—'}</dd>
         <dt>Speech</dt><dd>{session.speechSeconds === null ? '—' : `${session.speechSeconds.toFixed(1)} s`}</dd>
         <dt>Verdict</dt><dd data-testid="session-verdict">{session.verdict ?? '—'}</dd>
+        <dt>Codec detected</dt>
+        <dd data-testid="session-codec">{session.codec ?? 'Not detected (not recorded for this session)'}</dd>
       </dl>
       <h4>Alerts</h4>
       {session.alerts.length === 0

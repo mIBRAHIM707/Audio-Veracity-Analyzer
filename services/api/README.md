@@ -123,7 +123,9 @@ record has `call_history` (true with this option). Reads run in `READ ONLY, REPE
 READ` transactions on one connection (requests take turns), with a 5 s connect timeout,
 TCP keepalives and 10 s statement/lock timeouts as in the live process; the API never
 applies migrations, so it can use a read-only role (recommended: `SELECT` on `calls`,
-`window_scores`, `alerts`, `schema_migrations`). `start_data`/`end_data` are never served.
+`window_scores`, `alerts`, `schema_migrations`). `start_data`/`end_data` are never served,
+except `start_data`'s `codec` (the tap's detected codec, PRD FR-U5, 20 Nov) as each
+session's `codec`, only when it is a JSON string matching the format-name rule (else null).
 `/metrics` then adds
 `ava_call_history_reads_total{outcome=ok|not_found|unavailable|busy|timeout|schema|error}`
 and `ava_alert_search_reads_total{outcome=ok|unavailable|busy|timeout|schema|error}`
