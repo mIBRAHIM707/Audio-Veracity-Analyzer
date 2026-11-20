@@ -8,7 +8,7 @@ development stack; these manifests are the deployment form the PRD asks for.
 ## Layout
 
 - `base/`: namespace `ava` (Pod Security `restricted` enforced), ConfigMap
-  `ava-config`, the model volume, PostgreSQL 16 and Redis 7 StatefulSets with their
+  `ava-config`, ConfigMap `ava-scoring` (generated from `scoring.json`), the model volume, PostgreSQL 16 and Redis 7 StatefulSets with their
   claims, the `live` scorer and the `api` Deployments, and the NetworkPolicies.
 - `lab/`: overlay for the laboratory. Adds the Asterisk lab PBX in namespace
   `ava-lab-pbx` and points live's ARI URL and its PBX policy at it.
@@ -72,6 +72,27 @@ The PBX must send tapped RTP to the live pod's own address (the tap passes
 `$(POD_IP)` to ExternalMedia), so the PBX needs a route to the pod network. On a
 single k3s node with the PBX outside the cluster that is a host route to the node's
 pod CIDR; this is a site decision, not settled here.
+
+## Scoring settings: ConfigMap plus reload (20 Nov 2026; PRD FR-A9, FR-I4)
+
+`base/kustomization.yaml` generates the ConfigMap `ava-scoring` from
+`base/scoring.json` (the architecture §7.3 defaults, the same document as Compose's).
+Live mounts it as the folder `/config/scoring` and rereads `scoring.json` every
+`AVA_SCORING_CONFIG_WATCH_S` seconds (ConfigMap `ava-config`, default 10, 1-60). A
+valid change reaches calls started afterwards; running calls keep their settings; hop
+and the degraded-stride keys need a restart and are refused (`services/live/README.md`).
+Two choices keep the edit path working:
+- no hash suffix on `ava-scoring`: a suffixed name changes with every edit, so the
+  Deployment would roll and live's open calls would end `monitor_lost`;
+- no `subPath` on the mount: the kubelet never updates a subPath mount.
+
+The kubelet updates the mounted file within its sync period plus its cache TTL, often
+60-90 s with the defaults, so allow that long before looking for `config_reloaded` in
+`kubectl -n ava logs deploy/live`. Change settings in the site overlay, then
+`kubectl apply -k site/`. Use a patch of `ava-scoring`, or a `configMapGenerator` with
+`behavior: replace`, your own file and `options: {disableNameSuffixHash: true}` on that
+generator. Without that option a hash suffix may come back, and with it the rollout
+that ends calls. A `kubectl edit` works too, but the next `apply -k` overwrites it.
 
 ## Security controls
 
@@ -139,3 +160,8 @@ port controls open in postgres and redis; a raw UDP DNS query to 8.8.8.8 timed o
 live and api; the PBX namespace blocked from all three services although their names
 resolve there. (A run in between failed only because Docker Desktop's WSL engine
 crashed mid-run.) Kubelet httpGet probes worked under default-deny.
+
+20 Nov (FR-A9), OK in 229 s. After the call, a `kubectl patch` of `ava-scoring`
+(`alert_enter` 0.8) reached the pod and was applied 10 s later: one `config_reloaded`,
+`ava_live_config_version` 1 to 2, and no pod restart. (The first attempt hit a stalled
+`docker exec` after the reload had already been seen; the rerun passed.)

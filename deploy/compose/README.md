@@ -62,6 +62,39 @@ never prints them. Anyone with Docker access can read them (`docker compose conf
 `docker inspect`). Check the host first with
 `python -m lab.preflight` (`lab/asterisk/README.md`).
 
+## Scoring settings: file plus reload (20 Nov 2026; PRD FR-A9, FR-I4)
+
+`live` starts with `--scoring-config /config/scoring/scoring.json
+--scoring-config-watch-s 10`. The folder `/config/scoring` is a read-only bind mount of
+`AVA_SCORING_CONFIG_DIR`, by default `deploy/compose/config`, whose `scoring.json` holds
+the architecture §7.3 defaults (a unit test checks it parses to exactly those). Live
+rereads the file every 10 s (`AVA_SCORING_CONFIG_WATCH_S`, 1-60) and applies a valid
+change to calls started afterwards; running calls keep their settings. Hop and the two
+degraded-stride keys need a restart, and a change to them is refused. Outcomes go to
+live's operations log (`config_reloaded`, `config_rejected`, `config_unreadable`,
+`config_unchanged`) and `/metrics` (`ava_live_config_version`); details are in
+`services/live/README.md`.
+
+To change settings, copy the folder outside the repository, set
+`AVA_SCORING_CONFIG_DIR` to the copy as an ABSOLUTE path, and edit by writing a temporary
+file in that folder and renaming it over `scoring.json`. (A relative path resolves
+against the Compose project directory, the folder of `compose.yaml`, not the env file's
+folder.) The mount is a folder, not a file, on purpose: a single-file bind mount keeps
+the old file, so a replacement by rename would never reach the container. Do not edit
+the repository's default in place for a site.
+
+Live refuses to start (exit 2, one `refused` line per restart attempt) when the file is
+missing or invalid at start-up. A mistyped folder path does this too, because Docker
+creates a missing bind-mount source as an empty folder. On a Linux host, the file must
+also be readable by uid 10001. After start-up, a missing or invalid file only reports
+and keeps the running settings.
+
+Lab evidence (Claude-authored, 20 Nov): `test_a_scoring_config_edit_on_the_host_reaches_
+live_without_a_restart` on this Windows host (Docker Desktop, WSL 2 bind mount). A
+threshold edit was applied (version 1 to 2), a hop edit was refused as "needs a
+restart", a removed file was reported as unreadable, and the restored file as
+unchanged. There was no restart, and no path appeared in the log. Run time was 36 s.
+
 ## Reaching the dashboard
 
 Nothing is published, and the API has no authentication (`services/api/README.md`).

@@ -101,6 +101,12 @@ spec:
             - "9100"
             - --health-host
             - 0.0.0.0
+            # PRD FR-A9 config file plus reload: the `ava-scoring` ConfigMap (generated
+            # from scoring.json), reread every N seconds (services/live/README.md).
+            - --scoring-config
+            - /config/scoring/scoring.json
+            - --scoring-config-watch-s
+            - $(AVA_SCORING_CONFIG_WATCH_S)
           ports:
             - {name: health, containerPort: 9100, protocol: TCP}
           startupProbe:  # model check, load and warm-up before the first ARI connect
@@ -128,9 +134,14 @@ spec:
             - {name: models, mountPath: /models/onnx, subPath: onnx, readOnly: true}
             - {name: models, mountPath: /models/card, subPath: card, readOnly: true}
             - {name: models, mountPath: /models/vad, subPath: vad, readOnly: true}
+            # Never a subPath here: a subPath mount of a ConfigMap is not updated, so an
+            # edit would reach the pod only after a restart.
+            - {name: scoring, mountPath: /config/scoring, readOnly: true}
             - {name: tmp, mountPath: /tmp}
       volumes:
         - name: models
           persistentVolumeClaim: {claimName: ava-models, readOnly: true}
+        - name: scoring
+          configMap: {name: ava-scoring}
         - name: tmp
           emptyDir: {medium: Memory, sizeLimit: 64Mi}

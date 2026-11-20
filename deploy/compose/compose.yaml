@@ -95,10 +95,20 @@ services:
       # Prometheus can scrape it and nothing on `backend` (Asterisk, PostgreSQL, Redis)
       # reaches it (review L2 of 17 Nov kept it on 127.0.0.1 for the same reason).
       - ${AVA_LIVE_METRICS_IP:-10.231.250.10}
+      # 20 Nov (PRD FR-A9 config file plus reload, FR-I4): the scoring settings come from
+      # a mounted file, reread every N seconds; valid changes reach calls started after
+      # the reload (services/live/README.md). The default folder holds the §7.3 defaults.
+      - --scoring-config
+      - /config/scoring/${AVA_SCORING_CONFIG_FILE:-scoring.json}
+      - --scoring-config-watch-s
+      - "${AVA_SCORING_CONFIG_WATCH_S:-10}"
     volumes:
       - ${AVA_ONNX_DIR:?set AVA_ONNX_DIR}:/models/onnx:ro
       - ${AVA_CARD_DIR:?set AVA_CARD_DIR}:/models/card:ro
       - ${AVA_VAD_DIR:?set AVA_VAD_DIR}:/models/vad:ro
+      # A folder, not a single file: a single-file bind mount keeps the old inode, so a
+      # file replaced by rename (the safe way to edit it) would never be seen.
+      - ${AVA_SCORING_CONFIG_DIR:-./config}:/config/scoring:ro
     networks:
       backend: {}
       metrics:

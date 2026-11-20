@@ -519,6 +519,12 @@ items needing that data are listed at the end and stay out of the queue.
   HB08) and lab cases (ulaw/alaw/gsm callers; a two-codec offer reported as the one in
   use). Review conditional pass, findings fixed. Remaining: FR-A5, the optional FR-A9
   endpoint, Compose/k3s config mounts.
+  20 Nov (attempt 3): FR-A9 Compose/k3s config mounts. Live runs with the reload on (10 s)
+  in both deployments. The shipped `scoring.json` holds the §7.3 defaults. Compose uses a
+  read-only host folder mount (`AVA_SCORING_CONFIG_DIR`); k3s uses the `ava-scoring`
+  ConfigMap with no hash suffix and no subPath. Claude-authored unit tests; a Compose lab
+  case (host rename applied, hop refused, no restart); a k3s ConfigMap-patch lab step.
+  Review conditional pass, fixed. Remaining: FR-A5, the optional FR-A9 endpoint.
 - [ ] 7.QA Astra-designed Playwright suite, offline assets, failures/reconnects.
 
 ## 8 — CPU capacity (FR-I9/I10)

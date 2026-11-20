@@ -15,3 +15,15 @@ resources:
   - live.yaml
   - api.yaml
   - networkpolicy.yaml
+# 20 Nov (PRD FR-A9 config file plus reload): live's scoring settings. No hash suffix,
+# on purpose: a suffixed name would change on every edit and roll the pod, ending its
+# calls; with a fixed name the kubelet updates the mounted file in place (within about
+# a minute) and live applies valid changes to calls started afterwards (FR-I4).
+configMapGenerator:
+  - name: ava-scoring
+    files:
+      - scoring.json
+    options:
+      disableNameSuffixHash: true
+      labels:
+        app.kubernetes.io/part-of: ava

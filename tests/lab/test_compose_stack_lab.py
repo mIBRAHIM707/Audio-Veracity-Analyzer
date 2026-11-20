@@ -32,6 +32,8 @@ inside the stack, and checks:
   reported to the client), and of the API (registry picks the call up again); (19 Nov)
   a SIGKILL of the live container (inferred `monitor_lost` end in the store, the
   registry supersedes the old session); see each case's docstring.
+- (20 Nov, PRD FR-A9) an edit of the scoring file in a host folder reaches live through
+  the folder bind mount and is applied, refused or reported, with no restart.
 The project and its volumes are removed afterwards.
 """
 import base64
@@ -485,6 +487,110 @@ class ComposeStackLabTests(unittest.TestCase):
                 key, _, value = line.rpartition(' ')
                 values[key] = float(value)
         return values
+
+    def live_records(self):
+        """The JSON lines of live's operations log (not every stderr line is JSON)."""
+        records = []
+        for line in self.compose('logs', '--no-color', '--no-log-prefix', 'live').stdout.splitlines():
+            try:
+                record = json.loads(line)
+            except ValueError:
+                continue
+            if isinstance(record, dict):
+                records.append(record)
+        return records
+
+    def test_a_scoring_config_edit_on_the_host_reaches_live_without_a_restart(self):
+        """FR-A9 config file plus reload through the Compose wiring (Claude-authored, 20 Nov
+        2026; PRD FR-A9, FR-I4; architecture §7.3). The scoring file sits in a host folder
+        bind-mounted read-only into live (AVA_SCORING_CONFIG_DIR). Each edit replaces the
+        file by rename, as the README asks; the container must see the new inode through
+        the folder mount and apply, refuse or report it, with no restart:
+        - a threshold change is applied (`config_reloaded`, `ava_live_config_version` + 1);
+        - a hop change is refused as "needs a restart" and the version stays;
+        - a removed file is `config_unreadable`; putting the applied text back is
+          `config_unchanged` (no new version).
+        The per-call effect of a reload (FR-I4) is test_live_config_reload.py's; this case
+        is the deployment path: host folder, Docker Desktop bind mount, rename, live.
+        Kept strict on purpose (review L3): an unexpected `config_unreadable` just before
+        an expected outcome means the host's file-sharing layer showed the rename
+        non-atomically, which is worth knowing, not a live defect to retry away."""
+        scoring = self.folder / 'scoring'
+        scoring.mkdir()
+        shipped = (ROOT / 'deploy' / 'compose' / 'config' / 'scoring.json').read_text(encoding='utf-8')
+        (scoring / 'scoring.json').write_text(shipped, encoding='utf-8')
+        with self.env_file.open('a', encoding='utf-8') as env:
+            env.write(f'AVA_SCORING_CONFIG_DIR={scoring.as_posix()}\nAVA_SCORING_CONFIG_WATCH_S=2\n')
+        self.compose('up', '-d', '--wait', '--wait-timeout', '300', 'live', 'asterisk', timeout=600)
+        self.wait_healthy('live', 120)
+        metrics_script = ('import urllib.request,sys; sys.stdout.write(urllib.request.urlopen('
+                          f'"http://{self.live_metrics_ip}:9100/metrics", timeout=10).read().decode())')
+
+        def metrics():
+            values = {}
+            for line in self.compose('exec', '-T', 'live', 'python', '-c', metrics_script).stdout.splitlines():
+                if line and not line.startswith('#'):
+                    key, _, value = line.rpartition(' ')
+                    values[key] = float(value)
+            return values
+
+        def replace(text):  # write a temporary file in the folder, then rename it over the old one
+            temporary = scoring / 'scoring.json.tmp'
+            temporary.write_text(text, encoding='utf-8')
+            os.replace(temporary, scoring / 'scoring.json')
+
+        def wait_for(event, after, seconds=60):
+            deadline = time.monotonic() + seconds
+            while time.monotonic() < deadline:
+                records = [r for r in self.live_records() if str(r.get('event', '')).startswith('config_')]
+                if len(records) > after and records[after].get('event') == event:
+                    return records[after]
+                if len(records) > after:
+                    self.fail(f'expected {event}, got {records[after:]}')
+                time.sleep(1)
+            self.fail(f'no {event} within {seconds} s: {self.live_records()[-10:]}')
+
+        before = metrics()
+        version = before['ava_live_config_version']
+        self.assertEqual(before['ava_live_config_reloads_total{outcome="applied"}'], 0, before)
+        starting = [r for r in self.live_records() if r.get('event') == 'starting']
+        self.assertEqual(len(starting), 1)
+        self.assertEqual(starting[0].get('scoring_config_watch_s'), 2.0, starting[0])
+
+        document = json.loads(shipped)
+        document['scoring']['thresholds']['alert_enter'] = 0.8
+        applied_text = json.dumps(document, indent=2)
+        replace(applied_text)
+        applied = wait_for('config_reloaded', 0)
+        self.assertEqual(applied['version'], version + 1, applied)
+        after_apply = metrics()
+        self.assertEqual(after_apply['ava_live_config_version'], version + 1)
+        self.assertEqual(after_apply['ava_live_config_reloads_total{outcome="applied"}'], 1)
+
+        document['audio']['hop_s'] = 1.0
+        replace(json.dumps(document, indent=2))
+        rejected = wait_for('config_rejected', 1)
+        self.assertEqual(rejected['problems'], ['audio.hop_s applies to every call and needs a restart'], rejected)
+        self.assertEqual(metrics()['ava_live_config_version'], version + 1, 'a refused edit changes nothing')
+
+        os.remove(scoring / 'scoring.json')
+        unreadable = wait_for('config_unreadable', 2)
+        self.assertEqual(unreadable['error'], 'FileNotFoundError', unreadable)
+        replace(applied_text)
+        unchanged = wait_for('config_unchanged', 3)
+        self.assertEqual(unchanged['version'], version + 1, unchanged)
+
+        final = metrics()
+        self.assertEqual({outcome: final[f'ava_live_config_reloads_total{{outcome="{outcome}"}}']
+                          for outcome in ('applied', 'unchanged', 'rejected', 'unreadable')},
+                         {'applied': 1, 'unchanged': 1, 'rejected': 1, 'unreadable': 1})
+        records = self.live_records()
+        self.assertEqual(sum(1 for r in records if r.get('event') == 'starting'), 1, 'live never restarted')
+        logs = self.compose('logs', '--no-color', '--no-log-prefix', 'live').stdout
+        self.assertNotIn(scoring.as_posix(), logs, 'no host path in the log')
+        self.assertNotIn('/config/scoring', logs, 'no container path in the log')
+        print(f'\nobserved: version {version:g} -> {version + 1:g} on a host-side rename through the folder '
+              'bind mount; hop edit refused; removal reported, restore unchanged; no restart')
 
     def test_a_live_restart_mid_call_never_stops_the_call(self):
         """5.QA process restart (Claude-authored, 18 Nov 2026; PRD "AVA failure must not

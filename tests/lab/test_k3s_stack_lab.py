@@ -27,6 +27,9 @@ generates the Secrets from files. Then:
   the PBX namespace cannot reach postgres, redis or the api although it resolves
   them; inside the namespace only the allowed flows work (api -> redis yes, api ->
   postgres no, live -> api no); each "blocked" has a positive control (review L2);
+- (20 Nov, PRD FR-A9) a patch of the `ava-scoring` ConfigMap reaches the running live
+  pod through the kubelet's update of the mounted folder and is applied (one
+  `config_reloaded`, `ava_live_config_version` + 1), with no restart;
 - no container restarted (init containers wait for the storage); AVA pods run as
   their non-root users; no password appears in any pod log.
 The node container and its volumes are removed afterwards. The node itself pulls the
@@ -326,6 +329,47 @@ class K3sStackLabTests(unittest.TestCase):
             flows[f'{workload}->{host}:{port}'] = result
             self.assertEqual(result.split()[0] if result else '', expected, f'{workload} -> {host}:{port}: {result}')
 
+        # 20 Nov (PRD FR-A9 config file plus reload): an edit of the `ava-scoring` ConfigMap
+        # reaches the running pod through the kubelet's in-place update of the mounted
+        # folder (no subPath, no hash suffix) and live applies it; no restart (checked below).
+        metrics_script = ('import urllib.request,sys; sys.stdout.write(urllib.request.urlopen('
+                          '"http://127.0.0.1:9100/metrics", timeout=10).read().decode())')
+
+        def config_version():
+            text = self.in_pod('ava', 'deploy/live', 'python', '-c', metrics_script).stdout
+            return float(next(line.split()[-1] for line in text.splitlines()
+                              if line.startswith('ava_live_config_version ')))
+        def config_records():  # live's config_* operations-log records, oldest first
+            records = []
+            for line in self.kubectl('-n', 'ava', 'logs', 'deploy/live', check=False).stdout.splitlines():
+                try:
+                    record = json.loads(line)
+                except ValueError:
+                    continue
+                # Review M1: match the event name, not the text ("starting" has config_fingerprint).
+                if isinstance(record, dict) and str(record.get('event', '')).startswith('config_'):
+                    records.append(record)
+            return records
+        config_v = config_version()
+        self.assertEqual(config_records(), [], 'nothing to report before the edit')
+        document = json.loads((K8S / 'base' / 'scoring.json').read_text(encoding='utf-8'))
+        document['scoring']['thresholds']['alert_enter'] = 0.8
+        patched = self.kubectl('-n', 'ava', 'patch', 'configmap', 'ava-scoring', '--type', 'merge', '-p',
+                               json.dumps({'data': {'scoring.json': json.dumps(document, indent=2)}}), check=False)
+        self.assertEqual(patched.returncode, 0, f'{patched.stdout} {patched.stderr}')
+        edited_at, reloaded = time.monotonic(), []
+        while time.monotonic() - edited_at < 240 and not reloaded:  # kubelet sync period plus cache TTL
+            reloaded = config_records()
+            if not reloaded:
+                time.sleep(3)
+        reload_s = time.monotonic() - edited_at
+        self.assertTrue(reloaded, f'the ConfigMap edit never reached live\n{self.diagnose()}')
+        time.sleep(5)  # more than two watch intervals: a second record (e.g. a half-written read) would show
+        reloaded = config_records()
+        self.assertEqual([(r['event'], r.get('version')) for r in reloaded], [('config_reloaded', config_v + 1)],
+                         reloaded)
+        self.assertEqual(config_version(), config_v + 1)
+
         # Review L3: nothing restarted (the init containers wait for the storage).
         restarts = json.loads(self.kubectl('get', 'pods', '-n', 'ava', '-o', 'json').stdout)['items'] + \
             json.loads(self.kubectl('get', 'pods', '-n', 'ava-lab-pbx', '-o', 'json').stdout)['items']
@@ -344,10 +388,12 @@ class K3sStackLabTests(unittest.TestCase):
         for secret in (self.ari_password, self.db_password):
             self.assertNotIn(secret, logs, 'no password in any AVA pod log')
         self.assertNotIn(caller, logs, 'the caller number is not in the AVA logs')
-        version = self.kubectl('version', '-o', 'json', check=False).stdout
-        server = json.loads(version).get('serverVersion', {}).get('gitVersion') if version.strip() else None
+        kubectl_version = self.kubectl('version', '-o', 'json', check=False).stdout
+        server = json.loads(kubectl_version).get('serverVersion', {}).get('gitVersion') \
+            if kubectl_version.strip() else None
         print(f'\nobserved: k3s {server}; call {call_id} stored with {windows} windows and ended in the API '
-              f'registry; egress {egress}; in-namespace flows {flows}')
+              f'registry; egress {egress}; in-namespace flows {flows}; ConfigMap edit applied by live '
+              f'{reload_s:.0f} s after the patch (version {config_v:g} -> {config_v + 1:g})')
 
 
 if __name__ == '__main__':

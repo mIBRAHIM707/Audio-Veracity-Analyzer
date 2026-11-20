@@ -292,7 +292,7 @@ and about 50,000 original clips, excluding codec copies.
   - **Found:** live windowing ignores `hop_s` (constant 2 s), a start-up gap recorded
     for the PRD.
   - **Open:** audit-log rows for reloads, config version on `call.started`, the
-    optional API endpoint, Compose/k3s mounts.
+    optional API endpoint. (Compose/k3s mounts done in attempt 3.)
 - **20 Nov (attempt 2), 7.3 FR-U5 codec detected.**
   - **What:** the tap reads `CHANNEL(audionativeformat)` over ARI once a call's tap is
     set up (1 s bound; failures give None and count `codec_unknown` on the live
@@ -307,6 +307,26 @@ and about 50,000 original clips, excluding codec copies.
     1418 OK (219 skipped). Review conditional pass; M1 probed in the lab, L1-L4 fixed.
   - **Limits:** read once at the start; a re-INVITE codec change is not tracked; calls
     stored before 20 Nov show "not detected".
+- **20 Nov (attempt 3), 7.3 FR-A9 Compose/k3s config mounts.**
+  - **What:** both deployments start live with `--scoring-config` and
+    `--scoring-config-watch-s 10`. The shipped `scoring.json` (Compose
+    `deploy/compose/config/`, k3s `deploy/k8s/base/`) holds the §7.3 defaults, so no
+    setting changes.
+    - Compose: a read-only folder bind mount (`AVA_SCORING_CONFIG_DIR`). It is a folder
+      because a single-file mount misses a rename.
+    - k3s: the generated ConfigMap `ava-scoring`, with no hash suffix (an edit would
+      otherwise roll the pod and end its calls) and no subPath (never updated).
+  - **Evidence:** Claude-authored `tests/unit/test_deploy_scoring_config.py` (the defaults
+    under the real start-up rules, the Compose command through the real parser, mount
+    shapes).
+    - Compose lab case: a host-side rename was applied (version 1 to 2), a hop edit
+      refused, removal reported, the restored file unchanged, with no restart.
+    - Full Compose lab case: passes with the default mount.
+    - k3s lab: a ConfigMap patch was applied by live 10 s later (version 1 to 2), with
+      no restart (rerun OK in 229 s; the first run hit a host stall, not an assertion).
+    - Review: conditional pass. M1/M2 (k3s lab bugs) and L1-L4 docs fixed.
+  - **Limits:** a missing file at start-up refuses start (as before for an invalid
+    one); the k3s file update waits for the kubelet (often 60-90 s).
 - **17 Nov daily run (details in `daily-runs/2026-11-17.md`).** FR-O6 per-stage latency
   for the live loop (7.2/8.1): `ava_live_stage_seconds{stage}` with `queue_wait`,
   `batch_wait`, `apply` (scorer and hub publish) and `window_to_result` (offer to

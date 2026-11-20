@@ -498,7 +498,9 @@ implements the file plus reload. An endpoint is not built; FR-A9 ties it to FR-U
 would have to live in the API process, not here. With
 `--scoring-config FILE --scoring-config-watch-s N` (N from 1 to 60 s; off if absent,
 refused without `--scoring-config`), a `config` pump thread (`config_reload.py`) rereads
-FILE every N seconds. The scoring thread never reads the file.
+FILE every N seconds. The scoring thread never reads the file. Both deployments turn this
+on with N = 10 (20 Nov): Compose mounts a host folder (`deploy/compose/README.md`), and
+k3s mounts the `ava-scoring` ConfigMap (`deploy/k8s/README.md`).
 
 - The whole file is read (at most 64 KiB) and its SHA-256 compared with the last read,
   so atomic replacements, such as a ConfigMap symlink swap, are seen, and so are edits

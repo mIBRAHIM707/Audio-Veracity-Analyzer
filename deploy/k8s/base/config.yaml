@@ -16,6 +16,7 @@ data:
   AVA_ONNX_FILE: model.onnx
   AVA_CARD_FILE: model_card.json
   AVA_THREADS: "4"
+  AVA_SCORING_CONFIG_WATCH_S: "10"  # 1-60; live rereads the `ava-scoring` file this often
   AVA_API_THREADS: "2"
   # The password is not in the URL: libpq reads PGPASSWORD (from the Secret), so any
   # character works in it (as in the Compose stack).
