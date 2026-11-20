@@ -381,6 +381,24 @@ and about 50,000 original clips, excluding codec copies.
     relative tolerance on the statistics.
   - **Limits:** not trained and no accuracy claimed. The published weights are a
     parity fixture only. XLS-R + AASIST still needs XLS-R weights.
+- **20 Nov (attempt 6), 6.1 authenticated softphone endpoint (PRD FR-T1).**
+  - **What:** the lab image gets an optional `softphone` PJSIP endpoint (digest auth,
+    one registered contact, ulaw/alaw/gsm) only when the run passes
+    `AVA_SOFTPHONE_PASSWORD`; extension 702 dials it as a tapped caller's destination.
+    Endpoint identification order pinned; the credential umask is no longer inherited
+    by Asterisk. Details in `lab/asterisk/README.md`.
+  - **Evidence:** Claude-authored `tests/lab/test_softphone_lab.py`, 10 OK (Docker,
+    `--network none`): registration needs the password, foreign-From REGISTER and
+    unauthenticated INVITE refused/challenged, authenticated call and calls to the
+    registered phone sample-identical, CHANUNAVAIL without a contact, weak passwords
+    stop the container. Existing lab suites 19 OK on the new image.
+  - **Review:** conditional pass, nine findings fixed (one real SIPp ACK-branch defect),
+    re-review pass.
+  - **Limits:** SIPp plays the softphone; no real softphone application was tried. The
+    password protects the softphone's registration only (`anonymous` stays open).
+  - **Blocker found:** this session cannot access `D:/AVA-Data` (worktree-only file
+    access), so the 3.4 corpora and XLS-R weights stay unprovisioned until a human adds
+    that directory to the runner's allowed directories.
 - **17 Nov daily run (details in `daily-runs/2026-11-17.md`).** FR-O6 per-stage latency
   for the live loop (7.2/8.1): `ava_live_stage_seconds{stage}` with `queue_wait`,
   `batch_wait`, `apply` (scorer and hub publish) and `window_to_result` (offer to

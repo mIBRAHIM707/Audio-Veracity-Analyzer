@@ -345,6 +345,16 @@ items needing that data are listed at the end and stay out of the queue.
   `python -m lab.preflight` (8 checks incl. the lab test env, `AVA_LAB_IMAGE` and the
   ffmpeg pin; exit 1 on failure); 19 Claude-authored unit tests with fakes; review fixed;
   8 PASS on this host. Remaining: Compose file, a softphone endpoint.
+  20 Nov (attempt 6): authenticated `softphone` PJSIP endpoint, present only when the run
+  passes `AVA_SOFTPHONE_PASSWORD` (same rules as ARI): digest auth, one registered
+  contact, ulaw/alaw/gsm, `from-softphone` context, extension 702 dials it (tapped
+  caller); identifier order pinned; credential umask no longer inherited by Asterisk.
+  SIPp register/auth-call/probe scenarios; 10 Claude-authored lab cases
+  (`tests/lab/test_softphone_lab.py`) incl. wrong password, foreign-From REGISTER,
+  challenge without credentials, ACK on the INVITE transaction (defect found and fixed),
+  sample-identical audio both ways, CHANUNAVAIL without a contact, weak passwords refused;
+  review conditional pass, all findings fixed. The Compose stack exists (`deploy/compose`,
+  17 Nov). Remaining: a real softphone application (needs a person and a published port).
 - [ ] 6.2 ARI passive tap, lifecycle and RTP G.711/GSM decoder.
   Progress (15 Nov): `services/tap/` ARI client, per-call RTP receiver (source lock,
   bounded hand-off) and `TapApp`: calls never enter Stasis (review H1: a Stasis hand-off

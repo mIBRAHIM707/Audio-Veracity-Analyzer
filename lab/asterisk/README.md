@@ -149,6 +149,94 @@ another container could therefore call 810/811 through `anonymous`, or match an 
 endpoint by its From user. Each such call records up to 60 s into the mounted I/O
 folder. The bridged-call tests themselves run with `--network none`.
 
+## Authenticated softphone endpoint (20 Nov 2026; backlog 6.1, FR-T1)
+
+An optional `softphone` endpoint for a person's SIP softphone, or for a SIPp process
+playing one. It exists only when the run passes `AVA_SOFTPHONE_PASSWORD`, which follows
+the ARI password rules: letters and digits only, at least 16 characters. Without the
+variable, `entrypoint.sh` writes an empty `pjsip_softphone.conf`, which `pjsip.conf`
+includes, so no softphone endpoint exists. A password that breaks the rules stops the
+container before Asterisk starts (exit 64).
+- **Credentials.** User `softphone`, digest authentication (`type=auth`, `userpass`). The
+  password is written to `/etc/asterisk/pjsip_softphone.conf` inside the container
+  (mode 0640, group asterisk). It is never in the image or in Git. As with the ARI
+  password, `docker inspect` shows the container's environment, and processes started
+  with `docker exec` inherit it; the entrypoint's `unset` only covers Asterisk itself.
+  The image ships an empty placeholder of that file, so the `#include` also works if the
+  entrypoint is bypassed. The credential umask (027) is set only while the files are
+  written. Before this change the ARI branch left it in place for Asterisk, which made
+  recordings in `/lab/io` unreadable to other users on a Linux host. The softphone tests
+  now check that a recording is world-readable.
+- **Registration.** One contact (`max_contacts=1`, `remove_existing=yes`, at most 600 s).
+  `rewrite_contact`, `force_rport` and `rtp_symmetric` are on, so a phone behind NAT is
+  reached at the address its REGISTER came from.
+- **Codecs and dialplan.** It allows ulaw, alaw and gsm. Its calls start in
+  `from-softphone`, which includes the SIPp callers' extensions (600, 700, 701, 81x, 702).
+  Extension 702 answers, marks the caller for the tap (`AVA_TAP=caller`, like 701) and
+  dials the registered softphone. It records like 81x (`bridge-<caller>-*.wav`,
+  `-format.txt`, `-dialstatus.txt`).
+- **Identification.** `pjsip.conf` pins `endpoint_identifier_order=ip,username,anonymous`.
+  No `identify` sections exist, so the From user decides. A request whose From user is
+  `softphone` is challenged, and is never handed to the unauthenticated `anonymous`
+  endpoint.
+- **What the password protects.** It protects the softphone's identity and registration
+  only. `anonymous` stays enabled for the SIPp callers. Anyone who can reach UDP 5060 can
+  therefore call 600/700/701/81x without a password, and can also call 702, which rings
+  the registered phone. Never publish 5060 beyond a trusted lab network.
+
+SIPp scenarios:
+- `sipp/uac_register.xml` registers as `softphone` from its own port and answers the
+  challenge (`-au softphone -ap <password> -key expires <s>`; 0 unregisters).
+- `sipp/uac_auth_inject.xml` is `uac_inject.xml` with the challenge acknowledged on the
+  first INVITE's transaction (`[branch-3]`) and the INVITE re-sent with credentials.
+- Two negative probes: `sipp/uac_register_as.xml` registers the `softphone` AOR under
+  another From user without credentials, and `sipp/uac_challenge_probe.xml` exits 0
+  only on a 401, which it acknowledges.
+
+In the tests the password reaches SIPp through an environment variable inside the
+container (`sh -c '... -ap "$AVA_SOFTPHONE_PASSWORD"'`), not through the host's command
+line. It is still in SIPp's own arguments inside the container. It is random for each
+run, and the container has no network.
+
+Results (Claude-authored `tests/lab/test_softphone_lab.py`, 20 Nov, 10 OK in 29 s, all
+with `--network none`):
+- **Registration.** A wrong password does not register, the right one does (one contact
+  at the phone's port), and `Expires: 0` removes it. A REGISTER for the `softphone` AOR
+  under another From user, without credentials, gets a final refusal and no contact.
+- **Challenge without credentials.** An INVITE naming `softphone` gets 401 and no 200.
+  The probe's ACK carries the INVITE's branch.
+- **Authenticated call.** An authenticated 4 s mu-law call to 600 is recorded
+  sample-identical to the decode of the sent packets. The 401 arrives once, not
+  retransmitted, and its ACK carries the first INVITE's branch. The review found that a
+  plain `[branch]` gave the ACK a new branch, which this check caught before the
+  `[branch-3]` fix. The recording is world-readable.
+- **Call to the registered phone.** Extension 702 reaches the phone where it registered.
+  The INVITE offers PCMU, PCMA and GSM, the leg is `(ulaw)`, and the audio the PBX sent
+  the phone is sample-identical to the caller's, and so is the phone's echo.
+- **No contact.** With no registered contact, or with no softphone configured, 702
+  reports `CHANUNAVAIL` within seconds, with no 30 s ring-out.
+- **No endpoint without a password.** Without the password the endpoint is absent and
+  the included file is empty. A short password, or one with other characters, stops the
+  container at start-up.
+- **Mutation check.** Run on the first version, before the review cases were added:
+  removing `auth=softphone` from the endpoint failed 4 of the then 5 cases in the
+  password class.
+
+On the final image the existing lab suites (asterisk, bridged, ARI tap, AMR replay)
+passed: 19 OK. In an earlier combined run, before the review fixes, one ARI tap case
+(`test_tap_receives_the_caller_audio_and_the_call_lifecycle`, extension 700, which this
+change does not touch) failed once on audio correlation: 0.54, with the first 960
+samples missing from the tap. It passed when run alone and in a full rerun of the tap
+suite (9/9). It is recorded as an intermittent observation, not fixed.
+
+Not tried: a real softphone application (Linphone, MicroSIP and others). That needs a
+person and a network path to the container, and the lab tests have no network. To use
+one, the operator must set the password and publish UDP 5060 and the RTP range only on a
+trusted host interface (see "What the password protects"). TLS/SRTP is not configured.
+The Compose and k3s lab PBX use this image without the variable, so they get no
+softphone. Their lab tests were not rerun for this change; the only change to their
+start-up is the umask restore.
+
 ## AMR-NB file/replay (17 Nov 2026; backlog 6.3, PRD FR-D6)
 
 Asterisk 20 has no open AMR codec, so AMR-NB enters the lab as replay, which is what
@@ -186,7 +274,8 @@ replay plumbing above is unaffected.
 
 - 6.1: a real genuine/synthetic WAV played through a call (the command exists, only
   synthetic signals were run here; the 6.QA tap tests play public CSALT clips through a
-  call). A softphone (rather than SIPp) as an endpoint was not tried.
+  call). The authenticated softphone endpoint exists (20 Nov, above), but a real
+  softphone application has not been tried with it.
 - 6.3: live AMR-NB over RTP (RFC 4867 payloads; no open Asterisk codec, P2); 6.QA end
   to end with AVA on codecs other than mu-law (the AMR replay above stops at the tap).
 

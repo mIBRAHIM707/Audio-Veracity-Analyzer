@@ -107,6 +107,11 @@ writer login in the deployments.
 20 Nov (attempt 5): no data change. The AASIST baseline (FR-M4) now exists in AVA's
 format. It matches the official reference code within 1e-6 on the same weights. Not
 trained; XLS-R + AASIST still waits for XLS-R weights.
+20 Nov (attempt 6): no data change. The lab PBX can host a password-protected
+softphone (`AVA_SOFTPHONE_PASSWORD`, extension 702). Human: to try a real softphone app,
+publish UDP 5060 and the RTP range on a trusted interface only. Human, blocking 3.4 and
+XLS-R: the daily runner cannot access `D:/AVA-Data`; add it to the runner's allowed
+directories (Claude Code `--add-dir` / `additionalDirectories`).
 
 Human decisions:
 - Should reloads be written to the audit log?
