@@ -6,16 +6,16 @@ wait on it.
 
 ## Design decision: no Stasis hand-off (15 Nov 2026, review H1)
 
-Architecture §2.1/§7 says the dialplan sends calls through a Stasis application. The
+Architecture §2.1/§6 used to say the dialplan sends calls through a Stasis application. The
 first version did that and continued each call at once, but an independent review
 showed a call in Stasis still depends on a live tap: an app that dies between
 `StasisStart` and `continue`, or is slow, leaves an unanswered call waiting. That
 conflicts with FR-T4. The tap therefore keeps calls out of Stasis: its event WebSocket
-subscribes to all channel events (`subscribeAll=true`), and once a call channel is
+subscribes to all channel events (`subscribeAll=true`), and once a marked caller leg is
 answered it creates a snoop channel on it from outside (verified on Asterisk 20.6:
-snooping a channel that is not in Stasis works). The dialplan has no tap step. **The
-architecture text should be updated to match** (open question for the PRD/architecture
-owners).
+snooping a channel that is not in Stasis works). The dialplan has no Stasis step; it
+only marks the caller leg (`Set(AVA_TAP=caller)`). On
+20 Nov 2026 architecture §2.1, §3, §6 and ADR-4 and PRD FR-T2 were updated to match.
 
 ## Modules
 

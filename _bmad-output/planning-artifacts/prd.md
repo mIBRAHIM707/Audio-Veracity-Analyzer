@@ -39,6 +39,7 @@ Real-time audio deepfake detection for Urdu and Punjabi in bank and call-centre 
 | **Timeline rebaselined from 1 October 2026**; Phase 0 extended to 15 October | Phase 0 exit gate was unmet on its paper end date | §8 |
 | Detailed decision rationale moved to Appendix A; decisions D5 to D15 given IDs; references and limitations added | Structure review | §4, §1.4, §12, Appendix A |
 | **5 Oct 2026, project-owner decision:** public corpora whose licences permit derivative works (CSALT, Meta Omnilingual) may be used for voice cloning and training in this research under the university approval; Common Voice excluded from cloning pending its terms; participant cloning still needs the individual opt-in | Tughral, 5 Oct 2026 | D11, FR-D2, FR-D3, FR-D11, FR-E5, §6.4, Q1, R13, Appendix A |
+| **20 Nov 2026, accepted implementation change:** the passive tap no longer uses a Stasis hand-off; call start and end come from ARI channel events on the dialplan-marked caller leg | A Stasis hand-off makes a call wait on the tap application (independent review H1, 15 Nov 2026), against FR-T4; implemented and lab-tested in backlog 6.2 | FR-T2; architecture §2.1, §3, §6, ADR-4 |
 
 ---
 
@@ -235,7 +236,7 @@ Priorities: **P0** = must have for SDP completion, **P1** = should have, **P2** 
 | ID | Requirement | Priority |
 |---|---|---|
 | FR-T1 | Provide a simulated telephony lab: Asterisk PBX, two or more SIP softphone endpoints, and a call generator (SIPp or scripted originations) that can play genuine and synthetic audio files into calls, with codec forcing for G.711 and GSM. | P0 |
-| FR-T2 | **Passive tap (primary).** An ARI application attaches a snoop channel to each call and streams the caller direction as plain RTP (ExternalMedia or equivalent) to AVA. Call start and end come from ARI events (StasisStart, StasisEnd or ChannelHangupRequest); call ID, from and to come from ARI channel fields. A tap socket with no packets for 30 s is torn down with `call.ended reason=timeout`. | P0 |
+| FR-T2 | **Passive tap (primary).** An ARI application attaches a snoop channel to each call and streams the caller direction as plain RTP (ExternalMedia or equivalent) to AVA. Call start and end come from ARI channel events (accepted change, 20 Nov 2026: calls are never sent into Stasis, because a Stasis hand-off makes a call wait on the tap, against FR-T4; the tap watches all channel events and snoops the dialplan-marked caller leg once it is answered; end is a hard ChannelHangupRequest or ChannelDestroyed; architecture §2.1); call ID, from and to come from ARI channel fields. A tap socket with no packets for 30 s is torn down with `call.ended reason=timeout`. | P0 |
 | FR-T3 | Map tapped sessions to call metadata (call ID, from, to, timestamps, codec) and expose it to the dashboard. | P0 |
 | FR-T4 | AVA must never be in the media path; failure of AVA must not affect the call. The deployment guide requires the PBX's recording-failure policy to be "continue the call", and the e2e test asserts a call survives AVA being stopped. | P0 |
 | FR-T5 | Support session teardown and cleanup of all per-call state within 5 s of the end event. | P0 |

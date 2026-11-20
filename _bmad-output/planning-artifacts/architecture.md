@@ -90,9 +90,9 @@ flowchart LR
 **Responsibility.** Receive forked call audio and call lifecycle events from the PBX and hand decoded PCM frames to `ingest`.
 
 **Primary path: Asterisk ARI tap (PRD FR-T2).**
-- A small ARI application (Python, `asyncio` WebSocket client to `/ari/events`) subscribes to channel events. On `StasisStart` for a call it attaches a **snoop channel** to the caller channel with `spy=in` (caller direction only) and bridges it to an **ExternalMedia** channel that sends plain RTP (`ulaw` or `slin16`) to a host and port owned by the receiver.
-- The RTP receiver reads raw UDP, parses RTP headers (about 100 lines), and decodes the payload: G.711 μ-law and A-law (NumPy), GSM 06.10 (`libgsm` via `pygsm` or an `ffmpeg` pipe). AMR-NB decoding (all eight modes, SID/DTX, both RFC 4867 payload formats, via `opencore-amr`) lives in the same decoder module but is exercised by the file path and by replayed RTP captures, not by live Asterisk calls (PRD D8).
-- Call ID, from, to and timestamps come from the ARI channel fields. Call end comes from `StasisEnd` or `ChannelHangupRequest`. A tap socket with no packets for 30 s is torn down with `call.ended reason=timeout`.
+- A small ARI application (Python WebSocket client to `/ari/events` with `subscribeAll=true`) watches every channel's events. **Calls never enter Stasis** (implemented 15 Nov 2026, review H1): a dialplan `Stasis()` hand-off would leave a call waiting on the application if the tap died or stalled before continuing it, which conflicts with FR-T4. Instead the dialplan marks the inbound caller leg with a plain variable after `Answer()` (`Set(AVA_TAP=caller)`, seen as a `ChannelVarset` event, so a `Dial()`ed agent leg is never tapped as the caller). On the first event showing a marked telephone channel in state `Up` (normally the `ChannelVarset` itself, since the mark follows `Answer()`; optionally limited to configured extensions), the application attaches a **snoop channel** to it from outside with `spy=in` (caller direction only; snooping a channel that is not in Stasis works on Asterisk 20.6) and bridges it to an **ExternalMedia** channel that sends plain RTP (`ulaw`) to a port owned by the receiver. The call itself is only spied on: a dead, slow or disconnected tap cannot hold, answer or hang up it. On reconnect the tap sweeps leftover tap bridges and re-taps answered marked calls (covering calls marked while it was disconnected).
+- The RTP receiver reads raw UDP, parses RTP headers (about 100 lines), and decodes the payload: G.711 μ-law and A-law (NumPy) on the live tap. GSM 06.10 (`libgsm` via `pygsm` or an `ffmpeg` pipe) and AMR-NB decoding (all eight modes, SID/DTX, both RFC 4867 payload formats, via `opencore-amr`) live in the same decoder module but are exercised by the file path and by replayed RTP captures, not by live Asterisk calls (PRD D8).
+- Call ID, from, to and timestamps come from the ARI channel fields. Call start is the tap start above; call end comes from a hard `ChannelHangupRequest` or `ChannelDestroyed` on the call channel or its snoop (`reason=bye`), or loss of the tap (ExternalMedia channel gone, its socket failing, or the ARI connection closing; `reason=monitor_lost`); a soft hangup request (transfer, redirect) does not end the tap. A tap socket with no packets for 30 s is torn down with `call.ended reason=timeout`.
 - Above `max_calls`, a new call is not tapped and a `system.health reason=capacity` event is emitted; the call itself continues (PRD FR-I9).
 - Emits `AudioFrame{call_id, direction, ts, pcm16_8k}` to `ingest` over an in-process asyncio queue (same pod) or Redis Streams (separate pods).
 
@@ -201,13 +201,13 @@ sequenceDiagram
     participant API as api
     participant UI as dashboard
 
-    PBX->>TAP: ARI StasisStart (channel, from, to)
+    PBX->>TAP: ARI ChannelVarset AVA_TAP=caller on the answered channel (channel, from, to)
     TAP->>PBX: ARI snoop(spy=in) + ExternalMedia(host:port)
     TAP->>SCR: call.started(call_id, metadata)
     SCR->>API: publish call.started
     API-->>UI: WS call.started
     loop every 20 ms
-        PBX->>TAP: RTP (G.711 / GSM)
+        PBX->>TAP: RTP (G.711 mu-law; Asterisk transcodes the call's codec)
         TAP->>ING: AudioFrame(pcm16_8k)
     end
     loop every 2 s of speech
@@ -218,7 +218,7 @@ sequenceDiagram
         SCR->>API: publish score.updated / alert.raised
         API-->>UI: WS event
     end
-    PBX->>TAP: ARI StasisEnd / ChannelHangupRequest
+    PBX->>TAP: ARI ChannelHangupRequest (hard) / ChannelDestroyed
     TAP->>SCR: call.ended(reason=bye)
     SCR->>SCR: drain in-flight windows, persist final state, clear Redis
     SCR->>API: publish call.ended
@@ -315,7 +315,7 @@ flowchart TD
 
 ## 6. Telephony Lab
 
-- **Asterisk 20 LTS** (or 21) in a container, PJSIP stack, two internal extensions (caller, agent), ARI enabled. The dialplan sends calls through a Stasis application that attaches the snoop and ExternalMedia channels described in §2.1. Version choice and the tap spike are Phase 0 task 0.9.
+- **Asterisk 20 LTS** (or 21) in a container, PJSIP stack, two internal extensions (caller, agent), ARI enabled. The dialplan never sends calls into Stasis; it marks the inbound caller leg (`Set(AVA_TAP=caller)` after `Answer()`), and the ARI tap attaches the snoop and ExternalMedia channels from outside as described in §2.1. Version choice and the tap spike are Phase 0 task 0.9.
 - **Endpoints.** Linphone or Zoiper softphones for the manual demo; **SIPp** scenarios with PCAP playback for automated tests that inject known genuine and synthetic WAVs.
 - **Codec forcing.** Endpoints negotiate `ulaw` or `gsm` so each live codec path is exercised deliberately. AMR-NB is exercised by replaying captured AMR RTP into the receiver, since stock Asterisk cannot negotiate it.
 - **SIPREC (stretch).** jambonz configured as a SIPREC client pointing at `siprec-srs`, to demonstrate the production-equivalent interface.
@@ -519,7 +519,7 @@ Audio-Veracity-Analyzer/
 **Reasoning.**
 - SIPREC is the vendor-neutral standard every real SBC speaks for compliance recording, which is why v0.1 made it primary: an operator could point an existing recording profile at AVA with no custom integration. That argument still holds for production, and the SRS is kept as a stretch goal exercised with jambonz as the client.
 - Asterisk, the only PBX the lab can run for free, has no SIPREC client. A SIPREC server could therefore never be driven end to end by the lab, and the live demo would have depended on a path nobody could test. The ARI snoop plus ExternalMedia tap delivers the same forked, decoded audio and is what the title defence presented.
-- The tap also decodes codecs inside Asterisk when `slin16` is requested, which simplifies the receiver; the decoders are kept for the `ulaw` and `gsm` paths and for files.
+- Asterisk transcodes the call's codec (A-law, GSM) to the tap's ExternalMedia format, which simplifies the receiver. As implemented (15 Nov 2026) the tap requests `ulaw` only; the GSM and AMR-NB decoders serve the file and replay paths.
 - Packet capture is brittle (needs switch access, call correlation from SIP sniffing) and looks like surveillance to a compliance officer. The tap is a sanctioned PBX feature with explicit call metadata from ARI.
 - Being in the media path (B2BUA) would let AVA block calls but would also mean AVA failure drops calls, which violates PRD FR-T4.
 - FreeSWITCH is the second fallback if the Asterisk tap fails its spike (PRD FR-T7); Kamailio is a proxy, not a media-handling PBX.

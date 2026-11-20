@@ -370,7 +370,9 @@ items needing that data are listed at the end and stay out of the queue.
   tapped audio into LiveCalls/SpeechFeed/LivePipeline (per-call soxr stream equal to the
   file path's resampling, concealment mask at 16 kHz, ends after the tail is scored).
   15 Nov (cee5ffb): `services/live/service.py` service process with ARI reconnect.
-  Remaining: agent direction, architecture §2.1 text (Stasis) to update.
+  20 Nov (attempt 7): architecture §2.1/§3/§6 and PRD FR-T2 now describe the
+  no-Stasis tap (channel events, marked caller leg), recorded as an accepted change.
+  Remaining: agent direction (FR-I8, P2; needs a "human agent answered" event design).
 - [ ] 6.3 Jitter/loss/concealment and malformed RTP/SDP cases; AMR file/replay.
   Progress (15 Nov): `services/tap/jitter.py` JitterBuffer (60 ms, reorder, repeat 3 then
   silence = the training rule for mu-law; re-anchors after a sender pause or sequence

@@ -501,8 +501,8 @@ and about 50,000 original clips, excluding codec copies.
   card, hash, graph inspection forcing per-window serving for dynamic INT8, calibrated
   cards refused, and a finite warm-up. It runs one reconnecting loop. In the lab it
   scored a real Asterisk call with the real 14 Nov static INT8 export: untrained head,
-  5 windows, gate 2.6 s. Open questions: the architecture's Stasis wording (§2.1/§7);
-  FR-I2's sample definition and "sustained" window; call-ID reuse; start-data privacy;
+  5 windows, gate 2.6 s. The Stasis wording was resolved 20 Nov: architecture
+  §2.1/§3/§6 and PRD FR-T2 now describe the no-Stasis tap. Open questions: FR-I2's sample definition and "sustained" window; call-ID reuse; start-data privacy;
   admission before tapping; the calibration temperature in serving; and a reload
   changing hop/stride. No detector or accuracy claim.
 - **Backlog 2.1 complete (9 Nov): bounded analysis service.** `services/inference/`
