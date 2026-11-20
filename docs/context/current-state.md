@@ -356,6 +356,31 @@ and about 50,000 original clips, excluding codec copies.
   - **Limits:** CONNECT on other databases (use pg_hba), whole `calls` rows readable
     (including start/end data), advisory-lock delay, and `--auth on` still needs a
     writer login.
+- **20 Nov (attempt 5), 9.2 AASIST baseline (PRD FR-M4).**
+  - **What:** `models/baselines/aasist.py` is AASIST written against the reference
+    implementation, clovaai/aasist (MIT) at commit a04c986. It is cloned only outside the
+    repository (`D:/AVA-Data/vendor/aasist`); the module carries the upstream notice.
+    It runs on AVA's window contract and the shared harness, in two configurations:
+    `REFERENCE_CONFIG` (297,866 parameters) and AASIST-L (85,306). Upstream parameter
+    names load strictly (`load_reference_state_dict`). The reference quirks are kept,
+    and `REFERENCE_TRAINING` records what the shared harness does not do (cosine
+    schedule, SWA, coupled L2).
+  - **Evidence:** Claude-authored `tests/model/test_aasist.py`, 20 cases. Six
+    compare against the clone at the pinned commit when `AVA_AASIST_UPSTREAM` is set.
+    They skip otherwise, or fail with `AVA_REQUIRE_UPSTREAM=1`; `tests/model` is not
+    run in CI. Parity was verified on 20 Nov:
+    - the sinc taps are bit-identical;
+    - eval logits agree within 1e-6, and training-mode logits and every BatchNorm
+      statistic agree with the same seed;
+    - the published weights load and score identically.
+    Two mutants were caught. The RawNet2 port in the same clone agrees with both
+    RawNet2 assumptions (the asvspoof-challenge original is still unchecked).
+  - **Review:** independent, conditional pass, no High or Medium. The Lows were fixed:
+    `temperatures[3]` unused (documented and tested), the commit pinned and checked,
+    the AdamW decay strength stated, strict mode, the weights cases split, and a
+    relative tolerance on the statistics.
+  - **Limits:** not trained and no accuracy claimed. The published weights are a
+    parity fixture only. XLS-R + AASIST still needs XLS-R weights.
 - **17 Nov daily run (details in `daily-runs/2026-11-17.md`).** FR-O6 per-stage latency
   for the live loop (7.2/8.1): `ava_live_stage_seconds{stage}` with `queue_wait`,
   `batch_wait`, `apply` (scorer and hub publish) and `window_to_result` (offer to

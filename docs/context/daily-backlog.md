@@ -600,6 +600,17 @@ items needing that data are listed at the end and stay out of the queue.
   shared window/harness contract with the reference training config; 13
   Claude-authored tests, review fixed; upstream fidelity to verify before reporting.
   Remaining: AASIST and XLS-R + AASIST (XLS-R weights are not provisioned locally).
+  20 Nov (attempt 5): `models/baselines/aasist.py` AASIST against the reference
+  implementation (clovaai/aasist, MIT, commit a04c986, cloned outside the repository).
+  AASIST (297,866 parameters) and AASIST-L (85,306) configurations, upstream names
+  loaded strictly, reference quirks kept, and training differences recorded. 20
+  Claude-authored tests. The six upstream parity cases check that the sinc taps are
+  bit-identical, that logits agree within 1e-6 in eval mode and in training mode with
+  the same seed, and that the published weights score identically. They need
+  `AVA_AASIST_UPSTREAM` at the pinned commit; they skip without it, or fail with
+  `AVA_REQUIRE_UPSTREAM=1`. Review conditional pass, Lows fixed. The RawNet2 port in
+  the clone agrees with both RawNet2 assumptions. Remaining: XLS-R + AASIST (needs
+  XLS-R weights).
 - [ ] 9.3 EER/minDCF/FAR, calibration/ECE, bootstrap and subset/evidence-length reports.
   Progress (10 Nov): `models/evaluation/metrics.py` core metrics, 15 Claude-authored
   known-answer tests, review fixed; FR-M9 evidence-length curve with a fixed cohort and

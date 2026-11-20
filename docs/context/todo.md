@@ -104,6 +104,9 @@ history and alert search, reading PostgreSQL as `ava_reader`, a login that can o
 read the four history tables. Operators set a new password, `AVA_DB_READER_PASSWORD` or
 the Secret key `db-reader-password`. Human: decide whether `--auth on` gets its own
 writer login in the deployments.
+20 Nov (attempt 5): no data change. The AASIST baseline (FR-M4) now exists in AVA's
+format. It matches the official reference code within 1e-6 on the same weights. Not
+trained; XLS-R + AASIST still waits for XLS-R weights.
 
 Human decisions:
 - Should reloads be written to the audit log?
