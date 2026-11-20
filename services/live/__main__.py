@@ -151,6 +151,9 @@ def build_parser():
     parser.add_argument('--card', required=True, help='model card JSON (models/export/model_card.py)')
     parser.add_argument('--onnx', required=True, help='exported detector named by the card')
     parser.add_argument('--scoring-config', help='scoring JSON document (ava.yaml structure); defaults if absent')
+    parser.add_argument('--scoring-config-watch-s', type=_watch_seconds,
+                        help='reread --scoring-config every N seconds (1-60) and apply valid changes to calls '
+                             'started afterwards (FR-A9); off if absent')
     parser.add_argument('--per-window', action='store_true', help='run the detector one window at a time')
     parser.add_argument('--threads', type=_bounded_int(1, 16), default=1, help='ONNX intra-op threads')
     parser.add_argument('--vad-model', required=True, help='pinned Silero VAD ONNX file')
@@ -187,6 +190,13 @@ def build_parser():
     parser.add_argument('--event-log', choices=('stderr', 'off'), default='stderr',
                         help='structured JSON operations log (FR-O6) on stderr (default) or off')
     return parser
+
+
+def _watch_seconds(text):
+    value = _positive_float(text)
+    if not 1 <= value <= 60:
+        raise argparse.ArgumentTypeError('must be from 1 to 60 seconds')
+    return value
 
 
 def _ttl_days(text):
@@ -384,6 +394,8 @@ def _prepare(args, environ, factories, stderr, opened):
         made['bind_check'](args.bind_host)
     except OSError as error:
         return refuse(f'bind host {args.bind_host}: {type(error).__name__}: {error.strerror or error}')
+    if args.scoring_config_watch_s is not None and not args.scoring_config:
+        return refuse('--scoring-config-watch-s needs --scoring-config')
     document = {}
     if args.scoring_config:
         try:
@@ -480,9 +492,18 @@ def _prepare(args, environ, factories, stderr, opened):
         forwarder = RedisForwarder(channel_feed, redis_client)
         pumps.append({'thread': PumpThread('redis', forwarder.pump, pending=channel_feed.buffered),
                       'resource': redis_client, 'report': lambda: {'counts': dict(forwarder.stats)}})
+    watcher = None
+    if args.scoring_config_watch_s is not None and getattr(service, 'configs', None) is not None:
+        # FR-A9 file plus reload: rereads on its own thread; new calls get valid changes.
+        from services.live.config_reload import ConfigFileWatcher
+        watcher = ConfigFileWatcher(args.scoring_config, service.configs, fixed=config,
+                                    model_window_s=card['window_s'])
+        pumps.append({'thread': PumpThread('config', watcher.pump, pending=watcher.pending,
+                                           interval_s=args.scoring_config_watch_s),
+                      'resource': None, 'report': watcher.report})
     if args.event_log == 'stderr' and getattr(service, 'hub', None) is not None:
         from services.live.eventlog import EventLog
-        event_log = EventLog(service.hub, service, stderr)
+        event_log = EventLog(service.hub, service, stderr, config_watcher=watcher)
         pumps.append({'thread': PumpThread('eventlog', event_log.pump, pending=event_log.pending),
                       'resource': event_log, 'report': event_log.report})
     recorder = getattr(service, 'recorder', None)
@@ -509,6 +530,7 @@ def _prepare(args, environ, factories, stderr, opened):
     if health is not None:
         host, port = health.address
         record['health'] = {'host': host, 'port': port}
+    record['scoring_config_watch_s'] = args.scoring_config_watch_s if watcher is not None else None
     record['retention'] = ('off' if retention is None else
                            {'mode': 'on' if retention[1].enabled else 'purge', 'ttl_days': args.retention_ttl_days})
     _say(stderr, record)

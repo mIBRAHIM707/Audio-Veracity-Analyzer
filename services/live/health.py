@@ -305,6 +305,7 @@ class HealthServer:
         stored, waits, backlog, failures, hub_dropped, superseded = [], [], [], [], [], []
         forwarded, publish_failures, no_receivers = [], [], []
         snippets, snippets_queued = [], []
+        reloads, config_version = [], []
         for pump in self.pumps:
             thread = pump['thread']
             label = (('pump', thread.name),)
@@ -314,6 +315,10 @@ class HealthServer:
             faults.append((label, snap['faults']))
             moved.append((label, snap['moved']))
             report = pump['report']()
+            if 'config_reloads' in report:  # FR-A9 scoring-config watcher (services/live/config_reload.py)
+                reloads += [((('outcome', key),), value) for key, value in sorted(report['config_reloads'].items())]
+                config_version.append(((), report['config_version']))
+                continue
             if 'snippets' in report:  # FR-O5 snippet recorder (services/live/retention.py)
                 snippets += [((('outcome', key),), value) for key, value in sorted(report['snippets'].items())]
                 snippets_queued.append(((), report['queued']))
@@ -354,6 +359,13 @@ class HealthServer:
                               'queue_full, cleanup runs/deleted, ...; kinds differ, do not sum.', snippets)
                       + _family('gauge', 'ava_live_snippets_queued', 'Snippets waiting to be written.',
                                 snippets_queued))
+        if reloads:
+            lines += (_family('counter', 'ava_live_config_reloads_total',
+                              'Scoring-config file changes seen by the watcher, by outcome (FR-A9): applied (new '
+                              'calls use it), unchanged, rejected (running settings kept), unreadable.', reloads)
+                      + _family('gauge', 'ava_live_config_version',
+                                'Scoring-config version new calls get (1 at start, +1 per applied reload).',
+                                config_version))
         if forwarded:
             lines += (_family('counter', 'ava_live_redis_forwarded_total', 'Events published on Redis.', forwarded)
                       + _family('counter', 'ava_live_redis_publish_failures_total',

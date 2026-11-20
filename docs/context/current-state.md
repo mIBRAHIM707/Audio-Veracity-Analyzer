@@ -275,6 +275,24 @@ and about 50,000 original clips, excluding codec copies.
   wait) fixed with a test whose mutant fails. Known limits in `services/api/README.md`
   (retention switch-off not seen by the API until cleanup; refused playbacks not
   audited). Not yet: codec detected (rest of FR-U5), Compose/k3s wiring.
+- **20 Nov (attempt 1), 7.3 FR-A9 config file plus reload.**
+  - **What:** `services/live/config_reload.py` with
+    `python -m services.live --scoring-config FILE --scoring-config-watch-s N`. The
+    file is reread on a pump thread and compared by SHA-256.
+  - **Validation:** start-up rules plus the card window.
+  - **Applied:** valid changes go through `ConfigStore.reload` to calls started
+    afterwards (FR-I4). Running calls keep their snapshot.
+  - **Refused:**
+    - `hop_s` and the degraded-stride keys need a restart;
+    - `score_directions` without `caller` is refused, since only the caller is tapped.
+  - **Reporting:** applied/unchanged/rejected/unreadable go to the operations log and
+    to `ava_live_config_reloads_total` / `ava_live_config_version`. No path is printed.
+  - **Tests and review:** 21 Claude-authored tests on a real `LiveCalls`; review
+    conditional pass, M1 fixed.
+  - **Found:** live windowing ignores `hop_s` (constant 2 s), a start-up gap recorded
+    for the PRD.
+  - **Open:** audit-log rows for reloads, config version on `call.started`, the
+    optional API endpoint, Compose/k3s mounts.
 - **17 Nov daily run (details in `daily-runs/2026-11-17.md`).** FR-O6 per-stage latency
   for the live loop (7.2/8.1): `ava_live_stage_seconds{stage}` with `queue_wait`,
   `batch_wait`, `apply` (scorer and hub publish) and `window_to_result` (offer to

@@ -504,6 +504,13 @@ items needing that data are listed at the end and stay out of the queue.
   SS01-SS04 pure, SB01-SB04 on PostgreSQL 16 + production AES-GCM store, SN01-SN02.
   Review conditional pass, M1 fixed. Remaining: FR-U5 codec detected, FR-A9, FR-A5;
   Compose/k3s wiring of playback (key in the API, `cryptography` in its image).
+  20 Nov: FR-A9 config file plus reload in the live process
+  (`services/live/config_reload.py`, `--scoring-config-watch-s`): the file is reread on a
+  pump thread, then validated; valid changes reach calls started afterwards (FR-I4).
+  Process-wide keys (hop, degraded stride) are refused as "needs a restart". Outcomes go
+  to the operations log and `/metrics`. Claude-authored tests. Remaining: FR-U5 codec
+  detected, FR-A5, the optional FR-A9 endpoint (API, with accounts), Compose/k3s config
+  mounts.
 - [ ] 7.QA Astra-designed Playwright suite, offline assets, failures/reconnects.
 
 ## 8 — CPU capacity (FR-I9/I10)

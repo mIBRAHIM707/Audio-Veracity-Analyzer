@@ -90,6 +90,15 @@ alert" buttons (true/false positive) for signed-in users, using the attempt-8 AP
 snippet from the call detail (FR-U5; audited before any audio is sent; missing, expired
 and unreadable snippets have their own messages). Human: decide whether the API may
 hold the retention key (Compose/k3s wiring) and whether refused playbacks are audited.
+20 Nov: no data change. The live service can reread its scoring settings file while it
+runs (FR-A9, `--scoring-config-watch-s`). Valid changes apply to new calls only.
+Restart-only and caller-less settings are refused.
+
+Human decisions:
+- Should reloads be written to the audit log?
+- Should calls record which settings version they used?
+- Should hop stay restart-only (FR-A9 lists it as reloadable)?
+- Live windows ignore `hop_s`; it is fixed at 2 s.
 
 Updated 4 October 2026. This is the active sequence; evidence lives in
 `current-state.md` and `handoffs/`. Check marks mean the stated bounded task passed

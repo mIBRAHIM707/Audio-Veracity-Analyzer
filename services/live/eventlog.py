@@ -76,9 +76,12 @@ def _safe(value):
 
 class EventLog:
     def __init__(self, hub, service, stream, *, max_lines_per_s=DEFAULT_MAX_LINES_PER_S, wall=time.time,
-                 clock=time.monotonic):
+                 clock=time.monotonic, config_watcher=None):
+        """`config_watcher` (optional, FR-A9): a `config_reload.ConfigFileWatcher` whose
+        reload outcomes are written as service lines."""
         if type(max_lines_per_s) is not int or not 1 <= max_lines_per_s <= 10_000:
             raise ValueError('max_lines_per_s must be an integer from 1 to 10000')
+        self._config = config_watcher
         self._subscription = hub.subscribe(buffer=MAX_BUFFER)
         self.service, self.stream = service, stream
         self.max_lines_per_s, self._wall, self._clock = max_lines_per_s, wall, clock
@@ -104,6 +107,7 @@ class EventLog:
         if self._counters_at is None or now - self._counters_at >= COUNTER_INTERVAL_S:
             self._counters_at = now
             lines = [dict(line, priority=True) for line in self._counter_lines()]
+        lines += [dict(line, priority=True) for line in self._config_lines()]
         envelopes, overflow = self._subscription.drain()
         self._dropped += overflow
         self.counts['dropped'] += overflow
@@ -127,6 +131,26 @@ class EventLog:
         except Exception:  # a service missing a part: nothing to compare this turn
             self.counts['read_failures'] += 1
             return None
+
+    def _config_lines(self):
+        """Reload outcomes (at most one per distinct file state, bounded by the watcher):
+        values pass through `_safe`, problem lists through `_safe` per item."""
+        if self._config is None:
+            return []
+        try:
+            records = self._config.take_records()
+        except Exception:
+            self.counts['read_failures'] += 1
+            return []
+        lines = []
+        for record in records:
+            line = {'event': _safe(record.get('event')), 'level': record.get('level', 'info')}
+            for key, value in record.items():
+                if key in ('event', 'level'):
+                    continue
+                line[key] = [_safe(item) for item in value[:8]] if isinstance(value, list) else _safe(value)
+            lines.append(line)
+        return lines
 
     def _counter_lines(self):
         current = self._counters()

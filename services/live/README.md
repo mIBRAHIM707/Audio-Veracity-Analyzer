@@ -61,7 +61,7 @@ The scores are real ONNX computations with an untrained head: no detection claim
 ```text
 python -m services.live --card model_card.json --onnx ava.onnx --vad-model silero_vad.onnx \
     --ari-url http://127.0.0.1:8088 --ari-user ava --receiver-host <address Asterisk can reach> \
-    [--scoring-config ava.json] [--per-window] [--threads 1] [--max-calls 8] \
+    [--scoring-config ava.json [--scoring-config-watch-s 10]] [--per-window] [--threads 1] [--max-calls 8] \
     [--capacity-windows-per-s 4.0] [--tap-extension 700 ...] [--ari-app ava-tap] [--bind-host 0.0.0.0] \
     [--database-url-env AVA_DATABASE_URL] [--redis-url-env AVA_REDIS_URL] [--drain-timeout 5]
 ```
@@ -490,6 +490,72 @@ Evidence (Claude-authored, 17 Nov):
   to 8.8 s of caller audio at 8 kHz, sample-identical to the decode of the
   injected packets over its whole length and not in the clear on disk. The call
   completed normally.
+
+## Scoring-config file plus reload (20 Nov 2026; PRD FR-A9, FR-I4)
+
+FR-A9 allows "a configuration endpoint, or config file plus reload". The live process
+implements the file plus reload. An endpoint is not built; FR-A9 ties it to FR-U7 and
+would have to live in the API process, not here. With
+`--scoring-config FILE --scoring-config-watch-s N` (N from 1 to 60 s; off if absent,
+refused without `--scoring-config`), a `config` pump thread (`config_reload.py`) rereads
+FILE every N seconds. The scoring thread never reads the file.
+
+- The whole file is read (at most 64 KiB) and its SHA-256 compared with the last read,
+  so atomic replacements, such as a ConfigMap symlink swap, are seen, and so are edits
+  within one timestamp tick. Unchanged bytes do nothing.
+- Changed bytes go through the start-up rules: `parse_config` with the model card's
+  window. Any problem is `rejected` and the running settings stay.
+- A valid document is applied by `ConfigStore.reload`, an atomic swap. Calls started
+  after the swap use it. Running calls keep the snapshot they started with (FR-I4);
+  `LiveCalls` takes it per call.
+- What a reload can change: the thresholds, `ema_alpha`, `min_windows`,
+  `score_directions` and `audio.max_concealed_fraction`.
+- What it cannot change: `audio.hop_s`, `scoring.degraded_max_stride_factor` and
+  `scoring.degraded_recovery_s`. The pipeline, stride controller and speech feed use them
+  for every call, so a document that changes one is rejected as "needs a restart" and
+  none of it is applied. `audio.window_s` must still equal the card. Live windowing
+  advances by the constant 2 s `HOP_SAMPLES` whatever `hop_s` says (a start-up gap found
+  by the review, recorded for the PRD); `hop_s` sets the stride and reported stride only.
+- A document whose `score_directions` lacks `caller` is rejected (review M1): only the
+  caller is tapped, so it would silently stop scoring new calls.
+- A document whose settings equal the running ones (spacing or key order only) is
+  `unchanged`: no new version.
+- A missing or unreadable file is `unreadable`; the running settings stay.
+
+Each distinct file state is reported once. The operations log gets a service line, never
+rate-limited: `config_reloaded` (version, fingerprint), `config_unchanged`,
+`config_rejected` (up to 8 rule messages, which quote keys and values from the
+document) or `config_unreadable` (error type and OS message). `/metrics` has
+`ava_live_config_reloads_total{outcome}` and `ava_live_config_version`. The stopped
+record has the `config` report. The path is never printed. The first read is the
+baseline: if the file still holds the start-up settings nothing is reported. A change
+made between start-up and that read is applied like any other.
+
+Limits:
+
+- A writer that rewrites the file in place can be read half-written. That read is
+  rejected, then the complete file is applied on the next poll. Write a temporary file
+  and rename it.
+- A partial edit that is still valid JSON is applied as it stands.
+- Settings sections of other components (`capacity`, `tap`, `retention`, `inference`)
+  and `audio.vad_threshold`/`min_speech_fraction` are accepted but not used, as at
+  start-up; editing only them reports `unchanged`.
+- A poll in the pump thread's final turn at shutdown can apply a reload whose log line
+  is lost; the stopped record's counts still show it.
+- Open for a human/PRD (review): reloads are not written to the PRD §6.3 `audit_log`
+  (`system` actor) even with a database; `call.started` does not carry the config
+  version, so an alert cannot be tied to its thresholds; FR-A9 lists hop as reloadable,
+  here it needs a restart.
+- Compose and k3s do not pass a scoring config yet.
+
+Tests (Claude-authored, 20 Nov): `tests/unit/test_live_config_reload.py`, 21 cases
+(incl. the caller-direction refusal and a running call keeping its `min_windows`). A
+real `ConfigStore` and file are used, and the alerts come from a real `LiveCalls`: a call
+started before the reload does not alert at an EMA of 0.7, and one started after a reload
+lowering `alert_enter` to 0.65 does. The cases also cover every outcome, the restart
+keys, the card window, malformed documents, records bounded at 32, log lines, metrics,
+and the command line with a real pump thread applying an edit during a run.
+Mutant: without the restart-key check, the restart case fails.
 
 ## Detector faults on a real call (6.QA)
 

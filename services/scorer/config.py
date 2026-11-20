@@ -176,9 +176,14 @@ def parse_config(document, *, model_window_s):
 def read_json_document(path):
     """Parse a JSON document (at most MAX_CONFIG_BYTES, UTF-8, no NaN/Infinity, no
     duplicate keys, bounded nesting). Raises ConfigError; a missing file is OSError."""
-    name = os.path.basename(path)
     with open(path, 'rb') as handle:
         payload = handle.read(MAX_CONFIG_BYTES + 1)
+    return parse_json_bytes(payload, os.path.basename(path))
+
+
+def parse_json_bytes(payload, name='the document'):
+    """`read_json_document`'s rules on bytes already read (at most MAX_CONFIG_BYTES + 1
+    of them); `name` only labels the messages. Raises ConfigError."""
     if len(payload) > MAX_CONFIG_BYTES:
         raise ConfigError([f'{name} exceeds {MAX_CONFIG_BYTES} bytes'])
     try:
