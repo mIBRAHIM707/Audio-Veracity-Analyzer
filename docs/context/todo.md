@@ -112,6 +112,12 @@ softphone (`AVA_SOFTPHONE_PASSWORD`, extension 702). Human: to try a real softph
 publish UDP 5060 and the RTP range on a trusted interface only. Human, blocking 3.4 and
 XLS-R: the daily runner cannot access `D:/AVA-Data`; add it to the runner's allowed
 directories (Claude Code `--add-dir` / `additionalDirectories`).
+21 Nov: no data change. `scripts/image_sbom.py` writes a CycloneDX SBOM from inside each
+deployment image and checks the installed Python packages against the pins (FR-O7).
+Human: add a CI job that builds both images and runs it, and install
+`requirements-test.txt` in CI for the schema check. Also run `uv pip compile
+--generate-hashes` for the hashed locks; the runner's allowlist still refuses it.
+`D:/AVA-Data` is still refused to the shell (3.4, XLS-R).
 
 Human decisions:
 - Should reloads be written to the audit log?

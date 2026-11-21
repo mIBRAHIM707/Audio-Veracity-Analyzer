@@ -3,3 +3,8 @@
 -r requirements-audio.txt
 # Parses the Kubernetes manifests in tests/unit/test_k8s_manifests.py. PyYAML, MIT.
 pyyaml==6.0.3
+# Validates scripts/image_sbom.py output against the bundled CycloneDX 1.5 JSON schema in
+# tests/unit/test_image_sbom.py (an independent oracle; the case skips without it).
+# cyclonedx-python-lib Apache-2.0; the json-validation extra adds jsonschema (MIT) and its
+# format checkers (MIT/BSD/Apache/MPL-2.0). Offline: the schemas ship in the wheel.
+cyclonedx-python-lib[json-validation]==11.12.0

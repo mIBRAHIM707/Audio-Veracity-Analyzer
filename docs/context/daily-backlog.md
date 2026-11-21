@@ -691,6 +691,16 @@ items needing that data are listed at the end and stay out of the queue.
   pass, M1-L5 fixed. Remaining: CoreDNS still forwards outside names (FR-O3 DNS part),
   Ingress/TLS for the dashboard (auth decision), monitoring on k3s, how a PBX outside
   the cluster reaches the pod network, hashed requirements/SBOM.
+  21 Nov: FR-O7 SBOM generator. `scripts/image_sbom.py` is standard-library only and
+  writes CycloneDX 1.5 from inside the image. It records base digests from the
+  Dockerfile, the Python packages (licence, pinned flag, RECORD hash), the interpreter,
+  the dpkg packages and the dashboard npm lock (SHA-512). `--check-pins` checks the
+  installed set against the pins; pip, setuptools and wheel are exempt as base tools.
+  `--source-revision` is recorded. Claude-authored unit tests (CI) cover this, plus a
+  CycloneDX schema case (local only) and a lab case in both real images (pip/dpkg
+  oracles, base-tool versions, determinism, a negative). Review conditional pass, all
+  findings fixed. Remaining: a CI job that runs it (human: workflow edit), hashed locks
+  (human: `uv pip compile` is outside the allowlist), the rest above.
 - [ ] 10.QA Reproducible startup, CPU parity where measurable, rollback/readiness.
 
 ## 11 — Final software integration

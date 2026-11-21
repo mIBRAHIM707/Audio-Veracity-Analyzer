@@ -291,7 +291,54 @@ in `compose.yaml`.
   runner's command allowlist, so a human must run it (the same applies to
   `deploy/api/requirements-api-image.txt`, with the PyTorch CPU index). The built images
   `ava-live:dev`, `ava-api:dev` and `ava-lab-asterisk:dev` are referenced by tag, not
-  digest.
+  digest. (21 Nov: `uv pip compile` was still refused by the runner's allowlist.)
+- SBOM (FR-O7, 21 Nov): `scripts/image_sbom.py` writes a CycloneDX 1.5 JSON SBOM from
+  inside a built image. It uses only the standard library, so nothing is added to the
+  image. It records:
+  - the image ID, and the base image digests that the Dockerfile names. The digests, the
+    pins and the npm list come from the mounted checkout, not from the image (property
+    `ava:source`). So build and generate from the same checkout, and pass
+    `--source-revision "$(git rev-parse HEAD)"` (append `+dirty` if the tree has
+    changes);
+  - every installed Python distribution, with its stated licence, whether it is pinned,
+    and the SHA-256 of its `RECORD`;
+  - the Python interpreter;
+  - every Debian package dpkg lists as installed;
+  - for `api`, the dashboard's npm packages with their lockfile SHA-512. Build-only
+    packages get scope `excluded`.
+
+  `--check-pins` exits 1 unless the installed Python set equals the image's requirement
+  file. The only exemptions are pip, setuptools and wheel, which come from the base
+  image. The exemption is by name. Only the lab test
+  (`tests/lab/test_image_sbom_lab.py`) checks that those three still have the base
+  image's versions. Run it after a build, from the repository root:
+
+  ```text
+  docker run --rm --network none --read-only -v "$PWD:/src:ro" --entrypoint python ava-live:dev \
+    -I /src/scripts/image_sbom.py --image-name ava-live \
+    --image-id "$(docker image inspect ava-live:dev --format '{{.Id}}')" \
+    --dockerfile /src/deploy/live/Dockerfile \
+    --requirements /src/deploy/live/requirements-live.txt --root /src --check-pins \
+    --source-revision "$(git rev-parse HEAD)" > ava-live.cdx.json
+  ```
+
+  For `api`, use `deploy/api/...` and add `--npm-lock /src/dashboard/package-lock.json`.
+  On this host on 21 Nov, both pin checks matched. `live` had 109 components: 1 base
+  image, 87 Debian, 20 Python and the interpreter. `api` had 242: 2 base images, 87
+  Debian, 38 Python, 114 npm and the interpreter. The output is deterministic, with no
+  timestamp unless `--timestamp` is given.
+
+  The SBOM does not contain:
+  - wheel hashes, which need the hashed lock above;
+  - a dependency graph;
+  - Debian licences, which dpkg's status file does not hold;
+  - files outside the package managers.
+
+  "Generated in CI" needs a workflow job that builds both images and runs the command
+  above. The runner may not edit workflows, so a human must add it.
+  `tests/unit/test_image_sbom.py` runs in CI. Its CycloneDX schema case skips there,
+  because CI installs only `requirements-audio.txt`. It needs `requirements-test.txt`,
+  which the workflow does not install yet, so the schema check has run only on this host.
 - ONNX Runtime telemetry is off in three ways:
   - the image sets `ORT_DISABLE_TELEMETRY=1`;
   - the code forces it before the first import (`services/inference/ort_runtime.py`);
@@ -350,6 +397,7 @@ Run time was 69 s with the images built.
 ## Not done
 
 Publishing the dashboard to the host (see above), Kubernetes manifests and the
-NetworkPolicy, hashed requirements and an SBOM (FR-O7), log shipping (FR-O6), image
+NetworkPolicy, hashed requirements and SBOM generation in CI (FR-O7; the generator
+exists, see above), log shipping (FR-O6), image
 signing, and the full FR-O8 deployment guide (hardware, PBX tap configuration, upgrade,
 backup). Grafana is done (profile `monitoring`, 18 Nov), but it is not published.

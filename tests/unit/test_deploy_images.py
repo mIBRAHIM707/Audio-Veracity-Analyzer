@@ -10,60 +10,22 @@ Authored by Claude (Claude Code), not by GPT-6 Astra. Pure file checks, no Docke
 - pip installs that set with --no-deps --only-binary=:all: followed by `pip check`, so a
   build cannot pull an unpinned package or compile from source.
 The builds themselves are evidence in tests/lab/test_compose_stack_lab.py.
+21 Nov 2026: the reader moved to scripts/image_sbom.py (`read_pins`: the same pin rules,
+plus a size limit and refusal of unreadable or non-UTF-8 files), so
+the SBOM pin check and these tests read the image files the same way.
 """
 from pathlib import Path
 import re
 import tempfile
 import unittest
 
+from scripts.image_sbom import ALLOWED_OPTIONS, read_pins
+
 ROOT = Path(__file__).resolve().parents[2]
 IMAGES = {  # Dockerfile -> the requirement file it installs
     'deploy/live/Dockerfile': 'deploy/live/requirements-live.txt',
     'deploy/api/Dockerfile': 'deploy/api/requirements-api-image.txt',
 }
-ALLOWED_OPTIONS = {'--extra-index-url https://download.pytorch.org/whl/cpu'}
-PIN = re.compile(r'^([A-Za-z0-9][A-Za-z0-9._-]*)==([0-9][0-9A-Za-z.+!-]*)$')
-
-
-def normalise(name):
-    return re.sub(r'[-_.]+', '-', name).lower()
-
-
-def read_pins(path, root, chain=()):
-    """Return ({package: version}, options) for `path`, following `-r` names as root files.
-    Raises ValueError on an unpinned line, an unknown option, a conflict or a cycle (a
-    file included twice by different files is fine, as pip allows)."""
-    path = Path(path)
-    if path.resolve() in chain:
-        raise ValueError(f'include cycle at {path.name}')
-    chain = (*chain, path.resolve())
-    pins, options = {}, set()
-    for number, raw in enumerate(path.read_text(encoding='utf-8').splitlines(), 1):
-        line = raw.split('#', 1)[0].strip()
-        if not line:
-            continue
-        if line.startswith('-r '):
-            included = Path(root) / line[3:].strip()
-            if not included.is_file():
-                raise ValueError(f'{path.name}:{number}: included file not found: {line[3:].strip()}')
-            more, more_options = read_pins(included, root, chain)
-            options |= more_options
-            for name, version in more.items():
-                if pins.setdefault(name, version) != version:
-                    raise ValueError(f'{name} pinned to {pins[name]} and {version}')
-            continue
-        if line.startswith('-'):
-            if line not in ALLOWED_OPTIONS:
-                raise ValueError(f'{path.name}:{number}: option not allowed: {line}')
-            options.add(line)
-            continue
-        match = PIN.match(line)
-        if match is None:
-            raise ValueError(f'{path.name}:{number}: not an exact pin: {line}')
-        name, version = normalise(match.group(1)), match.group(2)
-        if pins.setdefault(name, version) != version:
-            raise ValueError(f'{name} pinned to {pins[name]} and {version}')
-    return pins, options
 
 
 class ImagePinTests(unittest.TestCase):

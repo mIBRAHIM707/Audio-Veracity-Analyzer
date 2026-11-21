@@ -399,6 +399,31 @@ and about 50,000 original clips, excluding codec copies.
   - **Blocker found:** this session cannot access `D:/AVA-Data` (worktree-only file
     access), so the 3.4 corpora and XLS-R weights stay unprovisioned until a human adds
     that directory to the runner's allowed directories.
+- **21 Nov (attempt 1), 10.2 image SBOM (PRD FR-O7, partial).**
+  - **What:** `scripts/image_sbom.py` uses only the standard library. It runs inside a
+    built image with the checkout mounted read-only and writes CycloneDX 1.5 JSON.
+  - **Recorded:** the image ID; the base image digests that the Dockerfile names; every
+    installed Python distribution, with its licence, whether it is pinned, and a RECORD
+    fingerprint; the interpreter; every dpkg-installed Debian package; and, for `api`,
+    the dashboard's npm packages with their lockfile SHA-512. Output is deterministic.
+  - **Pin check:** `--check-pins` exits 1 when the installed Python set differs from the
+    image's requirement file. The only exemptions are pip, setuptools and wheel, which
+    come from the base image.
+  - **Shared reader:** `read_pins` moved out of `tests/unit/test_deploy_images.py` into
+    the script, so the tests and the pin check read the image files the same way.
+  - **Evidence:** Claude-authored `tests/unit/test_image_sbom.py`, which runs in CI. Its
+    CycloneDX 1.5 schema case uses `cyclonedx-python-lib` and has run only on this host.
+    `tests/lab/test_image_sbom_lab.py`, in both rebuilt images:
+    - the pins match;
+    - the Python list equals `pip list`, and the Debian list equals `dpkg-query`;
+    - the exempt tools have the base image's versions;
+    - two runs give identical bytes;
+    - a mismatched requirement file exits 1.
+
+    `live` has 109 components and `api` 242.
+  - **Not done (human):** the CI job that builds the images and runs the script; the
+    hashed locks, since `uv pip compile` is refused by the allowlist; wheel hashes; a
+    dependency graph; Debian licences.
 - **17 Nov daily run (details in `daily-runs/2026-11-17.md`).** FR-O6 per-stage latency
   for the live loop (7.2/8.1): `ava_live_stage_seconds{stage}` with `queue_wait`,
   `batch_wait`, `apply` (scorer and hub publish) and `window_to_result` (offer to
