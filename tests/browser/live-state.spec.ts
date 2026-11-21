@@ -177,7 +177,8 @@ test('LS13 a snapshot after a supersede marks the old session\'s alert ended_ope
   let b = fold(EMPTY_BOARD, [at('call.started', 's', 1, 100), at('alert.raised', 's', 2, 101, { alert_id: 'old' })]);
   expect(b.feed.find(f => f.alertId === 'old')?.state).toBe('open');
   // Re-review low: after an API restart the call is recreated from a later event
-  // (started_seen false): same session, so the existing open/cleared rule applies.
+  // (started_seen false): same session, so never ended_open; it knows only alerts since
+  // its first event, so an older open alert stays open (LS14).
   const implicit = applySnapshot(b, [cardOf('s', { started_ts: 150, started_seen: false, last_seq: 9, alerts_open: 1 })]);
   expect(implicit.feed.find(f => f.alertId === 'old')?.state).toBe('open');
   b = applySnapshot(b, [cardOf('s', { started_ts: 150, started_seen: true, last_seq: 9, alerts_open: 1, alerts_total: 2 })]);
@@ -186,6 +187,69 @@ test('LS13 a snapshot after a supersede marks the old session\'s alert ended_ope
   b = applyEnvelope(b, at('alert.raised', 's', 10, 160, { alert_id: 'new' }));
   b = applySnapshot(b, [cardOf('s', { started_ts: 150, started_seen: true, last_seq: 10, alerts_open: 1, alerts_total: 2 })]);
   expect(b.feed.find(f => f.alertId === 'new')?.state).toBe('open');
+});
+
+test('LS14 an implicitly recreated call clears only the alerts it knows (Claude-authored, 21 Nov 2026, 7.QA RC01)', () => {
+  // An API restart while the live process keeps scoring: the new registry recreates the
+  // call from its next event (started_seen false, started_ts = that event) and knows none
+  // of the alerts raised before. Its zero open count must not clear them.
+  const at = (type: string, callId: string, s: number, ts: number, data: Record<string, unknown> = {}): Envelope =>
+    ({ type, call_id: callId, seq: s, ts, data });
+  let b = fold(EMPTY_BOARD, [at('call.started', 'm', 1, 100), at('alert.raised', 'm', 2, 101, { alert_id: 'before' })]);
+  const restarted = cardOf('m', { started_ts: 150, started_seen: false, last_seq: 3, state: 'alert', alerts_open: 0, alerts_total: 0 });
+  const fresh = b;
+  b = applySnapshot(b, [restarted]);
+  expect(b.feed.find(f => f.alertId === 'before')).toMatchObject({ state: 'open', unconfirmed: true });
+  // An alert of unknown time is not cleared either.
+  const unknownTime = { ...fresh, feed: fresh.feed.map(f => ({ ...f, raisedTs: null })) };
+  expect(applySnapshot(unknownTime, [restarted]).feed[0]).toMatchObject({ state: 'open', unconfirmed: true });
+  // Review L5: a late start of the same session then reaches the restarted API, which
+  // keeps the earlier start time and marks it seen. The count still cannot clear it.
+  const late = applySnapshot(b, [cardOf('m', { started_ts: 100, started_seen: true, last_seq: 3, alerts_open: 0 })]);
+  expect(late.feed.find(f => f.alertId === 'before')).toMatchObject({ state: 'open', unconfirmed: true });
+  // A call the snapshot no longer lists at all: still open, marked unconfirmed.
+  expect(applySnapshot(fresh, []).feed[0]).toMatchObject({ state: 'open', unconfirmed: true });
+  // An ended call in the snapshot still makes it open at call end.
+  expect(applySnapshot(b, [cardOf('m', { status: 'ended', ended_ts: 200, end_reason: 'bye', last_seq: 3 })]).feed[0].state)
+    .toBe('ended_open');
+  // Only an alert.cleared clears it.
+  b = applyEnvelope(b, at('alert.cleared', 'm', 4, 160, { alert_id: 'before' }));
+  expect(b.feed.find(f => f.alertId === 'before')?.state).toBe('cleared');
+  // An alert raised after the implicit start is one the registry knows: the snapshot's
+  // zero open count does clear it (the cleared-while-disconnected repair, LB12).
+  b = applyEnvelope(b, at('alert.raised', 'm', 5, 170, { alert_id: 'after' }));
+  b = applySnapshot(b, [cardOf('m', { started_ts: 150, started_seen: false, last_seq: 7, alerts_open: 0, alerts_total: 1 })]);
+  expect(b.feed.find(f => f.alertId === 'after')?.state).toBe('cleared');
+  // With its own start seen, the existing rules are unchanged (LS08, LS13).
+  let s = fold(EMPTY_BOARD, [at('call.started', 'n', 1, 100), at('alert.raised', 'n', 2, 101, { alert_id: 'x' })]);
+  s = applySnapshot(s, [cardOf('n', { started_ts: 100, started_seen: true, last_seq: 3, alerts_open: 0, alerts_total: 1 })]);
+  expect(s.feed[0].state).toBe('cleared');
+  expect(s.feed[0].unconfirmed).toBeUndefined();
+  // Re-review: the service confirms it again. A repeated raise drops the mark and is not
+  // a new alert (no notification, no extra count; the next snapshot gives the counts).
+  let c = applySnapshot(fresh, [restarted]);
+  const liveBefore = c.liveAlerts;
+  c = applyEnvelope(c, at('alert.raised', 'm', 4, 160, { alert_id: 'before' }));
+  expect(c.feed.find(f => f.alertId === 'before')).toMatchObject({ state: 'open', unconfirmed: false });
+  expect(c.liveAlerts).toBe(liveBefore);
+  expect(c.feed.filter(f => f.alertId === 'before')).toHaveLength(1);
+  expect(c.calls.m.state).toBe('alert');
+  // Or details list it open.
+  const d = applyDetailAlerts(applySnapshot(fresh, [restarted]),
+    detailOf(cardOf('m', { last_seq: 3 }), [{ id: 'before', state: 'open', ts: 101 }]));
+  expect(d.feed.find(f => f.alertId === 'before')?.unconfirmed).toBe(false);
+});
+
+test('LS15 an alert of an ended call the board has pruned is open at call end, not unconfirmed (Claude-authored, 21 Nov 2026, re-review)', () => {
+  // The snapshot lists more ended calls than the board shows; the oldest has an open feed alert.
+  let b = fold(EMPTY_BOARD, [ev('call.started', 'old'), ev('alert.raised', 'old', { alert_id: 'k' })]);
+  const cards = [cardOf('old', { status: 'ended', ended_ts: 1, end_reason: 'bye', last_seq: 500, alerts_total: 1 })];
+  for (let i = 0; i < MAX_ENDED_SHOWN; i += 1) {
+    cards.push(cardOf(`e${i}`, { status: 'ended', ended_ts: 100 + i, end_reason: 'bye', last_seq: 500 }));
+  }
+  b = applySnapshot(b, cards);
+  expect(b.calls.old).toBeUndefined(); // pruned from the board
+  expect(b.feed.find(f => f.alertId === 'k')?.state).toBe('ended_open');
 });
 
 test('LS07 pruning keeps the newest ended calls; late events for a pruned call make no phantom card', () => {

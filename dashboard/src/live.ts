@@ -52,6 +52,9 @@ export interface AlertItem {
   ema: number | null;
   /** Arrived as a live event (sound/visual notification), not from a snapshot. */
   live: boolean;
+  /** Shown open, but the newest snapshot could not confirm it: its call is gone from
+   * the service, or was recreated after an API restart without its earlier alerts. */
+  unconfirmed?: boolean;
 }
 
 export interface Envelope {
@@ -298,6 +301,10 @@ export function applyEnvelope(board: Board, e: Envelope): Board {
         liveAlerts += 1;
         feed = upsertAlert(feed, { key, callId, alertId, direction: shortText(d.direction, 16), raisedTs: e.ts, state: 'open',
                                    ema: unit(d.ema) ? d.ema : null, live: true });
+      } else if (feed.some(a => a.key === key && a.state === 'open' && a.unconfirmed)) {
+        // The service reports it again: confirmed, but not a new alert (no notification).
+        // The card's counts follow the next snapshot (the page already counted this ID).
+        feed = feed.map(a => (a.key === key ? { ...a, unconfirmed: false } : a));
       }
       break;
     }
@@ -340,20 +347,33 @@ function pruneEnded(calls: Record<string, CallCard>, forgotten: string[]): { cal
 /** Replaces the calls with a REST snapshot (the page's own counted alert IDs carry over).
  * Feed items stay but are reconciled with it: open items of a call the snapshot shows
  * ended become ended_open; those of an active call with no open alert became cleared
- * while the page was not listening. */
+ * while the page was not listening. Open items the snapshot cannot confirm (their call
+ * is not listed, or was recreated after an API restart without them) stay open, marked
+ * `unconfirmed`, until an event or the call's end settles them. */
 export function applySnapshot(board: Board, cards: CallCard[]): Board {
   // A call the snapshot holds is known again, so it is no longer in `forgotten`.
-  const { calls, forgotten } = pruneEnded(Object.fromEntries(cards.map(c => [c.callId, {
-    ...c, knownAlerts: board.calls[c.callId]?.knownAlerts ?? c.knownAlerts }])),
-    board.forgotten.filter(id => !cards.some(c => c.callId === id)));
+  const listed = Object.fromEntries(cards.map(c => [c.callId, {
+    ...c, knownAlerts: board.calls[c.callId]?.knownAlerts ?? c.knownAlerts }]));
+  const { calls, forgotten } = pruneEnded(listed, board.forgotten.filter(id => !cards.some(c => c.callId === id)));
   const feed = board.feed.map(a => {
-    const call = calls[a.callId];
-    if (a.state !== 'open' || !call) return a;
+    // Before pruning: an ended call the board no longer shows is still ended (re-review).
+    const call = listed[a.callId];
+    if (a.state !== 'open') return a;
+    if (!call) return { ...a, unconfirmed: true }; // the service no longer lists its call (review M1, 21 Nov)
     if (call.status === 'ended') return { ...a, state: 'ended_open' as const };
     // Raised before the call's current session began (a superseded session, 5.QA M1;
     // review M2): ended_open, as in the registry. Only when the start was seen: a call
     // recreated implicitly after an API restart has a later start but the same session.
     if (call.startedSeen && a.raisedTs !== null && a.raisedTs < call.startedTs) return { ...a, state: 'ended_open' as const };
+    // A call recreated implicitly (an API restart while the live process kept scoring)
+    // knows only alerts raised since its first event. For an older alert, or one of
+    // unknown time, its zero open count says nothing: the page keeps what it last saw,
+    // and only an alert.cleared event clears it (7.QA RC01, 21 Nov 2026). It is marked
+    // unconfirmed, so it does not look like an alert the service still reports.
+    if (!call.startedSeen && (a.raisedTs === null || a.raisedTs < call.startedTs)) return { ...a, unconfirmed: true };
+    // Once unconfirmed, a later count cannot clear it either: a late call.started can make
+    // the call look started-seen with an earlier start (review L5).
+    if (a.unconfirmed) return a;
     return call.alertsOpen === 0 ? { ...a, state: 'cleared' as const } : a;
   });
   return { ...board, calls, feed, forgotten };
@@ -372,6 +392,8 @@ export function applyDetailAlerts(board: Board, detail: CallDetail): Board {
     known = remember(known, alert.alertId);
     if (!feed.some(a => a.key === alert.key)) {
       feed = [...feed, ended && alert.state === 'open' ? { ...alert, state: 'ended_open' as const } : alert];
+    } else if (alert.state === 'open' && !ended && feed.some(a => a.key === alert.key && a.state === 'open' && a.unconfirmed)) {
+      feed = feed.map(a => (a.key === alert.key ? { ...a, unconfirmed: false } : a)); // the service lists it open
     }
   }
   if (feed === board.feed && (!card || known === card.knownAlerts)) return board;

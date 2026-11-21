@@ -118,6 +118,10 @@ Human: add a CI job that builds both images and runs it, and install
 `requirements-test.txt` in CI for the schema check. Also run `uv pip compile
 --generate-hashes` for the hashed locks; the runner's allowlist still refuses it.
 `D:/AVA-Data` is still refused to the shell (3.4, XLS-R).
+21 Nov (attempt 2): no data change. New browser tests kill and restart the real API
+under the live board and the history page, and check that the dashboard loads nothing
+from other origins (7.QA). They found a defect, now fixed: after an API restart, an
+alert that was never cleared could show as "Cleared" on the live board.
 
 Human decisions:
 - Should reloads be written to the audit log?

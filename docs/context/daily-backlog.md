@@ -547,6 +547,14 @@ items needing that data are listed at the end and stay out of the queue.
   case (host rename applied, hop refused, no restart); a k3s ConfigMap-patch lab step.
   Review conditional pass, fixed. Remaining: FR-A5, the optional FR-A9 endpoint.
 - [ ] 7.QA Astra-designed Playwright suite, offline assets, failures/reconnects.
+  Progress (21 Nov, attempt 2; Claude-authored, not Astra): `tests/browser/dashboard-recovery.spec.cjs`.
+  RC01 kills the real API under an open board and restarts it on the same port. RC02
+  does the same for the history page on PostgreSQL 16. RC03a scans the built files for
+  off-origin loads and checks the served CSP. RC03b loads all pages with every other
+  origin aborted. RC01 found a defect: after an API restart, a never-cleared alert of a
+  continuing call showed as "Cleared". Fixed in `applySnapshot`, with pure case LS14.
+  Remaining: the dashboard project is not in CI (a human workflow edit); sign-in,
+  feedback and snippet pages across a restart; Astra-style catalogue review.
 
 ## 8 — CPU capacity (FR-I9/I10)
 - [ ] 8.1 Warm-up, batching, thread limits, live/batch priority and capacity refusal.

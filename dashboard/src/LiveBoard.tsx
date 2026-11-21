@@ -176,8 +176,12 @@ function AlertFeed({ feed, onSelect }: { feed: AlertItem[]; onSelect: (callId: s
         : (
           <ol data-testid="alert-feed">
             {feed.map(a => (
-              <li key={a.key} data-testid="alert-item" className={`alert-${a.state}`} data-alert-id={a.alertId}>
+              <li key={a.key} data-testid="alert-item" data-alert-id={a.alertId}
+                  className={`alert-${a.state}${a.state === 'open' && a.unconfirmed ? ' unconfirmed' : ''}`}>
                 <strong>{a.state === 'open' ? 'Alert' : a.state === 'cleared' ? 'Cleared' : 'Open at call end'}</strong>{' '}
+                {a.state === 'open' && a.unconfirmed && (
+                  <span className="muted" data-testid="alert-unconfirmed">(not confirmed by the service since reconnecting) </span>
+                )}
                 <button type="button" className="link" onClick={() => onSelect(a.callId)}>
                   <span className="filename">{a.callId}</span>
                 </button>

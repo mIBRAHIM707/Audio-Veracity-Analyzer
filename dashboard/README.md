@@ -148,6 +148,34 @@ hub's validation from a loopback test control server (`serve_dashboard_api.py
 so CI runs it). Mutation checks: without the `seq` rule LB04 fails; without the gap
 re-read LB06 fails; resetting the back-off on `open` fails LB10.
 
+Recovery and offline-asset cases (Claude-authored, 21 Nov 2026, backlog 7.QA):
+`tests/browser/dashboard-recovery.spec.cjs` uses real processes with no route between
+page and server. RC01 kills the API under an open board: the board says so, keeps the
+last known state, keeps retrying while nothing listens, and reconnects by itself to a
+new API process on the same port, whose snapshot then replaces the board. RC02 does the
+same on the history page with PostgreSQL (skipped without `AVA_TEST_POSTGRES_DSN`):
+Refresh and Search report the dead API and show no old rows, then read the restarted
+API without a reload. RC03a scans the built files for loads from other origins (with a
+control that the patterns match) and checks that the served CSP allows only `'self'`,
+`'none'`, `data:` and `blob:`. RC03b loads all three pages with every other origin
+aborted and service workers blocked; nothing is requested elsewhere and every asset
+loads. RC01 found a defect: after an API restart, a call that the live process keeps
+scoring is recreated by the new registry (`started_seen` false) without its earlier
+alerts, and the next snapshot showed a never-cleared alert as "Cleared". Now, for such a
+call, an alert raised before the call's first event on the new API, or one with an
+unknown time, stays open. The same applies to an open alert whose call the snapshot no
+longer lists. Either way it is marked "(not confirmed by the service since
+reconnecting)". The mark is sticky: a later count never clears it. Only `alert.cleared`,
+or the call ending or being superseded, changes its state. A repeated `alert.raised`, or
+details listing it open, removes the mark (LS14). An ended call's alerts become "Open at
+call end" even when the board has pruned that call (LS15). Such an alert may stay shown open, marked, after it was
+cleared while the page was disconnected. That error is chosen over a false "Cleared".
+The test server stops abruptly on every OS: `taskkill /F` on Windows, SIGKILL to its
+process group elsewhere. These cases run locally only: the `dashboard` project is not in
+CI, so they have never run on Linux. LS14 does run in CI. RC02 gives each process a fresh
+schema, so it proves the page reads again after a restart, not that the history
+survives one.
+
 Found while building it: `requirements-api.txt` had no WebSocket library, so a real
 uvicorn refused every `WS /v1/events` upgrade (earlier tests used the in-process
 TestClient). `websockets==17.4` is now pinned there.

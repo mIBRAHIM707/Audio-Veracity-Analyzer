@@ -424,6 +424,23 @@ and about 50,000 original clips, excluding codec copies.
   - **Not done (human):** the CI job that builds the images and runs the script; the
     hashed locks, since `uv pip compile` is refused by the allowlist; wheel hashes; a
     dependency graph; Debian licences.
+- **21 Nov (attempt 2), 7.QA recovery and offline-asset browser cases (partial).**
+  - **What:** Claude-authored `tests/browser/dashboard-recovery.spec.cjs`. No route sits
+    between page and server. RC01 kills the real API under an open live board and
+    restarts it on the same port. The page says it is disconnected and keeps the last
+    state, retries while the port is dead, then reconnects by itself and takes the new
+    API's snapshot. RC02 does the same for the history page on PostgreSQL 16. RC03 checks
+    offline assets: a scan of the built files, the served CSP (`'self'`/`'none'`/`data:`/
+    `blob:` only), and all three pages loading with every other origin aborted.
+  - **Defect found and fixed:** after an API restart, the new registry recreates a call
+    that the live process keeps scoring (`started_seen` false) without its earlier
+    alerts. The next snapshot then showed a never-cleared alert as "Cleared".
+    `applySnapshot` now keeps such older alerts open, and also open alerts of calls the
+    snapshot no longer lists. It marks them "not confirmed by the service since
+    reconnecting". The mark is sticky: only `alert.cleared` or the call ending changes
+    it (pure LS14, which runs in CI).
+  - **Not done:** the `dashboard` Playwright project is not in CI. Sign-in, feedback and
+    snippet pages have not been tested across a restart.
 - **17 Nov daily run (details in `daily-runs/2026-11-17.md`).** FR-O6 per-stage latency
   for the live loop (7.2/8.1): `ava_live_stage_seconds{stage}` with `queue_wait`,
   `batch_wait`, `apply` (scorer and hub publish) and `window_to_result` (offer to

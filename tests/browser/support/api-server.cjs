@@ -25,25 +25,48 @@ async function waitHealthy(url, child, timeoutMs) {
   throw new Error('test server did not become healthy');
 }
 
-/** Starts the API on a free local port; `uvArgs` are extra `uv run` arguments and
- * `serverArgs` extra server arguments. Returns { base, stop }. */
-async function startApi({ uvArgs = [], serverArgs = [], timeoutMs = 150000 } = {}) {
-  const port = await freePort();
+// POSIX process groups of running servers. A detached group no longer gets the
+// terminal's Ctrl+C, so an interrupted run kills them on its way out (re-review).
+const liveGroups = new Set();
+function killGroups() {
+  for (const pid of liveGroups) { try { process.kill(-pid, 'SIGKILL'); } catch { /* already gone */ } }
+  liveGroups.clear();
+}
+if (process.platform !== 'win32') {
+  process.on('exit', killGroups);
+  for (const signal of ['SIGINT', 'SIGTERM']) {
+    process.once(signal, () => { killGroups(); process.kill(process.pid, signal); });
+  }
+}
+
+/** Starts the API on a free local port, or on `port` (a restart that keeps the page's
+ * origin); `uvArgs` are extra `uv run` arguments and `serverArgs` extra server
+ * arguments. Returns { base, port, stop }. */
+async function startApi({ uvArgs = [], serverArgs = [], timeoutMs = 150000, port: fixedPort } = {}) {
+  const port = fixedPort ?? await freePort();
   const base = `http://127.0.0.1:${port}`;
   const child = spawn('uv', ['run', '--no-project', '--python', '3.11', ...uvArgs,
     '--with-requirements', 'requirements-api.txt', 'python', '-m', 'tests.browser.serve_dashboard_api',
     '--port', String(port), '--dashboard', DIST, ...serverArgs],
-  { cwd: ROOT, stdio: ['ignore', 'ignore', 'pipe'], windowsHide: true });
+  // On POSIX the server gets its own process group, so stop() can end uv and its Python
+  // child together without relying on uv forwarding a signal (review M2, 21 Nov 2026).
+  { cwd: ROOT, stdio: ['ignore', 'ignore', 'pipe'], windowsHide: true, detached: process.platform !== 'win32' });
   child.stderr.on('data', chunk => process.stderr.write(chunk));
+  if (process.platform !== 'win32' && child.pid) {
+    liveGroups.add(child.pid);
+    child.once('exit', () => liveGroups.delete(child.pid));
+  }
+  // An abrupt end on every platform (a crash, not a graceful shutdown), so recovery
+  // tests see the same kind of failure on Windows and Linux (review M3).
   const stop = async () => {
-    if (child.exitCode !== null) return;
+    if (child.exitCode !== null || child.signalCode !== null) return;
     const exited = new Promise(resolve => child.once('exit', resolve));
     if (process.platform === 'win32') {
       // Killing uv.exe alone may leave its Python child holding the port and the model:
       // end the whole process tree.
       spawnSync('taskkill', ['/PID', String(child.pid), '/T', '/F'], { stdio: 'ignore', windowsHide: true });
     } else {
-      child.kill();
+      try { process.kill(-child.pid, 'SIGKILL'); } catch { child.kill('SIGKILL'); }
     }
     await Promise.race([exited, new Promise(r => setTimeout(r, 5000))]);
   };
@@ -53,7 +76,7 @@ async function startApi({ uvArgs = [], serverArgs = [], timeoutMs = 150000 } = {
     await stop();
     throw error;
   }
-  return { base, stop };
+  return { base, port, stop };
 }
 
 /** Mono PCM16 WAV from Int16 sample arrays (or {seconds, hz} tone segments at `rate`). */
