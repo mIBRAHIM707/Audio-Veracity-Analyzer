@@ -63,3 +63,18 @@ CLAUDE.local.md
 *.safetensors
 data/private/
 data/consents/
+
+# Packet captures and raw telephony audio (call audio; lab captures stay local)
+*.pcap
+*.pcapng
+*.cap
+*.ul
+*.al
+*.ulaw
+*.alaw
+*.sln
+*.sln16
+*.g711
+*.g722
+*.opus
+*.raw

@@ -9,7 +9,10 @@ import subprocess
 
 ROOT = Path(__file__).resolve().parents[1]
 BLOCKED = {".wav", ".mp3", ".amr", ".gsm", ".flac", ".ogg", ".m4a", ".aac",
-           ".onnx", ".pt", ".pth", ".ckpt", ".safetensors", ".pem", ".key"}
+           ".onnx", ".pt", ".pth", ".ckpt", ".safetensors", ".pem", ".key",
+           # Packet captures and raw telephony audio carry call audio too (15 Nov 2026).
+           ".pcap", ".pcapng", ".cap", ".ul", ".al", ".ulaw", ".alaw", ".sln", ".sln16", ".g711", ".g722",
+           ".opus", ".raw"}
 
 
 def reason(name, size):

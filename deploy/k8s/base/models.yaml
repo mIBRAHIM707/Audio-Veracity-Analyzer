@@ -1,0 +1,35 @@
+# Model artifacts from a local, read-only volume (PRD FR-O4: no model download at
+# runtime). The operator places them on the node under /var/lib/ava/models:
+#   onnx/<AVA_ONNX_FILE>        exported detector (models/export/onnx_export.py)
+#   card/<AVA_CARD_FILE>        its model card (models/export/model_card.py)
+#   vad/silero_vad.onnx         pinned Silero VAD (services/inference/silero_vad.py)
+#   antideepfake/               AntiDeepfake checkpoint folder (file analysis, API)
+# A static PersistentVolume, because the namespace enforces Pod Security "restricted",
+# which refuses hostPath volumes in pods; the claim is bound to this volume only.
+# Single node (k3s demo): the path is on that node.
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+  name: ava-models
+  labels: {app.kubernetes.io/name: ava-models, app.kubernetes.io/part-of: ava}
+spec:
+  capacity: {storage: 10Gi}
+  accessModes: [ReadOnlyMany]
+  persistentVolumeReclaimPolicy: Retain
+  storageClassName: ava-models
+  claimRef: {namespace: ava, name: ava-models}
+  hostPath:
+    path: /var/lib/ava/models
+    type: Directory
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: ava-models
+  labels: {app.kubernetes.io/name: ava-models, app.kubernetes.io/part-of: ava}
+spec:
+  accessModes: [ReadOnlyMany]
+  storageClassName: ava-models
+  volumeName: ava-models
+  resources:
+    requests: {storage: 10Gi}

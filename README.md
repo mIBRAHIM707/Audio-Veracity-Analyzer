@@ -28,6 +28,7 @@ uv run --no-project --python 3.11 python scripts/sync_bmad.py --check
 uv run --no-project --python 3.11 python scripts/check_foundation.py
 uv run --no-project --python 3.11 --with-requirements requirements-audio.txt python -m unittest discover -s tests/unit -v
 uv run --no-project --python 3.11 --with-requirements requirements-pnb.txt python -m unittest discover -s tests/pnb -v
+uv run --no-project --python 3.11 --with-requirements requirements-api.txt python -m unittest tests.unit.test_analysis_api -v
 npm run test:browser
 uv run --no-project --python 3.11 python scripts/repository_guard.py
 ```

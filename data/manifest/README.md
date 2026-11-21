@@ -28,9 +28,14 @@ are merged into one group so that no recording or byte copy straddles partitions
 such groups are listed under `hash_linked_speaker_groups`. A recording that maps
 to two speaker IDs fails before any output. Rules apply per group, in order:
 
-1. Any row with `benchmark_only: true`, or `training_eligible: false` with a
-   benchmark `use_scope`, places the whole group in `benchmark_only`. Non-benchmark
-   rows carried along are counted as `benchmark_coupled_rows`.
+1. Benchmark rows follow their speaker (spec decision 7, schema version 2).
+   `benchmark_only` is a usage scope, not a partition: a row with
+   `benchmark_only: true` takes its group's partition with `assignment_rule:
+   benchmark_follows_speaker` and must keep `benchmark_only: true` and
+   `training_eligible: false`. A benchmark `use_scope` without both flags fails
+   before output (decision 9). The report adds `benchmark_rows_by_partition` and
+   `trainable_rows_by_partition`; only rows with explicit `training_eligible: true`
+   that are not benchmark rows count as trainable.
 2. Any row with publisher `dev` or `test` (`publisher_split` or `original_split`)
    places the whole group in `held_out_publisher_<split>`; test wins over dev.
    Groups whose rows disagree are listed under `publisher_split_conflicts`.
@@ -56,9 +61,13 @@ disjointness proofs (zero `crossing_partitions` for speaker, recording and each
 hash field), within-partition exact duplicates as warnings, and an explicit
 `limitations` list. The validator checks the stated invariants directly without
 recomputing assignments: lineage fields present and typed, status `proposal`,
-known partitions, rule matching partition, benchmark rows only in
-`benchmark_only`, publisher held-out rows never in train/dev/test, no duplicate
+known partitions, rule matching partition, benchmark rows using
+`benchmark_follows_speaker` with both flags kept, publisher held-out rows never
+in train/dev/test, no duplicate
 clip rows, no recording owned by two speakers, and zero cross-partition overlap.
+For a whole proposal it also requires `schema_version` 2 and recomputes the
+`proposal_id` content digest over the rows without proposal fields, so edits made
+after proposal (including coordinated flag and rule changes) are detected.
 It exits 1 on any failure or unreadable input and never modifies the proposal.
 
 ## Known limits and open items
@@ -68,16 +77,35 @@ It exits 1 on any failure or unreadable input and never modifies the proposal.
   asserts either. Same-speaker synthetic lineage from consented participants and
   codec copies do not exist yet.
 - Exact hashes catch byte copies only, not near-duplicates or reused voices.
-- When a benchmark set shares `source_id` and `speaker_id` values with genuine
-  rows, rule 1 moves those genuine speakers to `benchmark_only` as well. That is
-  the only strictly disjoint outcome; it also removes them from train/dev/test.
+- Schema version 1 (before decision 7) moved every speaker with a benchmark row
+  into a `benchmark_only` partition; the CSALT synthetic benchmark shares all 17
+  speakers with CSALT genuine, so v1 left no Urdu genuine clips for train/dev/test.
+  The external v1 proposals are kept as evidence; the schema-2 rerun (backlog 1.4,
+  9 Nov) is in `docs/context/handoffs/policy-migration.md`.
+- Benchmark rows now share a partition with genuine rows of the same speaker, so a
+  model trained on that partition must exclude them by flag; consumers must read
+  `training_eligible`/`benchmark_only`, not the partition name.
 - Small speaker counts make 70/10/20 approximate; read realised shares.
+
+## Policy migration (FR-D11)
+
+`migrate_policy.py --manifest <published intake manifest> --output-root <new dir>
+--kind csalt_genuine|csalt_synthetic_benchmark|meta_pnb` writes a policy-versioned
+copy (`fr-d11-2026-10-05`): genuine CSALT and Meta rows become trainable with
+`cloning_status: permitted_public_corpus`; benchmark rows stay excluded; consent is
+unchanged; previous values are kept in `previous_policy`. Re-prepare the copy with
+`prepare_audio.py --condition` (clips carry `policy_version`), verify with
+`scripts/verify_prepared_output.py`, then propose. See
+`docs/context/handoffs/policy-migration.md`.
 
 ## Verification
 
 ```text
-uv run --no-project --python 3.11 python -m unittest discover -s tests/unit -p test_split_proposals.py -v
+uv run --no-project --python 3.11 python -m unittest discover -s tests/unit -p "test_split_proposals*.py" -v
 ```
+
+Cases: Claude-authored baseline `test_split_proposals.py` and Claude-authored
+cases `test_split_proposals_cases.py` (catalogue `docs/qa/split-proposal-test-cases.md`).
 
 Tests use fictional rows in temporary directories. No real proposal, manifest or
 audio belongs in Git; this machine's data is located by `.local/data-location.json`.

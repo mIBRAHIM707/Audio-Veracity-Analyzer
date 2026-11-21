@@ -1,0 +1,22 @@
+# Prometheus scrape configuration for the AVA lab stack (backlog 7.2; PRD FR-O6).
+# Mounted read-only into the `prometheus` service (Compose profile `monitoring`). Both
+# targets are on the internal `metrics` network only; nothing here leaves the host.
+global:
+  scrape_interval: 15s
+  scrape_timeout: 5s
+  evaluation_interval: 15s
+
+scrape_configs:
+  # The live tap + scorer (`python -m services.live`, services/live/health.py). Its
+  # health endpoint is bound to its fixed address on the `metrics` network only.
+  - job_name: ava-live
+    metrics_path: /metrics
+    static_configs:
+      - targets: ['live:9100']
+
+  # The analysis API and dashboard (`python -m services.api`, services/api/app.py).
+  # Its oplog skips /metrics, so scrapes add no request lines to its log.
+  - job_name: ava-api
+    metrics_path: /metrics
+    static_configs:
+      - targets: ['api:8000']

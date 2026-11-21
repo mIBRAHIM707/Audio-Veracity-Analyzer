@@ -1,0 +1,329 @@
+# AVA live stack (backlog 10.2; PRD FR-O4, FR-O7 partial, FR-O8 partial; architecture
+# §2.4, §2.7, ADR-7). A LAB stack: the live scorer with its storage and the Asterisk lab
+# PBX (`lab` profile) on one internal network. A PBX outside this network cannot reach
+# it as written (see deploy/compose/README.md, "Scope").
+#
+#   docker build -f deploy/live/Dockerfile -t ava-live:dev .
+#   docker build -t ava-lab-asterisk:dev lab/asterisk          # lab profile only
+#   docker compose --env-file <your stack.env> -f deploy/compose/compose.yaml --profile lab up -d
+#   (add `--profile monitoring` for Prometheus and the Grafana dashboard, FR-O6)
+#
+# Images are pinned by digest (public) or built locally (`pull_policy: never`). Every
+# service sits on one internal network: no container can reach the internet (no
+# telemetry, no runtime downloads); nothing is published on the host. Secrets and paths
+# come from an env file that is never committed (see stack.env.example).
+name: ava
+
+services:
+  postgres:
+    image: postgres:16-alpine@sha256:f377d590e5474681d4d7838635031a2b50647923b7abfa803ce9b5ff35d5c663
+    environment:
+      POSTGRES_USER: ava
+      POSTGRES_DB: ava
+      POSTGRES_PASSWORD: ${AVA_DB_PASSWORD:?set AVA_DB_PASSWORD in the env file}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    networks: [backend]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ava -d ava"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+    restart: unless-stopped
+
+  redis:
+    image: redis:7-alpine@sha256:7f7d30b7fdd09467bac58198a1f166dd69789d348d4fe859cccb20e0cf287fbe
+    command: ["redis-server", "--appendonly", "yes"]  # architecture: Redis AOF on
+    volumes:
+      - redisdata:/data
+    networks: [backend]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+    restart: unless-stopped
+
+  asterisk:
+    profiles: [lab]
+    image: ava-lab-asterisk:dev
+    pull_policy: never
+    environment:
+      AVA_ARI_PASSWORD: ${AVA_ARI_PASSWORD:?set AVA_ARI_PASSWORD in the env file}
+    volumes:
+      - labio:/lab/io
+    networks: [backend]
+
+  live:
+    image: ava-live:dev
+    pull_policy: never
+    depends_on:
+      postgres: {condition: service_healthy}
+      redis: {condition: service_healthy}
+    environment:
+      AVA_ARI_PASSWORD: ${AVA_ARI_PASSWORD:?set AVA_ARI_PASSWORD in the env file}
+      # Review M1: the password travels in PGPASSWORD (libpq), never inside the URL, so
+      # any character works (a URL would break on / @ # % + and the like).
+      AVA_DATABASE_URL: postgresql://ava@postgres:5432/ava
+      PGPASSWORD: ${AVA_DB_PASSWORD:?set AVA_DB_PASSWORD in the env file}
+      AVA_REDIS_URL: redis://redis:6379/0
+    command:
+      - --card
+      - /models/card/${AVA_CARD_FILE:-model_card.json}
+      - --onnx
+      - /models/onnx/${AVA_ONNX_FILE:?set AVA_ONNX_FILE (the exported model file name)}
+      - --vad-model
+      - /models/vad/silero_vad.onnx
+      - --threads
+      - "${AVA_THREADS:-4}"
+      - --ari-url
+      - ${AVA_ARI_URL:-http://asterisk:8088}
+      - --ari-user
+      - ${AVA_ARI_USER:-ava}
+      - --receiver-host
+      - ${AVA_RECEIVER_HOST:-live}  # where the PBX sends tapped RTP: this container's name in the lab
+      - --tap-extension
+      - "${AVA_TAP_EXTENSION:-700}"
+      - --database-url-env
+      - AVA_DATABASE_URL
+      - --redis-url-env
+      - AVA_REDIS_URL
+      - --health-port
+      - "9100"
+      - --health-host
+      # 18 Nov (FR-O6): bound to live's fixed address on the `metrics` network only, so
+      # Prometheus can scrape it and nothing on `backend` (Asterisk, PostgreSQL, Redis)
+      # reaches it (review L2 of 17 Nov kept it on 127.0.0.1 for the same reason).
+      - ${AVA_LIVE_METRICS_IP:-10.231.250.10}
+      # 20 Nov (PRD FR-A9 config file plus reload, FR-I4): the scoring settings come from
+      # a mounted file, reread every N seconds; valid changes reach calls started after
+      # the reload (services/live/README.md). The default folder holds the §7.3 defaults.
+      - --scoring-config
+      - /config/scoring/${AVA_SCORING_CONFIG_FILE:-scoring.json}
+      - --scoring-config-watch-s
+      - "${AVA_SCORING_CONFIG_WATCH_S:-10}"
+    volumes:
+      - ${AVA_ONNX_DIR:?set AVA_ONNX_DIR}:/models/onnx:ro
+      - ${AVA_CARD_DIR:?set AVA_CARD_DIR}:/models/card:ro
+      - ${AVA_VAD_DIR:?set AVA_VAD_DIR}:/models/vad:ro
+      # A folder, not a single file: a single-file bind mount keeps the old inode, so a
+      # file replaced by rename (the safe way to edit it) would never be seen.
+      - ${AVA_SCORING_CONFIG_DIR:-./config}:/config/scoring:ro
+    networks:
+      backend: {}
+      metrics:
+        ipv4_address: ${AVA_LIVE_METRICS_IP:-10.231.250.10}
+    read_only: true
+    tmpfs:
+      - /tmp:size=64m,noexec,nosuid,nodev
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    init: true  # review L4: signals reach Python even during model load
+    pids_limit: 256
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request,sys; sys.exit(urllib.request.urlopen('http://${AVA_LIVE_METRICS_IP:-10.231.250.10}:9100/readyz', timeout=2).status != 200)"]
+      interval: 5s
+      timeout: 4s
+      retries: 12
+      start_period: 20s
+    stop_grace_period: 20s
+    # Re-review N1: `on-failure` would leave the scorer down after a host or Docker
+    # restart (a signalled stop exits 0). A refused start (FR-O4, exit 2) then shows as
+    # a restarting container with one `refused` JSON line per attempt in its log.
+    restart: unless-stopped
+
+  db-setup:
+    # 20 Nov (backlog 5.1; PRD FR-A3, §6.3): a one-shot job, run at every `up`, that
+    # applies the migrations as the owner and then creates or updates `ava_reader`, the
+    # login the API reads history with: SELECT on the four history tables only, nothing
+    # else (services/store/roles.py). Safe to rerun; a changed reader password rotates.
+    # The owner password stays here and in `live`; the API never receives it.
+    image: ava-api:dev
+    pull_policy: never
+    depends_on:
+      postgres: {condition: service_healthy}
+    environment:
+      AVA_DATABASE_URL: postgresql://ava@postgres:5432/ava
+      PGPASSWORD: ${AVA_DB_PASSWORD:?set AVA_DB_PASSWORD in the env file}
+      AVA_DB_READER_PASSWORD: ${AVA_DB_READER_PASSWORD:?set AVA_DB_READER_PASSWORD in the env file}
+    entrypoint: ["python", "-m", "services.store"]
+    command:
+      - --database-url-env
+      - AVA_DATABASE_URL
+      - reader-role
+      - --role
+      - ava_reader
+      - --password-env
+      - AVA_DB_READER_PASSWORD
+    networks: [backend]
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    pids_limit: 64
+    restart: "no"
+
+  api:
+    # The analysis API and the dashboard (architecture §2.5, §2.6): file analysis with
+    # the AntiDeepfake baseline, /v1/calls + WS /v1/events relayed from Redis, and (20
+    # Nov) the stored history and alert search from PostgreSQL as `ava_reader`.
+    # It has NO authentication, so it is published nowhere: only containers on the
+    # internal network reach it (see README "Reaching the dashboard").
+    image: ava-api:dev
+    pull_policy: never
+    depends_on:
+      redis: {condition: service_healthy}
+      postgres: {condition: service_healthy}
+      db-setup: {condition: service_completed_successfully}
+    environment:
+      AVA_REDIS_URL: redis://redis:6379/0
+      # The read-only login (db-setup above), never the owner; libpq reads PGPASSWORD.
+      AVA_DATABASE_URL: postgresql://ava_reader@postgres:5432/ava
+      PGPASSWORD: ${AVA_DB_READER_PASSWORD:?set AVA_DB_READER_PASSWORD in the env file}
+    command:
+      - --model-root
+      - /models/antideepfake
+      - --threads
+      - "${AVA_API_THREADS:-2}"
+      - --host
+      - 0.0.0.0
+      - --allow-non-loopback  # inside the internal network only; nothing is published
+      - --port
+      - "8000"
+      - --dashboard
+      - /app/dashboard
+      - --redis-url-env
+      - AVA_REDIS_URL
+      - --database-url-env
+      - AVA_DATABASE_URL
+    volumes:
+      - ${AVA_MODEL_ROOT:?set AVA_MODEL_ROOT (the AntiDeepfake checkpoint folder)}:/models/antideepfake:ro
+    networks: [backend, metrics]  # metrics: scraped by Prometheus (profile `monitoring`)
+    read_only: true
+    tmpfs:
+      # Uploads spool here (2 concurrent x 100 MB, services/api/app.py); torch also
+      # needs a temporary folder at model load.
+      - /tmp:size=256m,noexec,nosuid,nodev
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    init: true
+    pids_limit: 256
+    # Review M1: file analysis must not starve the live scorer. A coarse bound only:
+    # PRD FR-I9 (batch at most 25 % of inference capacity while calls are active) is
+    # NOT enforced across the two containers (README). Memory: the model (~1.3 GB),
+    # uploads in memory and on the /tmp tmpfs, queued jobs.
+    cpus: ${AVA_API_CPUS:-2}
+    mem_limit: ${AVA_API_MEMORY:-3g}
+    healthcheck:
+      # /readyz verifies the checkpoint's hashes, loads it and runs one warm-up
+      # inference on its first call (about a minute on this laptop); later calls are
+      # immediate. A probe cut off by the timeout does not stop the load.
+      test: ["CMD", "python", "-c", "import urllib.request,sys; sys.exit(urllib.request.urlopen('http://127.0.0.1:8000/readyz', timeout=8).status != 200)"]
+      interval: 5s
+      timeout: 10s
+      retries: 6
+      start_period: 180s
+    stop_grace_period: 20s  # running analyses get 10 s at stop (services/api/__main__.py)
+    restart: unless-stopped
+
+  # Monitoring (18 Nov; PRD FR-O6 Prometheus metrics and a Grafana dashboard). Opt in
+  # with `--profile monitoring`. Both sit on the internal `metrics` network only: they
+  # reach the two scrape targets and each other, never `backend` or the internet, and
+  # nothing is published on the host (deploy/compose/README.md, "Monitoring").
+  prometheus:
+    profiles: [monitoring]
+    image: prom/prometheus:v3.16.0@sha256:e04987641b57704f408e31f6373ba4138ecf27cb4a165d24aabb6c38fddd0f06
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.path=/prometheus
+      - --storage.tsdb.retention.time=${AVA_PROMETHEUS_RETENTION:-15d}
+      - --storage.tsdb.retention.size=${AVA_PROMETHEUS_RETENTION_SIZE:-2GB}
+      - --web.listen-address=:9090
+    volumes:
+      - ./monitoring/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - promdata:/prometheus
+    networks: [metrics]
+    read_only: true
+    tmpfs:
+      - /tmp:size=16m,noexec,nosuid,nodev
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    pids_limit: 256
+    cpus: 0.5
+    mem_limit: 512m
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:9090/-/ready"]
+      interval: 5s
+      timeout: 4s
+      retries: 12
+    restart: unless-stopped
+
+  grafana:
+    profiles: [monitoring]
+    image: grafana/grafana-oss:13.0.2@sha256:5dad0df181cb644a14e13617b913b261a54f7d4fd4510721dba420929f35bea2
+    depends_on:
+      prometheus: {condition: service_healthy}
+    environment:
+      GF_SECURITY_ADMIN_USER: admin
+      GF_SECURITY_ADMIN_PASSWORD: ${AVA_GRAFANA_ADMIN_PASSWORD:?set AVA_GRAFANA_ADMIN_PASSWORD in the env file}
+      GF_SECURITY_DISABLE_GRAVATAR: "true"
+      GF_USERS_ALLOW_SIGN_UP: "false"
+      GF_AUTH_ANONYMOUS_ENABLED: "false"
+      # No calls home (PRD: no telemetry, no runtime download), each also blocked by the
+      # internal network: usage reporting, version and plugin update checks, feedback
+      # links, the news feed, plugin preinstall and signing-key download, the plugin
+      # catalogue, external snapshots, public dashboards and cloud migration.
+      GF_ANALYTICS_REPORTING_ENABLED: "false"
+      GF_ANALYTICS_CHECK_FOR_UPDATES: "false"
+      GF_ANALYTICS_CHECK_FOR_PLUGIN_UPDATES: "false"
+      GF_ANALYTICS_FEEDBACK_LINKS_ENABLED: "false"
+      GF_NEWS_NEWS_FEED_ENABLED: "false"
+      GF_PLUGINS_PREINSTALL_DISABLED: "true"
+      GF_PLUGINS_PUBLIC_KEY_RETRIEVAL_DISABLED: "true"
+      GF_PLUGINS_PLUGIN_ADMIN_ENABLED: "false"
+      GF_SNAPSHOTS_EXTERNAL_ENABLED: "false"
+      GF_PUBLIC_DASHBOARDS_ENABLED: "false"
+      GF_CLOUD_MIGRATION_ENABLED: "false"
+      GF_LOG_MODE: console  # review L5: the default also writes /var/log/grafana (read-only root)
+    volumes:
+      - ./monitoring/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./monitoring/grafana/dashboards:/etc/grafana/dashboards:ro
+      - grafanadata:/var/lib/grafana
+    networks: [metrics]
+    read_only: true
+    tmpfs:
+      - /tmp:size=64m,noexec,nosuid,nodev
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    pids_limit: 256
+    cpus: 0.5
+    mem_limit: 512m
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:3000/api/health"]
+      interval: 5s
+      timeout: 4s
+      retries: 24
+      start_period: 20s
+    restart: unless-stopped
+
+networks:
+  backend:
+    internal: true  # no route to the internet for any service
+  metrics:
+    # Scrape network (18 Nov): live (fixed address, its health endpoint binds only here),
+    # api, prometheus and grafana. Internal: no route out, nothing published. The default
+    # is outside Docker's default address pools (172.17-31.x, 192.168.x). Change
+    # AVA_METRICS_SUBNET, AVA_METRICS_DYNAMIC_RANGE and AVA_LIVE_METRICS_IP together; the
+    # fixed address must lie in the subnet but outside the dynamic range (review M1/M2),
+    # or another container can take it and `live` cannot be created.
+    internal: true
+    ipam:
+      config:
+        - subnet: ${AVA_METRICS_SUBNET:-10.231.250.0/24}
+          ip_range: ${AVA_METRICS_DYNAMIC_RANGE:-10.231.250.128/25}
+
+volumes:
+  pgdata:
+  redisdata:
+  labio:
+  promdata:
+  grafanadata:

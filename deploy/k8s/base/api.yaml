@@ -1,0 +1,158 @@
+# The analysis API and dashboard (architecture §2.5, §2.6; PRD FR-A1-A4, FR-A8, FR-U).
+# It has NO authentication (dashboard publication awaits that decision), so this base
+# publishes it nowhere: the Service is cluster-internal and the NetworkPolicy admits
+# only pods in this namespace labelled `ava.giki/api-client: "true"` (none by default).
+# Coarse CPU and memory limits keep file analysis from starving the live scorer; the
+# PRD FR-I9 25 % batch share is not enforced across the two pods (as in Compose).
+apiVersion: v1
+kind: Service
+metadata:
+  name: api
+  labels: {app.kubernetes.io/name: api, app.kubernetes.io/part-of: ava}
+spec:
+  selector: {app.kubernetes.io/name: api}
+  ports:
+    - {name: http, port: 8000, targetPort: http, protocol: TCP}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: api
+  labels: {app.kubernetes.io/name: api, app.kubernetes.io/part-of: ava}
+spec:
+  replicas: 1
+  selector:
+    matchLabels: {app.kubernetes.io/name: api}
+  template:
+    metadata:
+      labels: {app.kubernetes.io/name: api, app.kubernetes.io/part-of: ava}
+    spec:
+      automountServiceAccountToken: false
+      enableServiceLinks: false
+      terminationGracePeriodSeconds: 30  # running analyses get 10 s at stop
+      shareProcessNamespace: true  # Python is not PID 1 (see live.yaml)
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
+        seccompProfile: {type: RuntimeDefault}
+      initContainers:
+        # The relay starts against Redis and the history routes read PostgreSQL; wait for
+        # both (at most 5 minutes; see live.yaml).
+        - name: wait-for-storage
+          image: ava-api:dev
+          imagePullPolicy: Never
+          command:
+            - python
+            - -c
+            - |
+              import socket, sys, time
+              deadline = time.monotonic() + 300
+              for target in sys.argv[1:]:
+                  host, port = target.rsplit(':', 1)
+                  while True:
+                      try:
+                          socket.create_connection((host, int(port)), timeout=2).close()
+                          break
+                      except OSError as error:
+                          if time.monotonic() > deadline:
+                              sys.exit(f'{target} unreachable: {type(error).__name__}')
+                          time.sleep(1)
+          args: [redis:6379, postgres:5432]
+          resources:
+            requests: {cpu: 10m, memory: 32Mi}
+            limits: {cpu: 100m, memory: 64Mi}
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: {drop: [ALL]}
+        # 20 Nov (backlog 5.1; PRD FR-A3, §6.3): migrations, then the read-only login
+        # `ava_reader` (SELECT on the four history tables only; services/store/roles.py).
+        # Idempotent, so it runs at every pod start; a changed `db-reader-password`
+        # rotates it. Only this init container gets the owner password: it has exited
+        # before the API container starts, and the API container gets the reader's.
+        - name: db-reader-role
+          image: ava-api:dev
+          imagePullPolicy: Never
+          command: [python, -m, services.store]
+          args:
+            - --database-url-env
+            - AVA_DATABASE_URL
+            - reader-role
+            - --role
+            - ava_reader
+            - --password-env
+            - AVA_DB_READER_PASSWORD
+          envFrom:
+            - configMapRef: {name: ava-config}
+          env:
+            - name: PGPASSWORD
+              valueFrom: {secretKeyRef: {name: ava-secrets, key: db-password}}
+            - name: AVA_DB_READER_PASSWORD
+              valueFrom: {secretKeyRef: {name: ava-secrets, key: db-reader-password}}
+          resources:
+            requests: {cpu: 50m, memory: 64Mi}
+            limits: {cpu: 500m, memory: 128Mi}
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: {drop: [ALL]}
+      containers:
+        - name: api
+          image: ava-api:dev  # built locally (deploy/api/Dockerfile), imported, never pulled
+          imagePullPolicy: Never
+          envFrom:
+            - configMapRef: {name: ava-config}
+          env:
+            - name: PGPASSWORD  # the reader's, never the owner's
+              valueFrom: {secretKeyRef: {name: ava-secrets, key: db-reader-password}}
+          args:
+            - --model-root
+            - /models/antideepfake
+            - --threads
+            - $(AVA_API_THREADS)
+            - --host
+            - 0.0.0.0
+            - --allow-non-loopback  # reachable only as the NetworkPolicy allows
+            - --port
+            - "8000"
+            - --dashboard
+            - /app/dashboard
+            - --redis-url-env
+            - AVA_REDIS_URL
+            - --database-url-env
+            - AVA_HISTORY_DATABASE_URL
+          ports:
+            - {name: http, containerPort: 8000, protocol: TCP}
+          # /readyz verifies the checkpoint's hashes, loads it and runs one warm-up
+          # inference on its first call (about a minute on the development laptop).
+          startupProbe:
+            httpGet: {path: /readyz, port: http}
+            periodSeconds: 5
+            timeoutSeconds: 10
+            failureThreshold: 72
+          readinessProbe:
+            httpGet: {path: /readyz, port: http}
+            periodSeconds: 5
+            timeoutSeconds: 10
+          livenessProbe:
+            httpGet: {path: /healthz, port: http}
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 6
+          resources:
+            requests: {cpu: 500m, memory: 2Gi}
+            limits: {cpu: "2", memory: 3Gi}
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: {drop: [ALL]}
+          volumeMounts:
+            - {name: models, mountPath: /models/antideepfake, subPath: antideepfake, readOnly: true}
+            # Uploads spool here (2 concurrent x 100 MB); torch needs it at model load.
+            - {name: tmp, mountPath: /tmp}
+      volumes:
+        - name: models
+          persistentVolumeClaim: {claimName: ava-models, readOnly: true}
+        - name: tmp
+          emptyDir: {medium: Memory, sizeLimit: 256Mi}

@@ -31,6 +31,7 @@ POLICY = {'training_eligible': False, 'cloning_status': 'not_authorized',
           'listening_status': 'not_individually_reviewed', 'validation_status': 'verified',
           'language': 'pnb', 'source_language': 'pnb_Arab', 'use_scope': 'noncommercial_detection_research'}
 ROW_CHECKS = 17
+MAX_SELECTABLE_SECONDS = (MAX_AUDIO_BYTES - 44) / 96000 - .1
 
 
 def sha256_file(path):
@@ -53,10 +54,19 @@ def clip_id(revision, shard, index):
     return 'meta_pnb_' + hashlib.sha256(f'{revision}/{shard}#{index}'.encode()).hexdigest()
 
 
+def selectable(record):
+    duration = record.get('duration')
+    return isinstance(duration, (int, float)) and duration <= MAX_SELECTABLE_SECONDS
+
+
 def expected_selection(meta, revision, per_speaker):
-    """Pure: meta maps (shard, index) -> record; returns (selected keys, speaker count)."""
+    """Pure: meta maps (shard, index) -> record; returns (selected keys, speaker count).
+
+    Rows declared longer than a 10 MB PCM16 WAV holds at 48 kHz mono are not selectable."""
     groups = {}
     for key, record in meta.items():
+        if not selectable(record):
+            continue
         groups.setdefault(record['speaker_id'], []).append(key)
     selected = set()
     for candidates in groups.values():
@@ -154,7 +164,9 @@ def verify(args):
         by_index = {r['source_row_index']: r for r in rows if type(r.get('source_row_index')) is int}
         check('selection_recomputed', {(shard, i) for i in by_index} == expected and len(by_index) == len(rows))
         check('speaker_count', args.expected_speakers in (None, speakers) and len(rows) == speakers * args.per_speaker)
-        check('per_speaker_allocation', Counter(r.get('source_speaker_id') for r in rows) == {m['speaker_id']: args.per_speaker for m in meta.values()})
+        check('no_speaker_lost_to_duration_bound', {m['speaker_id'] for m in meta.values()}
+              == {m['speaker_id'] for m in meta.values() if selectable(m)})
+        check('per_speaker_allocation', Counter(r.get('source_speaker_id') for r in rows) == {m['speaker_id']: args.per_speaker for m in meta.values() if selectable(m)})
         index = 0
         for batch in parquet.iter_batches(batch_size=8, columns=['audio']):
             for offset in range(batch.num_rows):

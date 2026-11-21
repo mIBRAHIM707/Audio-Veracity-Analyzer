@@ -1,0 +1,20 @@
+{
+  "audio": {
+    "window_s": 4.0,
+    "hop_s": 2.0,
+    "max_concealed_fraction": 0.1
+  },
+  "scoring": {
+    "ema_alpha": 0.4,
+    "min_windows": 2,
+    "thresholds": {
+      "suspicious_enter": 0.6,
+      "alert_enter": 0.75,
+      "alert_exit": 0.55,
+      "suspicious_exit": 0.4
+    },
+    "score_directions": ["caller"],
+    "degraded_max_stride_factor": 4,
+    "degraded_recovery_s": 30.0
+  }
+}

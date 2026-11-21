@@ -1,0 +1,26 @@
+# LAB overlay (backlog 10.2): the base stack plus the Asterisk lab PBX in namespace
+# `ava-lab-pbx`; live's ARI URL and its PBX NetworkPolicy point at that PBX instead of
+# the base's documentation address. Used by tests/lab/test_k3s_stack_lab.py.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - ../base
+  - pbx.yaml
+patches:
+  - target: {kind: ConfigMap, name: ava-config}
+    patch: |-
+      - op: replace
+        path: /data/AVA_ARI_URL
+        value: http://asterisk.ava-lab-pbx.svc.cluster.local:8088
+  - target: {kind: NetworkPolicy, name: live-pbx}
+    patch: |-
+      - op: replace
+        path: /spec/egress/0/to
+        value:
+          - namespaceSelector: {matchLabels: {kubernetes.io/metadata.name: ava-lab-pbx}}
+            podSelector: {matchLabels: {app.kubernetes.io/name: asterisk}}
+      - op: replace
+        path: /spec/ingress/0/from
+        value:
+          - namespaceSelector: {matchLabels: {kubernetes.io/metadata.name: ava-lab-pbx}}
+            podSelector: {matchLabels: {app.kubernetes.io/name: asterisk}}
