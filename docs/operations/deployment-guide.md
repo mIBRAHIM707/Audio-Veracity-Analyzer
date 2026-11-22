@@ -347,6 +347,10 @@ Further site controls:
 | API healthy and reading the database | `docker compose ... ps api` (healthy); `GET /v1/history/calls` answers 200 |
 | backups | the date of the newest dump; a test restore after any change to this procedure |
 
+When one of the first four checks fails, the runbooks (`docs/operations/runbooks.md`)
+say what the signal means for calls, what to check and what to do. Backups are covered
+by section 6.
+
 ## 9. Gaps that block a production deployment
 
 TLS and publication of the dashboard; local accounts wired into Compose and k3s; a

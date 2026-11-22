@@ -770,6 +770,17 @@ items needing that data are listed at the end and stay out of the queue.
   needing no default route, DNS-rebinding Host allowlist on the API (`services/api/hosts.py`,
   `--allowed-host`), guide provenance; fixed and re-run (109 s). Remaining: runbooks
   beyond the guide, the recorded BO-4 video (human).
+  22 Nov (attempt 6): operations runbooks `docs/operations/runbooks.md` (16 signal ->
+  calls -> check -> act -> tested procedures: ARI lost, loop stalled, detector failing,
+  start-up refused, capacity, degraded/unmonitored, packet loss, storage stalled, pump
+  dead, event relay, API not ready, config rejected, tap/scoring errors, tapping nothing,
+  snippets, lost log lines; check PostgreSQL before restarting live; no PBX call-path
+  change). Review conditional pass (M1-M6: outage numbers, restart during a database
+  outage, PBX wording, overclaimed Tested lines, per-metric labels, missing runbooks) fixed.
+  CI check `tests/unit/test_runbooks.py` (Claude-authored): every cited metric, label
+  value, log event, readiness reason, panel, path and test exists; every live readiness
+  reason and warning/error log event has a runbook. Remaining: the recorded BO-4 video
+  (human); then 11.2 can close.
 - [ ] 11.QA Separate complete software from data-dependent/unmeasured acceptance.
 
 Not autonomous acceptance: full representative model training, final calibration/

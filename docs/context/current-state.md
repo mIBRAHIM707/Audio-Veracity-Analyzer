@@ -520,6 +520,15 @@ and about 50,000 original clips, excluding codec copies.
     helper and the guide's references.
   - **Not done:** the recorded demo video (BO-4; a human records it); a trained model, so
     no live score means anything; FR-U7 accounts in this stack.
+- **22 Nov (attempt 6), 11.2 operations runbooks (partial).**
+  - **What:** `docs/operations/runbooks.md`, 16 runbooks from an observable signal
+    (live/API `/readyz` reason, metric, JSON log event, Grafana panel) to the effect on
+    calls (always none: AVA is advisory), checks, actions and the lab evidence. Linked
+    from the deployment guide §8.
+  - **Tested:** `tests/unit/test_runbooks.py` (CI) checks every cited name exists in the
+    code and dashboard, and that every live readiness reason and warning/error log event
+    has a runbook. The procedures themselves are only as tested as each **Tested** line
+    says; several (Asterisk restart, real network loss, full disk, real load) are not.
 - **17 Nov daily run (details in `daily-runs/2026-11-17.md`).** FR-O6 per-stage latency
   for the live loop (7.2/8.1): `ava_live_stage_seconds{stage}` with `queue_wait`,
   `batch_wait`, `apply` (scorer and hub publish) and `window_to_result` (offer to

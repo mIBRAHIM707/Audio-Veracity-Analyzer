@@ -140,6 +140,8 @@ to a real PBX) and its gaps (TLS, accounts in Compose/k3s) need site decisions.
 22 Nov (attempt 5): no data change. Lab demo script `docs/operations/demo.md` with a
 loopback-only Compose `demo` profile; an automated rehearsal on the real stack passes.
 Human: record the BO-4 demo video from the script, using public clips only.
+22 Nov (attempt 6): no data change. Operations runbooks `docs/operations/runbooks.md`
+(16 signal-to-action procedures), kept true to the code by a CI check.
 
 Human decisions:
 - Should reloads be written to the audit log?
