@@ -450,12 +450,13 @@ image refuses to start against that database ("database has migration N ... that
 checkout does not know", `services/store/migrate.py`). So does an older `db-setup` (the
 `api` image also migrates), and then `api` does not start. Rolling back such an upgrade
 therefore also needs the database as it was before it, so back up PostgreSQL before an
-image upgrade. Neither this nor a backup procedure is tested here.
+image upgrade. The image upgrade itself is not tested. The backup and restore procedure
+is in `docs/operations/deployment-guide.md` ("Backup and restore") and is lab-tested
+(`test_a_database_backup_restores_into_a_new_stack_and_scoring_resumes`, 22 Nov).
 
 ## Not done
 
-Publishing the dashboard to the host (see above), Kubernetes manifests and the
-NetworkPolicy, hashed requirements and SBOM generation in CI (FR-O7; the generator
+Publishing the dashboard to the host (see above), hashed requirements and SBOM generation in CI (FR-O7; the generator
 exists, see above), log shipping (FR-O6), image
-signing, and the full FR-O8 deployment guide (hardware, PBX tap configuration, upgrade,
-backup). Grafana is done (profile `monitoring`, 18 Nov), but it is not published.
+signing. The FR-O8 deployment guide is `docs/operations/deployment-guide.md` (22 Nov).
+Grafana is done (profile `monitoring`, 18 Nov), but it is not published.

@@ -41,6 +41,9 @@ inside the stack, and checks:
   start-up in the container while a real call still completes, and putting the previous
   env file back restores scoring with the same model, stored rows kept and no migration
   re-applied.
+- (22 Nov, backlog 11.2, PRD FR-O8) the deployment guide's PostgreSQL backup and restore:
+  an online dump restored into a new stack after `down -v` gives every table back
+  unchanged, and scoring and the read-only history resume.
 The project and its volumes are removed afterwards.
 """
 import base64
@@ -139,6 +142,33 @@ ANALYZE = textwrap.dedent(r'''
         status, body = e.code, e.read()
     print(json.dumps({'status': status, 'body': json.loads(body)}))
 ''')
+
+# Run inside the api container: what its database login may do (see
+# assert_reader_restricted). Prints {"user", "read_only", <sql>: "allowed"|"denied"}.
+READER_PROBE = textwrap.dedent(r'''
+    import json, os, psycopg
+    from psycopg import errors
+    out = {}
+    with psycopg.connect(os.environ['AVA_DATABASE_URL'], autocommit=True) as c:
+        out['user'] = c.execute('SELECT current_user').fetchone()[0]
+        out['read_only'] = c.execute('SHOW default_transaction_read_only').fetchone()[0]
+        c.execute('SET default_transaction_read_only = off')
+        for sql in ("DELETE FROM calls", "UPDATE calls SET verdict = 'x'", "DELETE FROM window_scores",
+                    "DELETE FROM alerts", "TRUNCATE calls", "SELECT * FROM users", "SELECT * FROM audit_log",
+                    "CREATE TABLE stolen (x int)", "CREATE TEMP TABLE stolen_temp (x int)",
+                    "SELECT lo_create(0)"):
+            try:
+                c.execute(sql)
+                out[sql] = 'allowed'
+            except errors.InsufficientPrivilege:
+                out[sql] = 'denied'
+    print(json.dumps(out))
+''')
+
+# The deployment guide's restore steps (docs/operations/deployment-guide.md "Backup and
+# restore"; tests/unit/test_deployment_guide.py checks the guide gives the same ones):
+# empty the database, then restore the dump in one transaction.
+EMPTY_DATABASE_SQL = ('DROP DATABASE ava WITH (FORCE)', 'CREATE DATABASE ava OWNER ava')
 
 EGRESS_PROBE = ('import socket,sys\n'
                 'try:\n socket.create_connection(("1.1.1.1", 443), timeout=3)\n'
@@ -519,6 +549,14 @@ class ComposeStackLabTests(unittest.TestCase):
                 records.append(record)
         return records
 
+    def assert_reader_restricted(self):
+        """Inside the api container, its login is `ava_reader`, read-only by default, and
+        cannot write a history table (even after turning read-only off), read the account
+        tables or create objects."""
+        result = json.loads(self.compose('exec', '-T', 'api', 'python', '-c', READER_PROBE).stdout)
+        self.assertEqual((result.pop('user'), result.pop('read_only')), ('ava_reader', 'on'))
+        self.assertEqual(set(result.values()), {'denied'}, result)
+
     def test_the_api_reads_stored_history_through_the_read_only_login(self):
         """Backlog 5.1 read-only role through the Compose wiring (Claude-authored, 20 Nov
         2026; PRD FR-A3, FR-A6, §6.3). `up api` runs the one-shot `db-setup` first (as the
@@ -564,28 +602,7 @@ class ComposeStackLabTests(unittest.TestCase):
         alerts = self.api_get('/v1/alerts')
         self.assertEqual((alerts['status'], json.loads(alerts['body'])['alerts']), (200, []), alerts)
 
-        probe = textwrap.dedent(r'''
-            import json, os, psycopg
-            from psycopg import errors
-            out = {}
-            with psycopg.connect(os.environ['AVA_DATABASE_URL'], autocommit=True) as c:
-                out['user'] = c.execute('SELECT current_user').fetchone()[0]
-                out['read_only'] = c.execute('SHOW default_transaction_read_only').fetchone()[0]
-                c.execute('SET default_transaction_read_only = off')
-                for sql in ("DELETE FROM calls", "UPDATE calls SET verdict = 'x'", "DELETE FROM window_scores",
-                            "DELETE FROM alerts", "TRUNCATE calls", "SELECT * FROM users", "SELECT * FROM audit_log",
-                            "CREATE TABLE stolen (x int)", "CREATE TEMP TABLE stolen_temp (x int)",
-                            "SELECT lo_create(0)"):
-                    try:
-                        c.execute(sql)
-                        out[sql] = 'allowed'
-                    except errors.InsufficientPrivilege:
-                        out[sql] = 'denied'
-            print(json.dumps(out))
-        ''')
-        result = json.loads(self.compose('exec', '-T', 'api', 'python', '-c', probe).stdout)
-        self.assertEqual((result.pop('user'), result.pop('read_only')), ('ava_reader', 'on'))
-        self.assertEqual(set(result.values()), {'denied'}, result)
+        self.assert_reader_restricted()
         environment = self.compose('exec', '-T', 'api', 'env').stdout
         self.assertNotIn(self.db_password, environment, 'the API container never has the owner password')
         self.assertIn(call_id, psql(f"SELECT call_id FROM calls WHERE call_id = '{call_id}'"), 'nothing deleted')
@@ -858,6 +875,169 @@ class ComposeStackLabTests(unittest.TestCase):
         self.assertGreaterEqual(int(after[1].split('|')[2]), 1, 'the new call is scored again')
         print(f'\nobserved: refusals per bad change {observed}; a call completed while live refused; '
               f'rollback healthy in {back_s:.1f} s with {first["model_version"]}; second call stored {after[1]}')
+
+    def table_digests(self):
+        """{table: 'rows:md5'} for every table in the public schema, the rows ordered by
+        their text form, so two databases with the same content give the same map."""
+        sql = ("SELECT table_name || '=' || (xpath('/row/c/text()', query_to_xml(format("
+               "'SELECT count(*) || '':'' || md5(coalesce(string_agg(t::text, ''|'' ORDER BY t::text), '''')) AS c "
+               "FROM %I t', table_name), false, true, '')))[1]::text "
+               "FROM information_schema.tables WHERE table_schema = 'public' AND table_type = 'BASE TABLE' "
+               'ORDER BY table_name')
+        done = self.compose('exec', '-T', 'postgres', 'psql', '-U', 'ava', '-d', 'ava', '-v', 'ON_ERROR_STOP=1',
+                            '-tAc', sql)
+        return dict(line.split('=', 1) for line in done.stdout.split())
+
+    def test_a_database_backup_restores_into_a_new_stack_and_scoring_resumes(self):
+        """FR-O8 backup and restore (Claude-authored, 22 Nov 2026; PRD FR-O8 "upgrade,
+        backup", §6.5; docs/operations/deployment-guide.md "Backup and restore"). The
+        guide's procedure, run as written against a stack with live, the lab PBX, db-setup
+        and the API:
+        - backup while running: `pg_dump --format=custom` to a file inside the postgres
+          container, copied out with `compose cp` (no shell redirection: Windows
+          PowerShell 5.1's `>` would re-encode the binary dump), then removed from the
+          container;
+        - a call stored after the backup, so the restore has something to undo;
+        - (re-review N1) a copy of the dump re-encoded as UTF-16, as a PowerShell `>`
+          would write it, is refused by `pg_restore --list` before anything is dropped,
+          and the database is unchanged;
+        - rollback restore in place (review H1 of 22 Nov: a restore over the existing
+          tables fails): stop live and api, drop and re-create database `ava`, then
+          `pg_restore --no-owner --no-privileges --single-transaction --exit-on-error`;
+          every table's content equals the backup (the later call is gone); restoring the
+          same file again over it fails and changes nothing (one transaction);
+        - `up` again: nothing is migrated again (by db-setup or live), db-setup updates
+          `ava_reader` and re-grants it; the API serves the restored call through it, and
+          the login is still read-only with no access to the account tables (review L12);
+        - the disaster: `down -v` removes the volume; the same restore steps on the new
+          database give the same content; db-setup creates `ava_reader` (roles are cluster
+          objects, not in the dump); a new call is stored to `bye` next to the restored row.
+        The detector is the untrained 14 Nov export: rows and windows are plumbing only."""
+        self.set_env(AVA_ONNX_FILE=ONNX.name)
+        self.compose('up', '-d', '--wait', '--wait-timeout', '360', 'live', 'asterisk', 'api', timeout=600)
+        self.wait_healthy('live', 120)
+        self.wait_healthy('api', 240)
+
+        def stored_rows(count, seconds=60):
+            rows, deadline = [], time.monotonic() + seconds
+            while time.monotonic() < deadline:
+                rows = self.call_rows()
+                if len(rows) >= count and all(r.split('|')[1] for r in rows):
+                    break
+                time.sleep(1)
+            return rows
+
+        code, output = self.place_call('bk1')
+        self.assertEqual(code, 0, f'sipp: {output}')
+        before_rows = stored_rows(1)
+        self.assertEqual(len(before_rows), 1, before_rows)
+        self.assertEqual(before_rows[0].split('|')[1], 'bye', before_rows)
+        call_id = before_rows[0].split('|')[0]
+        before = self.table_digests()
+        self.assertTrue({'calls', 'window_scores', 'alerts', 'schema_migrations'} <= set(before), before)
+        self.assertNotEqual(before['window_scores'].split(':')[0], '0', 'the call has stored windows')
+
+        # Backup, online (the guide's commands), then the copy in the container removed.
+        self.compose('exec', '-T', 'postgres', 'pg_dump', '-U', 'ava', '-d', 'ava', '--format=custom',
+                     '--file=/tmp/ava.dump')
+        dump = self.folder / 'ava.dump'
+        self.compose('cp', 'postgres:/tmp/ava.dump', str(dump))
+        self.compose('exec', '-T', 'postgres', 'rm', '-f', '/tmp/ava.dump')
+        self.assertEqual(dump.read_bytes()[:5], b'PGDMP', 'a custom-format dump')
+        left = self.compose('exec', '-T', 'postgres', 'test', '-e', '/tmp/ava.dump', check=False)
+        self.assertNotEqual(left.returncode, 0, 'no dump left in the container')
+
+        # A change after the backup, which the rollback restore must undo.
+        code, output = self.place_call('bk2')
+        self.assertEqual(code, 0, f'sipp: {output}')
+        self.assertEqual(len(stored_rows(2)), 2, 'a second call stored after the backup')
+        self.assertNotEqual(self.table_digests(), before)
+
+        def no_dump_left():
+            left = self.compose('exec', '-T', 'postgres', 'test', '-e', '/tmp/ava.dump', check=False)
+            self.assertNotEqual(left.returncode, 0, 'no dump left in the container')
+
+        def restore_steps(source=dump):
+            """The guide's restore: app services stopped, the dump copied in and listed,
+            then (only if the listing works) the database emptied and the dump restored.
+            Returns the restore command, or None when the listing refused the file."""
+            self.compose('stop', 'live', 'api', timeout=300)
+            self.compose('cp', str(source), 'postgres:/tmp/ava.dump')
+            listed = self.compose('exec', '-T', 'postgres', 'pg_restore', '--list', '/tmp/ava.dump', check=False)
+            if listed.returncode != 0:
+                return None
+            empty = ['exec', '-T', 'postgres', 'psql', '-U', 'ava', '-d', 'postgres', '-v', 'ON_ERROR_STOP=1']
+            for sql in EMPTY_DATABASE_SQL:
+                empty += ['-c', sql]
+            self.compose(*empty)
+            restore = ['exec', '-T', 'postgres', 'pg_restore', '-U', 'ava', '-d', 'ava', '--no-owner',
+                       '--no-privileges', '--single-transaction', '--exit-on-error', '/tmp/ava.dump']
+            self.compose(*restore)
+            return restore
+
+        # 0. A dump damaged the way a PowerShell `>` damages it (re-encoded as UTF-16) is
+        # refused by the listing, before anything is dropped.
+        damaged = self.folder / 'ava-utf16.dump'
+        damaged.write_bytes(dump.read_bytes().decode('latin-1').encode('utf-16'))
+        changed = self.table_digests()
+        self.assertIsNone(restore_steps(damaged), 'the listing refuses a re-encoded dump')
+        self.assertEqual(self.table_digests(), changed, 'the refused restore touched nothing')
+        self.compose('exec', '-T', 'postgres', 'rm', '-f', '/tmp/ava.dump')
+
+        def start_and_check(created):
+            self.compose('up', '-d', '--wait', '--wait-timeout', '360', 'live', 'asterisk', 'api', timeout=600)
+            self.wait_healthy('live', 120)
+            self.wait_healthy('api', 240)
+            setup = [json.loads(line) for line in
+                     self.compose('logs', '--no-color', '--no-log-prefix', 'db-setup').stdout.splitlines()
+                     if line.startswith('{')]
+            self.assertEqual((setup[-1]['event'], setup[-1]['created'], setup[-1]['migrated']),
+                             ('reader_role', created, []), setup)
+            starting = [r for r in self.live_records() if r.get('event') == 'starting']
+            self.assertEqual(starting[-1]['database_migrations_applied'], [], 'live applied no migration')
+            self.assertEqual(self.table_digests(), before, 'start-up changed no table')
+            detail = self.api_get(f'/v1/calls/{call_id}/history')
+            self.assertEqual(detail['status'], 200, detail)
+            self.assertEqual(json.loads(detail['body'])['sessions'][0]['end_reason'], 'bye', detail)
+            self.assert_reader_restricted()
+            return setup[-1]
+
+        # 1. Rollback restore in place.
+        restore = restore_steps()
+        self.assertEqual(self.table_digests(), before, 'every table as backed up; the later call is gone')
+        again = self.compose(*restore, check=False)
+        self.assertNotEqual(again.returncode, 0, 'restoring over existing tables fails')
+        self.assertIn('already exists', again.stderr)
+        self.assertEqual(self.table_digests(), before, 'the failed second restore changed nothing')
+        self.compose('exec', '-T', 'postgres', 'rm', '-f', '/tmp/ava.dump')
+        no_dump_left()
+        rolled = start_and_check(created=False)
+
+        # 2. The disaster: the volume is gone; the same steps on the new database.
+        self.compose('down', '-v', '-t', '20', timeout=300)
+        self.compose('up', '-d', '--wait', '--wait-timeout', '120', 'postgres', timeout=300)
+        fresh = self.compose('exec', '-T', 'postgres', 'psql', '-U', 'ava', '-d', 'ava', '-tAc',
+                             "SELECT count(*) FROM information_schema.tables WHERE table_schema = 'public'")
+        self.assertEqual(fresh.stdout.strip(), '0', 'a new, empty database')
+        self.assertIsNotNone(restore_steps())
+        self.compose('exec', '-T', 'postgres', 'rm', '-f', '/tmp/ava.dump')
+        no_dump_left()
+        self.assertEqual(self.table_digests(), before, 'every table restored into the new volume')
+        recreated = start_and_check(created=True)
+
+        code, output = self.place_call('bk3')
+        self.assertEqual(code, 0, f'sipp: {output}')
+        after = stored_rows(2)
+        self.assertEqual(len(after), 2, after)
+        self.assertEqual(after[0], before_rows[0], 'the restored row is kept')
+        self.assertEqual(after[1].split('|')[1], 'bye', after)
+        self.assertGreaterEqual(int(after[1].split('|')[2]), 1, 'the new call is scored')
+        logs = self.compose('logs', '--no-color').stdout
+        for secret in (self.db_password, self.reader_password, self.ari_password):
+            self.assertNotIn(secret, logs, 'no password in any container log')
+        print(f'\nobserved: dump {dump.stat().st_size} bytes; tables {before}; in-place restore undid the later '
+              f'call, second restore refused unchanged; db-setup created={rolled["created"]} then '
+              f'{recreated["created"]}, nothing migrated; new call {after[1]}')
 
     def test_a_live_restart_mid_call_never_stops_the_call(self):
         """5.QA process restart (Claude-authored, 18 Nov 2026; PRD "AVA failure must not

@@ -133,6 +133,10 @@ an older image refuses a database that a newer one migrated.
 PRD requirement to its evidence and gap (checked in CI). Human decisions it surfaces:
 whether caller numbers (from/to) may be stored and shown (FR-T3), and whether FR-T5's
 5 s cleanup or the 10 s end grace should change.
+22 Nov (attempt 4): no data change. FR-O8 deployment guide
+(`docs/operations/deployment-guide.md`); its PostgreSQL backup and restore is lab-tested.
+Human: the guide's untested parts (image upgrade with a migration, k3s backup, a network
+to a real PBX) and its gaps (TLS, accounts in Compose/k3s) need site decisions.
 
 Human decisions:
 - Should reloads be written to the audit log?

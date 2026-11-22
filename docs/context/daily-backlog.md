@@ -745,6 +745,19 @@ items needing that data are listed at the end and stay out of the queue.
   FR-T3 (from/to not served), FR-T5 (10 s end grace vs 5 s), FR-M11, FR-O4 and FR-O5 from
   implemented to partial. Remaining: FR-O8 deployment guide and runbooks, demo
   instructions.
+  22 Nov (attempt 4): FR-O8 deployment guide `docs/operations/deployment-guide.md`
+  (hardware, PBX tap configuration, recording-failure policy "continue the call",
+  install, upgrade and rollback, backup and restore, §6.3 controls table, day-to-day
+  checks, blocking gaps), each part marked tested or not. Its Compose PostgreSQL backup
+  and restore is lab-tested (`test_a_database_backup_restores_into_a_new_stack_and_scoring_resumes`,
+  Claude-authored: online dump; UTF-16-damaged copy refused by `pg_restore --list` before
+  any drop; in-place rollback restore undoes a later call; restore after `down -v`;
+  `ava_reader` recreated and still restricted; nothing re-migrated). CI check
+  `tests/unit/test_deployment_guide.py` (paths, flags, test names, settings, sections,
+  §6.3 rows in PRD order, restore steps equal to the lab test's). Audit: FR-O8 partial,
+  FR-T4 implemented. Review H1 (restore failed unless the volume was deleted) and
+  re-review N1 (drop before checking the dump) fixed. Remaining: demo instructions;
+  untested guide parts (image upgrade with a migration, k3s backup, site PBX network).
 - [ ] 11.QA Separate complete software from data-dependent/unmeasured acceptance.
 
 Not autonomous acceptance: full representative model training, final calibration/

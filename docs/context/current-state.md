@@ -484,6 +484,23 @@ and about 50,000 original clips, excluding codec copies.
     check (FR-O4). Compose and k3s do not expose retention (FR-O5). The ≥8 s evidence
     selection is not built (FR-M11).
   - **Not done:** the FR-O8 deployment guide, runbooks and demo instructions.
+- **22 Nov (attempt 4), 11.2 FR-O8 deployment guide (partial).**
+  - **What:** `docs/operations/deployment-guide.md`: hardware (A1 and what was measured
+    off A1), PBX tap configuration (ARI user, `Set(AVA_TAP=caller)`, `direct_media=no`,
+    flows), recording-failure policy "continue the call" with the failure cases tested,
+    install, upgrade and rollback, backup and restore, the §6.3 controls with their state,
+    day-to-day checks and the gaps that block production. Each part says tested or not.
+  - **Tested:** the Compose PostgreSQL backup and restore, by a Claude-authored lab case:
+    an online `pg_dump`; a UTF-16-damaged copy refused by `pg_restore --list` before any
+    drop; an in-place rollback restore that undoes a later call; a restore onto a new
+    volume after `down -v`; `ava_reader` recreated by `db-setup` and still restricted;
+    nothing migrated again; a new call stored after each. `tests/unit/test_deployment_guide.py`
+    keeps the guide's paths, flags, test names, settings, §6.3 rows and restore steps in
+    line with the repository in CI.
+  - **Audit:** FR-O8 to partial, FR-T4 to implemented (25 implemented, 32 partial, 2 not
+    started).
+  - **Not tested:** an image upgrade with a migration, backup on k3s, a network to a real
+    PBX. §6.3 TLS is not met (not built); accounts are not turned on in Compose or k3s.
 - **17 Nov daily run (details in `daily-runs/2026-11-17.md`).** FR-O6 per-stage latency
   for the live loop (7.2/8.1): `ava_live_stage_seconds{stage}` with `queue_wait`,
   `batch_wait`, `apply` (scorer and hub publish) and `window_to_result` (offer to

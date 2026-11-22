@@ -30,10 +30,10 @@ Update a row in the same change that alters the evidence.
 
 | Status | Rows |
 |---|---|
-| implemented | 24 |
+| implemented | 25 |
 | partial | 32 |
 | data-dependent | 14 |
-| not-started | 3 |
+| not-started | 2 |
 | human | 8 |
 | deferred | 2 |
 
@@ -111,7 +111,7 @@ Update a row in the same change that alters the evidence.
 | FR-T1 | P0 | partial | `lab/asterisk/Dockerfile`, `lab/asterisk/config/pjsip.conf`, `lab/asterisk/config/pjsip_softphone.conf`, `lab/asterisk/harness.py`, `lab/asterisk/rtp_pcap.py` | `tests/lab/test_asterisk_lab.py`, `tests/lab/test_bridged_call_lab.py`, `tests/lab/test_softphone_lab.py`, `tests/unit/test_lab_rtp_pcap.py` | Asterisk, SIPp endpoints, codec forcing and an authenticated softphone endpoint are built; a real softphone application needs a person and a published port. |
 | FR-T2 | P0 | implemented | `services/tap/ari.py`, `services/tap/tap_app.py`, `services/tap/rtp_receiver.py` | `tests/unit/test_tap.py`, `tests/lab/test_ari_tap.py` | none |
 | FR-T3 | P0 | partial | `services/tap/tap_app.py`, `services/store/history.py`, `dashboard/src/HistoryPage.tsx` | `tests/unit/test_call_codec.py`, `tests/unit/test_store_history.py`, `tests/browser/dashboard-history.spec.cjs` | Call ID, timestamps and codec reach the dashboard; from and to are read by the tap but not served (the store README holds caller numbers back pending a privacy and retention decision). |
-| FR-T4 | P0 | partial | `services/tap/tap_app.py` | `tests/lab/test_ari_tap.py`, `tests/lab/test_detector_fault_lab.py`, `tests/lab/test_compose_stack_lab.py` | Calls survive a stopped, hung, crashed or killed AVA in the lab; the deployment guide with the PBX recording-failure policy (FR-O8) is not written. |
+| FR-T4 | P0 | implemented | `services/tap/tap_app.py`, `docs/operations/deployment-guide.md` | `tests/lab/test_ari_tap.py`, `tests/lab/test_detector_fault_lab.py`, `tests/lab/test_compose_stack_lab.py` | none (calls survive a stopped, hung, crashed or killed AVA in opt-in lab tests; the guide's section 3 requires "continue the call"; running the AVA-stopped case in CI, PRD task 4.7 and §6.5, needs a human workflow edit) |
 | FR-T5 | P0 | partial | `services/tap/tap_app.py`, `services/tap/scoring_sink.py`, `services/scorer/live.py` | `tests/lab/test_ari_tap.py`, `tests/unit/test_tap_scoring_sink.py`, `tests/unit/test_scorer_live.py` | The tap releases its Asterisk resources within 5 s (lab), but the scoring sink keeps a pending end for up to `end_grace_s` = 10 s and no test times scoring-state removal; lower the grace or record a deviation (a code or PRD decision). |
 | FR-T6 | P2 | deferred | none | none | SIPREC needs a scope decision. |
 | FR-T7 | P0 | implemented | `services/tap/tap_app.py`, `lab/asterisk/config/extensions.conf` | `tests/lab/test_ari_tap.py` | none (condition not triggered: the snoop plus ExternalMedia tap works in the lab since 15 Nov, so no fallback was built) |
@@ -162,7 +162,7 @@ Update a row in the same change that alters the evidence.
 | FR-O5 | P0 | partial | `services/retention/snippets.py`, `services/live/retention.py` | `tests/unit/test_snippet_retention.py`, `tests/unit/test_snippet_aes_gcm.py`, `tests/unit/test_live_retention.py`, `tests/unit/test_api_no_audio_retention.py`, `tests/lab/test_snippet_retention_lab.py` | Default off, ring buffer, one sealed snippet per alert, AES-256-GCM, TTL and purge are built in the live process; the switch is a command-line flag (a change needs a restart) and Compose and k3s do not expose it; key provisioning and rotation are an operator procedure. |
 | FR-O6 | P1 | implemented | `services/live/eventlog.py`, `services/api/oplog.py`, `services/scorer/metrics_text.py`, `deploy/compose/monitoring/grafana/dashboards/ava-overview.json` | `tests/unit/test_live_eventlog.py`, `tests/unit/test_api_oplog.py`, `tests/unit/test_monitoring_dashboard.py`, `tests/unit/test_api_metrics_fr_o6.py` | none |
 | FR-O7 | P1 | partial | `scripts/image_sbom.py`, `deploy/live/Dockerfile`, `deploy/api/Dockerfile` | `tests/unit/test_image_sbom.py`, `tests/unit/test_deploy_images.py`, `tests/lab/test_image_sbom_lab.py` | Digest pins and the SBOM generator are built; hashed requirements and an SBOM CI job are not (both need a human). |
-| FR-O8 | P0 | not-started | `deploy/compose/README.md`, `deploy/k8s/README.md` | none | No deployment guide yet covering hardware, PBX tap configuration, the recording-failure policy, upgrade, backup and §6.3 controls; the Compose README has the model rollback procedure. |
+| FR-O8 | P0 | partial | `docs/operations/deployment-guide.md`, `deploy/compose/README.md`, `deploy/k8s/README.md` | `tests/unit/test_deployment_guide.py`, `tests/lab/test_compose_stack_lab.py` | The guide (22 Nov) covers every FR-O8 item, and its Compose backup and restore is lab-tested; the image upgrade with a migration, backup on k3s and the network to a site PBX are described but not tested. |
 
 ## Shared workflow (FR-W)
 
@@ -175,14 +175,15 @@ Update a row in the same change that alters the evidence.
 
 ## Findings from this audit
 
-- P0 rows with software still to build that needs no data: FR-O8 (deployment guide),
-  FR-I4 (live windowing to follow `audio.hop_s`), FR-T5 (scoring-state cleanup within
+- P0 rows with software still to build that needs no data: FR-I4 (live windowing to follow `audio.hop_s`), FR-T5 (scoring-state cleanup within
   5 s, or a recorded deviation), FR-I3 (`partial` in published events), FR-O4 (card
   check for the API's model), FR-O5 (retention switch in Compose and k3s), FR-D5
   (code-switch rule), FR-D12 (per-partition overlap report; the probes need data),
   FR-A1 (MP3/AMR/GSM input and the 8 kHz path), FR-I1 (AMR RFC 4867 payloads), FR-A11
-  (local API docs). FR-T3 (from and to) waits on a privacy decision. FR-O8 is backlog
-  11.2's next part.
+  (local API docs). FR-T3 (from and to) waits on a privacy decision.
+- 22 Nov (later the same day): the FR-O8 deployment guide
+  (`docs/operations/deployment-guide.md`) moved FR-O8 to `partial` (untested parts named)
+  and FR-T4 to `implemented`.
 - The independent review of this audit (22 Nov) moved FR-I3, FR-I4, FR-T3, FR-T5,
   FR-M11, FR-O4 and FR-O5 from `implemented` to `partial`; the backlog had recorded
   each as built because the pieces existed, while a PRD clause was unmet.
