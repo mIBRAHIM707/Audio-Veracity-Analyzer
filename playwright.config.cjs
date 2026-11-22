@@ -14,10 +14,14 @@ module.exports = defineConfig({
   // real-model cases also need the local checkpoint and public clips named in the
   // gitignored `.local/real-model-qa.json`. Neither runs in the foundation (CI) job.
   projects: [
-    { name: 'foundation', testIgnore: ['**/dashboard-*.spec.cjs', '**/real-model-*.spec.cjs'] },
+    { name: 'foundation', testIgnore: ['**/dashboard-*.spec.cjs', '**/real-model-*.spec.cjs', '**/compose-demo-*.spec.cjs'] },
     { name: 'dashboard', testMatch: '**/dashboard-*.spec.cjs' },
     // No traces: they would store the uploaded public audio as request bodies.
     { name: 'real-model', testMatch: '**/real-model-*.spec.cjs', timeout: 300000,
+      use: { browserName: 'chromium', trace: 'off', screenshot: 'only-on-failure', video: 'off' } },
+    // 22 Nov (backlog 11.2): the demo rehearsal on the real Compose stack, started and
+    // removed by tests/lab/test_compose_demo_lab.py, which sets AVA_DEMO_* for it.
+    { name: 'compose-demo', testMatch: '**/compose-demo-*.spec.cjs', timeout: 300000,
       use: { browserName: 'chromium', trace: 'off', screenshot: 'only-on-failure', video: 'off' } },
   ],
 });

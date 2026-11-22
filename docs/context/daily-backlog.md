@@ -758,6 +758,18 @@ items needing that data are listed at the end and stay out of the queue.
   FR-T4 implemented. Review H1 (restore failed unless the volume was deleted) and
   re-review N1 (drop before checking the dump) fixed. Remaining: demo instructions;
   untested guide parts (image upgrade with a migration, k3s backup, site PBX network).
+  22 Nov (attempt 5): reproducible demo instructions `docs/operations/demo.md` (PRD 5.9:
+  live tapped call, timeline, batch upload, stored history, egress proof; what it does
+  not show). Compose profile `demo`: `demo-proxy` (`services/edge`, stdlib byte forwarder
+  to `api:8000`, 32 connections, idle/connect timeouts, no per-connection log) published
+  on 127.0.0.1 only; `api` and all other services stay without a route out.
+  `python -m lab.demo status|call|egress`. Claude-authored: unit tests (forwarder,
+  profile isolation, helper, guide references; CI) and the lab rehearsal
+  `tests/lab/test_compose_demo_lab.py` with Playwright project `compose-demo` (DR01-DR03)
+  on the real stack. Review conditional pass: forwarder stalled-write bound, egress proof
+  needing no default route, DNS-rebinding Host allowlist on the API (`services/api/hosts.py`,
+  `--allowed-host`), guide provenance; fixed and re-run (109 s). Remaining: runbooks
+  beyond the guide, the recorded BO-4 video (human).
 - [ ] 11.QA Separate complete software from data-dependent/unmeasured acceptance.
 
 Not autonomous acceptance: full representative model training, final calibration/

@@ -501,6 +501,25 @@ and about 50,000 original clips, excluding codec copies.
     started).
   - **Not tested:** an image upgrade with a migration, backup on k3s, a network to a real
     PBX. §6.3 TLS is not met (not built); accounts are not turned on in Compose or k3s.
+- **22 Nov (attempt 5), 11.2 reproducible demo instructions (partial).**
+  - **What:** `docs/operations/demo.md`, the PRD 5.9 demo script (live tapped call,
+    timeline, batch upload, stored history, egress proof), with what the demo does not
+    show (untrained live head, uncalibrated baseline, lab PBX). Compose profile `demo`
+    adds `demo-proxy`, a standard-library byte forwarder (`services/edge`) published on
+    127.0.0.1 only, so a browser on the demo machine reaches the internal API. `api`
+    and every other service keep no route out; the forwarder is the only container on
+    a non-internal network. `python -m lab.demo status|call|egress` places a public-audio
+    lab call and runs the egress proof (no default route AND a failed connection). The
+    API in Compose now serves only Host names 127.0.0.1, localhost and api
+    (`--allowed-host`, `services/api/hosts.py`), against DNS rebinding.
+  - **Tested:** `tests/lab/test_compose_demo_lab.py` runs the script on the real stack:
+    the Playwright project `compose-demo` (DR01 a tapped call on the live board with
+    its timeline, ending `bye`; DR02 a batch upload; DR03 the stored history), `/readyz`
+    on loopback, `lab.demo egress` blocked for `live` and `api`, the forwarder's clean
+    stop. Unit tests run in CI for the forwarder, the profile's isolation rules, the
+    helper and the guide's references.
+  - **Not done:** the recorded demo video (BO-4; a human records it); a trained model, so
+    no live score means anything; FR-U7 accounts in this stack.
 - **17 Nov daily run (details in `daily-runs/2026-11-17.md`).** FR-O6 per-stage latency
   for the live loop (7.2/8.1): `ava_live_stage_seconds{stage}` with `queue_wait`,
   `batch_wait`, `apply` (scorer and hub publish) and `window_to_result` (offer to

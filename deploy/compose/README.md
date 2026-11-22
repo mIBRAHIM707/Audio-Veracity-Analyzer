@@ -138,7 +138,59 @@ the dashboard from this stack. Exposing it is a deployment decision:
 - a second, non-internal network, which also gives `api` a route out;
 - authentication (P1 local authentication, backlog 7.3).
 None of these is designed here. For a look on a development machine, run the API on the
-host instead (`services/api/README.md`).
+host instead (`services/api/README.md`), or use the lab demo profile below.
+
+## Demo profile (22 Nov 2026; backlog 11.2; PRD roadmap 5.9, BO-4, BO-8)
+
+`--profile demo` adds `demo-proxy`, so a browser on THIS machine can open the dashboard
+for the lab demo (`docs/operations/demo.md`). It is not a way to publish the dashboard to
+users:
+- `demo-proxy` runs `python -m services.edge` from the `ava-api:dev` image. That is a
+  byte forwarder: standard library only, one fixed target `api:8000` taken from its
+  command line, at most 32 connections, a 5 s connect timeout and a 300 s idle timeout.
+  It logs one `listening` and one `stopped` record and nothing per connection. `Host`,
+  `Origin` and WebSocket frames pass through unchanged. A stalled write counts against
+  the idle timeout, a link that does not end cleanly is aborted, and after the API
+  closes a connection the browser gets 10 s to close its side.
+- Compose publishes it on `127.0.0.1:${AVA_DEMO_PORT:-8080}` only. The host side is fixed
+  to loopback in `compose.yaml`; there is no setting for another address, and a unit
+  test (`tests/unit/test_compose_demo_profile.py`) fails if one appears.
+- Networks. `api` joins one more internal network, `demo`, which only `demo-proxy`
+  shares. `demo-proxy` is also on `demo-edge`, the only non-internal network, because
+  Docker publishes no port for a container on internal networks only. So the forwarder
+  CAN reach the internet: on 22 Nov it connected to 1.1.1.1:443 from inside, even with
+  the bridge's masquerading turned off (Docker Desktop NATs in its own VM), so that
+  setting is not used. Its code connects only to the fixed `api:8000`, it gets no
+  secret or mount, and it cannot reach `backend`. `api`, `live` and every other service
+  have no default route at all. The lab test's
+  egress proof checks both "no default route" and a failed connection for `live` and
+  `api` with the profile on.
+- Host names. `api` runs with `--allowed-host 127.0.0.1 --allowed-host localhost
+  --allowed-host api` (`services/api/hosts.py`): a request whose Host header names
+  anything else gets 421, and such a WebSocket is closed before it opens. This stops a
+  web page from reaching the unauthenticated API through DNS rebinding (its own name
+  resolved to 127.0.0.1). Open the dashboard as `127.0.0.1` or `localhost`.
+- No authentication: anyone who can reach 127.0.0.1 on this machine can use the API
+  while the profile runs, including other local users and programs. Stop it after the
+  demo (`docker compose ... stop demo-proxy`, or `down`). It restarts only on failure,
+  so it does not come back by itself after a reboot.
+- Linux hosts (review M5, not tested): the forwarder listens on every interface of its
+  container. Docker Desktop, used here, does not route the LAN to container addresses.
+  On a Linux Docker host, a machine on the same LAN that adds a route to the
+  `demo-edge` subnet through this host may reach `<container address>:8080` directly,
+  past the loopback binding, if the host forwards IP and its firewall allows it (older
+  Docker Engine versions did not block this). Run the demo profile on Linux only on a
+  trusted network, or block forwarding to the `demo-edge` subnet.
+- Hardening as for the other services: read-only root, every capability dropped,
+  `no-new-privileges`, 64 processes, 0.25 CPU, 128 MB, no mounts, no secrets.
+
+Lab evidence (Claude-authored, 22 Nov): `tests/lab/test_compose_demo_lab.py`. It runs the
+browser rehearsal `tests/browser/compose-demo-rehearsal.spec.cjs` through the forwarder:
+a real tapped call on the live board with its timeline, a batch upload, and the stored
+history. It also checks that `/readyz` answers on 127.0.0.1 and not on the host's
+network address, that another Host name is refused, that `live` and `api` have no
+default route and cannot reach 1.1.1.1:443, and that the forwarder stops cleanly on
+SIGTERM. Run times are in `docs/operations/demo.md`.
 
 ## Monitoring (profile `monitoring`, 18 Nov 2026; PRD FR-O6)
 
@@ -215,7 +267,8 @@ in `compose.yaml`.
 
 - One `internal: true` network: no service can reach the internet. That includes
   telemetry, downloads and CDNs, and was tested by a connection attempt from `live` and
-  from `api`. Nothing is published on the host.
+  from `api`. Nothing is published on the host, except the opt-in `demo-proxy` on
+  127.0.0.1 (profile `demo`, above), which is also the only container with a route out.
 - `live`'s health endpoint (unauthenticated `/metrics`) listens only on its fixed
   address on the internal `metrics` network (18 Nov; see "Monitoring"). Its Compose
   health check reads `/readyz` there. This reverses the 17 Nov choice of 127.0.0.1

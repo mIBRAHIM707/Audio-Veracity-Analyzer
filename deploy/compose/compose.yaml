@@ -6,12 +6,15 @@
 #   docker build -f deploy/live/Dockerfile -t ava-live:dev .
 #   docker build -t ava-lab-asterisk:dev lab/asterisk          # lab profile only
 #   docker compose --env-file <your stack.env> -f deploy/compose/compose.yaml --profile lab up -d
-#   (add `--profile monitoring` for Prometheus and the Grafana dashboard, FR-O6)
+#   (add `--profile monitoring` for Prometheus and the Grafana dashboard, FR-O6, and
+#   `--profile demo` for the dashboard on the host's loopback address, lab demo only)
 #
 # Images are pinned by digest (public) or built locally (`pull_policy: never`). Every
-# service sits on one internal network: no container can reach the internet (no
-# telemetry, no runtime downloads); nothing is published on the host. Secrets and paths
-# come from an env file that is never committed (see stack.env.example).
+# service except the opt-in `demo-proxy` (profile `demo`) sits on internal networks
+# only: those containers cannot reach the internet (no telemetry, no runtime downloads)
+# and publish nothing on the host. `demo-proxy` is published on 127.0.0.1 only and is
+# the one container on a non-internal network. Secrets and paths come from an env file
+# that is never committed (see stack.env.example).
 name: ava
 
 services:
@@ -191,13 +194,25 @@ services:
       - "8000"
       - --dashboard
       - /app/dashboard
+      # 22 Nov (review M4): only these Host names are served, so a web page cannot reach
+      # the API through DNS rebinding while the demo port is open on 127.0.0.1. The
+      # health check and lab exec use 127.0.0.1, Prometheus `api`, the demo browser
+      # 127.0.0.1 or localhost (ports are ignored).
+      - --allowed-host
+      - 127.0.0.1
+      - --allowed-host
+      - localhost
+      - --allowed-host
+      - api
       - --redis-url-env
       - AVA_REDIS_URL
       - --database-url-env
       - AVA_DATABASE_URL
     volumes:
       - ${AVA_MODEL_ROOT:?set AVA_MODEL_ROOT (the AntiDeepfake checkpoint folder)}:/models/antideepfake:ro
-    networks: [backend, metrics]  # metrics: scraped by Prometheus (profile `monitoring`)
+    # metrics: scraped by Prometheus (profile `monitoring`); demo: reached only by the
+    # `demo-proxy` forwarder (profile `demo`). All three are internal: no route out.
+    networks: [backend, metrics, demo]
     read_only: true
     tmpfs:
       # Uploads spool here (2 concurrent x 100 MB, services/api/app.py); torch also
@@ -224,6 +239,52 @@ services:
       start_period: 180s
     stop_grace_period: 20s  # running analyses get 10 s at stop (services/api/__main__.py)
     restart: unless-stopped
+
+  demo-proxy:
+    # Lab demo only (22 Nov; backlog 11.2, PRD roadmap 5.9, BO-4/BO-8). Opt in with
+    # `--profile demo`. A byte forwarder (services/edge) from the HOST'S LOOPBACK address
+    # to api:8000, so a browser on this machine can open the dashboard. The API has no
+    # authentication in this stack, so the port is bound to 127.0.0.1 only and never to
+    # another address. `api` stays on internal networks (no route out); this container
+    # has a route out through `demo-edge` (Docker publishes no port for a container on
+    # internal networks only), and its only target is fixed on the command line
+    # (deploy/compose/README.md, "Demo profile").
+    profiles: [demo]
+    image: ava-api:dev
+    pull_policy: never
+    depends_on:
+      api: {condition: service_healthy}
+    entrypoint: ["python", "-m", "services.edge"]
+    command:
+      - --listen-host
+      - 0.0.0.0  # inside this container; the host side is 127.0.0.1 (ports below)
+      - --listen-port
+      - "8080"
+      - --target-host
+      - api
+      - --target-port
+      - "8000"
+      - --max-connections
+      - "32"
+    ports:
+      - "127.0.0.1:${AVA_DEMO_PORT:-8080}:8080"
+    networks: [demo-edge, demo]
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    init: true
+    pids_limit: 64
+    cpus: 0.25
+    mem_limit: 128m
+    healthcheck:
+      test: ["CMD", "python", "-c", "import socket; socket.create_connection(('127.0.0.1', 8080), timeout=2).close()"]
+      interval: 5s
+      timeout: 4s
+      retries: 12
+    stop_grace_period: 5s
+    # Review L5: not `unless-stopped`, so the unauthenticated loopback port does not come
+    # back by itself after a reboot of a stack left up after the demo.
+    restart: on-failure
 
   # Monitoring (18 Nov; PRD FR-O6 Prometheus metrics and a Grafana dashboard). Opt in
   # with `--profile monitoring`. Both sit on the internal `metrics` network only: they
@@ -320,6 +381,15 @@ networks:
       config:
         - subnet: ${AVA_METRICS_SUBNET:-10.231.250.0/24}
           ip_range: ${AVA_METRICS_DYNAMIC_RANGE:-10.231.250.128/25}
+  demo:
+    # 22 Nov (lab demo): api and the `demo-proxy` forwarder only. Internal: no route out.
+    internal: true
+  demo-edge:
+    # 22 Nov (profile `demo` only): NOT internal, because Docker publishes ports only for
+    # a container with a non-internal network. Only `demo-proxy` joins it, and it has a
+    # route out (review L6: turning off masquerading did not stop that on Docker Desktop,
+    # 22 Nov, so it is not used); its only target is fixed on its command line.
+    internal: false
 
 volumes:
   pgdata:

@@ -21,6 +21,10 @@ the command line and never printed. The API then serves `/v1/calls` and
 at-most-once; the loss reaches WebSocket clients as `stream.gap`). Without it the calls
 and events routes answer 503 / close 1011 (no live source).
 
+`--allowed-host NAME` (repeatable; 22 Nov) refuses any request whose Host header names
+another host (421; a WebSocket closes 1008), against DNS rebinding when a browser can
+reach the API (`services/api/hosts.py`). The Compose stack sets it.
+
 `--auth on` (FR-U7, 19 Nov) needs `--database-url-env`: accounts, sessions and the
 audit log are in that database (migration 0003, applied by `python -m services.auth
 migrate` or the live process; users are created with `python -m services.auth
@@ -89,6 +93,14 @@ def _env_name(text):
     return text
 
 
+def _hostname(text):
+    from services.api.hosts import normalise_hostname
+    try:
+        return normalise_hostname(text)
+    except ValueError as error:
+        raise argparse.ArgumentTypeError(str(error)) from None
+
+
 def _ttl_days(text):
     try:
         value = float(text)
@@ -109,6 +121,10 @@ def build_parser():
     parser.add_argument('--allow-non-loopback', action='store_true',
                         help='allow a non-loopback --host (the API has no authentication)')
     parser.add_argument('--dashboard', help='built dashboard directory (dashboard/dist) served at /')
+    parser.add_argument('--allowed-host', type=_hostname, action='append', default=None, metavar='NAME',
+                        help='accept only requests whose Host header names NAME (repeat for several; port '
+                             'ignored); others get 421, WebSockets close 1008. Guards against DNS rebinding '
+                             '(services/api/hosts.py). Default: any Host')
     parser.add_argument('--redis-url-env', type=_env_name,
                         help='environment variable with the Redis URL the live service publishes on')
     parser.add_argument('--event-log', choices=('stderr', 'off'), default='stderr',
@@ -387,10 +403,15 @@ def _run(args, environ, stderr, made, held):
                          feedback=getattr(auth, 'feedback', None), snippets=snippets)
     except ValueError as error:
         return refuse(str(error))
+    if args.allowed_host:
+        from services.api.hosts import HostAllowlist
+        app = HostAllowlist(app, args.allowed_host)
     record = {'event': 'starting', 'host': args.host, 'port': port, 'pid': os.getpid(),
               'model_id': service.model_id, 'threads': args.threads, 'dashboard': args.dashboard is not None,
               'allow_non_loopback': args.allow_non_loopback, 'live_events': relay is not None,
               'event_log': args.event_log}
+    if args.allowed_host:
+        record['allowed_hosts'] = sorted(set(args.allowed_host))
     if relay is not None:
         record['redis_reachable'] = redis_reachable
     record['call_history'] = history is not None

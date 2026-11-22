@@ -277,7 +277,10 @@ class ComposeMonitoringTests(unittest.TestCase):
             self.assertIn('networks: [metrics]', block, f'{name} is on the scrape network only')
             for hardening in ('read_only: true', 'cap_drop: [ALL]', 'no-new-privileges:true', 'mem_limit:'):
                 self.assertIn(hardening, block, f'{name}: {hardening}')
-        self.assertNotIn('ports:', self.compose, 'nothing is published on the host')
+        # 22 Nov: the only published port is the opt-in demo forwarder's, on loopback
+        # (tests/unit/test_compose_demo_profile.py checks that service in full).
+        self.assertEqual(self.compose.count('ports:'), 1, 'nothing else is published on the host')
+        self.assertIn('    ports:\n      - "127.0.0.1:${AVA_DEMO_PORT:-8080}:8080"\n', self.compose)
 
     def test_grafana_never_calls_home_and_needs_a_password(self):
         block = self.service('grafana')
@@ -320,7 +323,7 @@ class ComposeMonitoringTests(unittest.TestCase):
             self.assertFalse(subnet.overlaps(ipaddress.ip_network(pool)), pool)
         self.assertIn("targets: ['live:9100']", PROMETHEUS.read_text(encoding='utf-8'))
         self.assertIn("targets: ['api:8000']", PROMETHEUS.read_text(encoding='utf-8'))
-        self.assertIn('networks: [backend, metrics]', self.service('api'))
+        self.assertIn('networks: [backend, metrics, demo]', self.service('api'))
 
 
 if __name__ == '__main__':

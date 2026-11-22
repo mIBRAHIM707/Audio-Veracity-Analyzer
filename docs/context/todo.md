@@ -137,6 +137,9 @@ whether caller numbers (from/to) may be stored and shown (FR-T3), and whether FR
 (`docs/operations/deployment-guide.md`); its PostgreSQL backup and restore is lab-tested.
 Human: the guide's untested parts (image upgrade with a migration, k3s backup, a network
 to a real PBX) and its gaps (TLS, accounts in Compose/k3s) need site decisions.
+22 Nov (attempt 5): no data change. Lab demo script `docs/operations/demo.md` with a
+loopback-only Compose `demo` profile; an automated rehearsal on the real stack passes.
+Human: record the BO-4 demo video from the script, using public clips only.
 
 Human decisions:
 - Should reloads be written to the audit log?

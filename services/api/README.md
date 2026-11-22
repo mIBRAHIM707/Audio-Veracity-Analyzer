@@ -221,7 +221,11 @@ decision.
 
 `services/api/__main__.py` serves the app with uvicorn on `--host` (default 127.0.0.1);
 a non-loopback address is refused without `--auth on` or `--allow-non-loopback`.
-Start-up checks: torch is installed and the model directory holds `model.safetensors`
+`--allowed-host NAME` (repeatable, 22 Nov) serves only requests whose Host header names
+one of the given hosts (port ignored); others get 421 and such WebSockets close 1008
+before opening (`hosts.py`). It guards a browser-reachable API against DNS rebinding;
+the Compose stack sets 127.0.0.1, localhost and api. The refusals are not counted in
+`/metrics`. Start-up checks: torch is installed and the model directory holds `model.safetensors`
 (the baseline is hash-verified and loaded on first use; `/readyz` runs the warm-up),
 the dashboard has `index.html`, the listening socket binds (a port in use refuses;
 `--port 0` takes a free port), and with `--redis-url-env NAME` the variable is set and
