@@ -145,6 +145,9 @@ Human: record the BO-4 demo video from the script, using public clips only.
 22 Nov (attempt 7): no data change. FR-O5 alert snippets can now be switched on in
 Compose and k3s (`AVA_RETENTION`, default off); a key job creates the key once.
 Human: whether the key may sit on the same host as the snippets, and a rotation policy.
+22 Nov (attempts 8-9): no data change. Compose lab load/soak and recovery under load
+(concurrent real calls through a live SIGKILL and PostgreSQL/Redis restarts); a tap
+bridge-join defect found and fixed in attempt 8.
 
 Human decisions:
 - Should reloads be written to the audit log?

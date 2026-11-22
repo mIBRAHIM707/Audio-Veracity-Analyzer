@@ -565,6 +565,25 @@ and about 50,000 original clips, excluding codec copies.
     occurred in the final run, so it has not been seen working on the stack.
   - **Review:** two independent conditional passes; findings fixed (memory and thread
     bounds, strict metric reads, cleanup hang on Windows, retry timeout cap, tests).
+- **22 Nov (attempt 9), 11.1 recovery under load in the Compose lab (partial).**
+  - **What:** Claude-authored lab case
+    `test_concurrent_calls_survive_a_live_kill_and_backing_service_restarts`. Four
+    concurrent 55 s calls (`AVA_SOAK_CALLS`) are in progress throughout. Live is killed
+    with SIGKILL and started again, then PostgreSQL and Redis are restarted while the new
+    process scores the re-tapped calls. The soak case now shares the call helpers.
+  - **Measured (this laptop, untrained export, passed twice on the final code):** every call completed.
+    Live was healthy again about 9 s after the kill, and the new process swept one
+    leftover bridge per call and re-tapped all four. PostgreSQL holds two rows per call:
+    the killed session is ended `monitor_lost` by inference, and the new session `bye`,
+    with all 72 of its scored windows stored even though the database restarted under
+    it. Four supersedes were counted in the store and in the API registry. Every relay
+    loss (the source restart and the Redis outage) reached the WebSocket client as a
+    `stream.gap`. Nothing was left in live or Asterisk. No defect found. No 422 occurred,
+    so the 22 Nov join retry has still not been seen working on the stack.
+  - **Review:** independent conditional pass. Findings M1 (the gap check was satisfied by
+    the kill alone), M2 (open rows were not asserted), and L1-L6 (supersede ordering
+    before the database restart, slow-restart guard, sweep/tap counters, registry
+    counters, seq order) were fixed and re-run.
 - **17 Nov daily run (details in `daily-runs/2026-11-17.md`).** FR-O6 per-stage latency
   for the live loop (7.2/8.1): `ava_live_stage_seconds{stage}` with `queue_wait`,
   `batch_wait`, `apply` (scorer and hub publish) and `window_to_result` (offer to

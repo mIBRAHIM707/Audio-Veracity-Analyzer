@@ -48,6 +48,9 @@ inside the stack, and checks:
   calls; every call completes and is stored with every scored window, nothing is left
   behind in live or Asterisk, and live's threads, open files and memory do not grow from
   round to round (AVA_SOAK_ROUNDS, AVA_SOAK_CALLS; see the case's docstring).
+- (22 Nov, backlog 11.1) recovery under load: concurrent real calls through a SIGKILL of
+  live and restarts of PostgreSQL and Redis; every call completes, is re-tapped, and its
+  new session is stored whole (see the case's docstring).
 The project and its volumes are removed afterwards.
 """
 import base64
@@ -1676,6 +1679,43 @@ class ComposeStackLabTests(unittest.TestCase):
         rows = [line for line in bridges.splitlines()[1:] if line.strip()]
         return int(found.group(1)), rows
 
+    def long_call_length_ms(self):
+        """Copy the about 55 s injection pcap (twelve public clips) into the lab PBX once
+        per test and return the call length in ms."""
+        if getattr(self, '_long_call_ms', None) is None:
+            clips = json.loads(QA_CONFIG.read_text(encoding='utf-8'))['genuine'][:3] * 4
+            payloads = rtp_pcap.rtp_payloads(b''.join(rtp_pcap.wav_to_pcm8k(path) for path in clips), 'ulaw')
+            pcap = self.folder / 'inject.pcap'
+            rtp_pcap.write_pcap(payloads, 0, pcap)
+            self.compose('cp', str(pcap), 'asterisk:/lab/io/inject.pcap')
+            self._long_call_ms = len(payloads) * 20
+            self.assertLess(self._long_call_ms, 60000, 'the lab dialplan hangs up at 60 s')
+        return self._long_call_ms
+
+    def start_concurrent_calls(self, tag, calls):
+        """Start `calls` SIPp calls of about 55 s at once, each with its own RTP ports and
+        caller name; returns ([(process, output file)], call length in ms)."""
+        call_ms = self.long_call_length_ms()
+        processes = []
+        for index in range(calls):
+            output = tempfile.TemporaryFile()  # review M3 of 18 Nov: never an unread pipe
+            self.addCleanup(output.close)
+            low = 16000 + 100 * index  # each SIPp its own RTP ports (the PBX uses 10000-10200)
+            process = subprocess.Popen(self.compose_args(
+                'exec', '-T', 'asterisk', 'sipp', '127.0.0.1:5060', '-sf', '/lab/sipp/uac_inject.xml', '-s', '700',
+                '-key', 'caller', f'{tag}x{index}{secrets.token_hex(3)}', '-key', 'pt', '0', '-key', 'codec',
+                'PCMU', '-m', '1', '-d', str(call_ms + 1500), '-i', '127.0.0.1', '-mi', '127.0.0.1',
+                '-min_rtp_port', str(low), '-max_rtp_port', str(low + 99), '-timeout', '150s', '-timeout_error',
+                '-nostdin'), stdout=output, stderr=subprocess.STDOUT)
+
+            def stop(process=process):  # on failure; the stack's `down` ends SIPp itself
+                if process.poll() is None:
+                    process.kill()
+                process.wait(timeout=30)
+            self.addCleanup(stop)
+            processes.append((process, output))
+        return processes, call_ms
+
     def test_concurrent_calls_over_repeated_rounds_lose_no_window_and_do_not_grow_live(self):
         """Backlog 11.1 load and soak (Claude-authored, 22 Nov 2026; PRD FR-I9/FR-O6 live
         capacity, FR-A3/A4 storage and events, "AVA failure must not stop a call";
@@ -1716,36 +1756,11 @@ class ComposeStackLabTests(unittest.TestCase):
         seen = []
         collect = self.collector(lines, seen)
 
-        clips = json.loads(QA_CONFIG.read_text(encoding='utf-8'))['genuine'][:3] * 4
-        payloads = rtp_pcap.rtp_payloads(b''.join(rtp_pcap.wav_to_pcm8k(path) for path in clips), 'ulaw')
-        pcap = self.folder / 'inject.pcap'
-        rtp_pcap.write_pcap(payloads, 0, pcap)
-        self.compose('cp', str(pcap), 'asterisk:/lab/io/inject.pcap')
-        call_ms = len(payloads) * 20
-        self.assertLess(call_ms, 60000, 'the lab dialplan hangs up at 60 s')
-
+        call_ms = self.long_call_length_ms()
         idle = self.live_resources()
         after, peaks, strides = [], [], []
         for round_no in range(rounds):
-            processes = []
-            for index in range(calls):
-                output = tempfile.TemporaryFile()  # review M3 of 18 Nov: never an unread pipe
-                self.addCleanup(output.close)
-                low = 16000 + 100 * index  # each SIPp its own RTP ports (the PBX uses 10000-10200)
-                process = subprocess.Popen(self.compose_args(
-                    'exec', '-T', 'asterisk', 'sipp', '127.0.0.1:5060', '-sf', '/lab/sipp/uac_inject.xml', '-s', '700',
-                    '-key', 'caller', f'sk{round_no}x{index}{secrets.token_hex(3)}', '-key', 'pt', '0', '-key', 'codec',
-                    'PCMU', '-m', '1', '-d', str(call_ms + 1500), '-i', '127.0.0.1', '-mi', '127.0.0.1',
-                    '-min_rtp_port', str(low), '-max_rtp_port', str(low + 99), '-timeout', '150s', '-timeout_error',
-                    '-nostdin'), stdout=output, stderr=subprocess.STDOUT)
-
-                def stop(process=process):  # on failure; the stack's `down` ends SIPp itself
-                    if process.poll() is None:
-                        process.kill()
-                    process.wait(timeout=30)
-                self.addCleanup(stop)
-                processes.append((process, output))
-
+            processes, _ = self.start_concurrent_calls(f'sk{round_no}', calls)
             peak, deadline = 0, time.monotonic() + call_ms / 1000 + 150
             while any(process.poll() is None for process, _ in processes):
                 self.assertLess(time.monotonic(), deadline, f'round {round_no + 1}: SIPp did not finish')
@@ -1859,6 +1874,230 @@ class ComposeStackLabTests(unittest.TestCase):
               f'stride-skipped windows {skipped:.0f}; bridge-join 422 retries {join_retries:.0f}; '
               f'{resources}; live idle {idle}, after each round '
               f'{[{k: v for k, v in r.items() if k != "samples"} for r in after]}')
+
+    def test_concurrent_calls_survive_a_live_kill_and_backing_service_restarts(self):
+        """Backlog 11.1 recovery under load (Claude-authored, 22 Nov 2026; PRD "AVA failure
+        must not stop a call", FR-I11, FR-A3/A4, FR-I9; architecture §2.4-§2.6). The 5.QA
+        restart cases each had one call; here AVA_SOAK_CALLS concurrent real calls (default
+        4) of about 55 s are in progress through every failure:
+        1. once every call has a window in PostgreSQL, the live container is killed
+           (SIGKILL: no `call.ended`, unsent events lost) and started again; the new
+           process must sweep one leftover bridge per call and re-tap every still-answered
+           call within 20 s of being healthy, and the new sessions must be stored (each
+           superseding its killed session) before step 2;
+        2. while the new process scores them, PostgreSQL and then Redis are restarted.
+        Checks:
+        - every call completes (SIPp exit 0) and live held all of them again after the kill;
+        - the new process re-tapped every call with no tap failure (the 22 Nov bridge-join
+          422 retry, `join_retries`, is reported: this re-tap burst is where it can occur);
+        - PostgreSQL: per call two rows, the killed session ended `monitor_lost` by
+          inference (no speech seconds) and the new one `bye` with every scored window
+          stored (scored rows = the scorer's `windows_by_direction`) although the database
+          restarted under it; no open row or alert; `ava_live_store_superseded_total` =
+          the call count; the store pump met the broken connection, retried and caught up
+          with nothing refused, skipped or unstored;
+        - the API: every call superseded once in its registry and ended `bye`, no apply
+          error; its WebSocket subscriber saw two starts and one `bye` end per call, seqs
+          strictly increasing, and `stream.gap` reports whose interruptions equal the
+          relay's counted losses (the source restart and the Redis outage); events published
+          while Redis was down are lost by design and reported, not hidden;
+        - afterwards live has no call state left and Asterisk no channel or bridge (the
+          killed process's snoop and ExternalMedia legs included); live started twice and
+          the new process had no loop, pump or detector error.
+        Infrastructure evidence on this laptop with the untrained export; not a capacity
+        measurement and nothing about detection."""
+        _, calls = soak_shape()
+        self.compose('up', '-d', '--wait', '--wait-timeout', '360', timeout=600)
+        self.wait_healthy('live', 120)
+        self.wait_healthy('api', 240)
+        self.wait_relay_subscribed(60)
+        lines = self.start_subscriber(900, ends=calls)
+        seen = []
+        collect = self.collector(lines, seen)
+
+        def api_counter(name, text=None):
+            found = re.search(rf'^{name} (\S+)$', text or self.api_get('/metrics')['body'], re.MULTILINE)
+            self.assertIsNotNone(found, f'the API renders {name}')
+            return float(found.group(1))
+
+        def relay_losses_seen():  # source restarts plus Redis outages, as counted by the API relay
+            text = self.api_get('/metrics')['body']
+            return api_counter('ava_event_relay_source_restarts_total', text) + \
+                api_counter('ava_event_relay_interruptions_total', text)
+        losses_before = relay_losses_seen()  # only losses after the subscriber connected reach it
+
+        def psql(sql):
+            return self.compose('exec', '-T', 'postgres', 'psql', '-U', 'ava', '-d', 'ava', '-tAc', sql,
+                                check=False).stdout.strip()
+
+        processes, call_ms = self.start_concurrent_calls('rl', calls)
+        started_at = time.monotonic()
+        # Every call is monitored and has a stored window before the kill (review L5 of 19 Nov).
+        deadline = time.monotonic() + 60
+        while psql('SELECT count(DISTINCT c.call_id) FROM calls c JOIN window_scores w ON w.call_pk = c.id') != \
+                str(calls):
+            self.assertLess(time.monotonic(), deadline, f'not every call stored a window before the kill: '
+                                                        f'{self.call_rows()}')
+            time.sleep(0.5)
+        call_ids = sorted(row.split('|')[0] for row in self.call_rows())
+        self.assertEqual(len(set(call_ids)), calls, call_ids)
+        for call_id in call_ids:
+            self.assertRegex(call_id, r'^[0-9A-Za-z._-]+$', 'safe to quote in SQL')
+
+        # 1. SIGKILL live under load.
+        killed_at = time.monotonic()
+        self.compose('kill', '-s', 'SIGKILL', 'live', timeout=60)
+        self.compose('start', 'live', timeout=120)  # a no-op if the restart policy was first
+        self.wait_healthy('live', 120)
+        live_back_s = time.monotonic() - killed_at
+        # Review L2: tell a slow restart apart from a re-tap defect.
+        self.assertGreater(call_ms / 1000 - (time.monotonic() - started_at), 25,
+                           f'live took {live_back_s:.1f} s to come back: the calls had almost ended')
+
+        def retapped():  # call IDs with a second `call.started`
+            return {c for c in call_ids
+                    if sum(e['type'] == 'call.started' and e['call_id'] == c for e in seen) >= 2}
+        self.assertTrue(collect(lambda e: retapped() == set(call_ids), 20),
+                        f'not every call re-tapped within 20 s of live being healthy: {sorted(retapped())} of '
+                        f'{call_ids}')
+        retap_s = time.monotonic() - killed_at
+        tap = self.live_metrics()
+        self.assertEqual(int(tap['ava_live_calls_active']), calls, 'the new process holds every call')
+        # Review L4: from the tap's side, one leftover bridge per call swept and every call tapped.
+        self.assertEqual((tap['ava_live_tap_events_total{kind="swept"}'], tap['ava_live_tap_events_total{kind="tapped"}'],
+                          tap['ava_live_tap_events_total{kind="cleanup_errors"}']), (calls, calls, 0), 'sweep and re-tap')
+        # Review L1: the new sessions' starts (and so the supersedes) are in PostgreSQL before
+        # the database restart, so the restart hits the new sessions and no supersede commit
+        # is in flight when the connection breaks (it would be retried as a duplicate, uncounted).
+        deadline = time.monotonic() + 20
+        while psql('SELECT count(*) FROM calls') != str(2 * calls) or \
+                self.live_metrics().get('ava_live_store_superseded_total') != calls:
+            self.assertLess(time.monotonic(), deadline, f'new sessions not stored: {self.call_rows()}')
+            time.sleep(0.5)
+
+        # 2. PostgreSQL and Redis restarts while the new process scores every call.
+        def relay_interruptions():  # Redis outages seen by the API relay (a source restart is counted apart)
+            return api_counter('ava_event_relay_interruptions_total')
+        interruptions_before = relay_interruptions()
+        outage_at = time.monotonic()
+        self.compose('restart', '-t', '10', 'postgres', timeout=120)
+        self.wait_healthy('postgres', 60)
+        self.compose('restart', '-t', '10', 'redis', timeout=120)
+        self.wait_healthy('redis', 60)
+        deadline = time.monotonic() + 60
+        while True:  # review L2 of 18 Nov: the interruption counted first, then resubscribed
+            if relay_interruptions() > interruptions_before:
+                break
+            self.assertLess(time.monotonic(), deadline, 'the API relay never noticed the Redis restart')
+            time.sleep(1)
+        self.wait_relay_subscribed(60)
+        outage_s = time.monotonic() - outage_at
+        remaining_s = call_ms / 1000 - (time.monotonic() - started_at)
+        self.assertGreater(remaining_s, 8, f'kill {live_back_s:.1f} s, re-tap {retap_s:.1f} s, restarts '
+                                           f'{outage_s:.1f} s: the calls had almost ended, so the checks after '
+                                           'them would show nothing')
+
+        deadline = time.monotonic() + call_ms / 1000 + 150
+        while any(process.poll() is None for process, _ in processes):
+            self.assertLess(time.monotonic(), deadline, 'SIPp did not finish')
+            time.sleep(1)
+        for index, (process, output) in enumerate(processes):
+            output.seek(0)
+            self.assertEqual(process.returncode, 0, f'call {index} did not complete: {output.read()[-1500:]!r}')
+        self.assertTrue(collect(lambda e: sum(x['type'] == 'call.ended' for x in seen) >= calls, 90),
+                        f'not every call ended over the WebSocket: {seen[-20:]}')
+
+        # Live: nothing left, no tap failure, no errors; Asterisk: nothing left.
+        metrics, deadline = {}, time.monotonic() + 60
+        while time.monotonic() < deadline:
+            metrics = self.live_metrics()
+            if metrics.get('ava_live_store_backlog') == 0 and metrics.get('ava_live_calls_active') == 0 and \
+                    psql('SELECT count(*) FROM calls WHERE ended_at IS NULL') == '0':
+                break
+            time.sleep(1)
+        # Review M2: no open row, asserted (not only waited for).
+        self.assertEqual(psql('SELECT count(*) FROM calls WHERE ended_at IS NULL'), '0', 'no row left open')
+        self.assertEqual(metrics['ava_live_pipeline_snapshot_valid'], 1)
+        for name in ('ava_live_calls_active', 'ava_live_directions', 'ava_live_windows_waiting',
+                     'ava_live_windows_in_batcher', 'ava_live_store_backlog'):
+            self.assertEqual(metrics[name], 0, f'{name} left after the calls')
+        self.assertEqual(metrics['ava_live_tap_events_total{kind="tap_failures"}'], 0,
+                         f'calls not re-tapped: {[r for r in self.live_records() if r.get("event") == "tap_failure"]}')
+        self.assertEqual(metrics['ava_live_calls_refused_capacity_total'], 0)
+        channels, bridges = self.asterisk_leftovers()
+        self.assertEqual((channels, bridges), (0, []), 'left in Asterisk after the kill and the calls')
+        errors = {key: value for key, value in metrics.items() if value and key.startswith((
+            'ava_live_pump_faults_total', 'ava_live_loop_errors_total', 'ava_live_hook_errors_total',
+            'ava_live_detector_failures_total', 'ava_live_metrics_render_errors_total'))}
+        self.assertEqual(errors, {}, 'no live errors in the new process')
+
+        # PostgreSQL: two rows per call; the killed session inferred, the new one complete.
+        query = ("SELECT c.call_id || '|' || coalesce(c.end_reason, 'open') || '|' || "
+                 "coalesce(c.end_inferred::text, 'null') || '|' || "
+                 "coalesce(c.speech_seconds::text, 'null') || '|' || "
+                 "(SELECT count(*) FROM window_scores w WHERE w.call_pk = c.id) || '|' || "
+                 "(SELECT count(*) FROM window_scores w WHERE w.call_pk = c.id AND w.scored) || '|' || "
+                 "(SELECT coalesce(sum(value::int), 0) FROM jsonb_each_text(c.end_data->'windows_by_direction')) "
+                 "|| '|' || (SELECT count(*) FROM alerts a WHERE a.call_pk = c.id AND a.status = 'open') "
+                 "FROM calls c ORDER BY c.call_id, c.id")
+        rows = [row.split('|') for row in psql(query).splitlines()]
+        self.assertEqual(sorted(row[0] for row in rows), sorted(call_ids * 2), f'two rows per call: {rows}')
+        new_scored = 0
+        for call_id in call_ids:
+            old, new = [row for row in rows if row[0] == call_id]
+            self.assertEqual(old[1:4], ['monitor_lost', 'true', 'null'], f'{call_id} killed session: {old}')
+            self.assertGreaterEqual(int(old[4]), 1, f'{call_id}: the killed session kept its stored windows')
+            self.assertEqual(new[1:3], ['bye', 'false'], f'{call_id} new session: {new}')
+            self.assertNotEqual(new[3], 'null', new)
+            self.assertGreaterEqual(int(new[6]), 5, f'{call_id}: the new session was scored throughout')
+            self.assertEqual(int(new[5]), int(new[6]), f'{call_id}: every scored window of the new session stored')
+            self.assertEqual((old[7], new[7]), ('0', '0'), f'{call_id}: no alert left open')
+            new_scored += int(new[6])
+        self.assertEqual(metrics['ava_live_store_superseded_total'], calls, 'every killed session superseded')
+        for outcome in ('not_stored', 'refused', 'skipped_faulty'):
+            self.assertEqual(metrics[f'ava_live_store_events_total{{outcome="{outcome}"}}'], 0, outcome)
+        self.assertGreaterEqual(metrics['ava_live_store_waits_total{kind="retry_waits"}'], 1,
+                                'the pump met the broken database connection (else the restart tested nothing)')
+        self.assertEqual(metrics['ava_live_store_consecutive_failures'], 0, 'the pump recovered')
+        for kind in ('faults', 'store_misconfigured'):  # review L3
+            self.assertEqual(metrics[f'ava_live_store_waits_total{{kind="{kind}"}}'], 0, kind)
+        dropped = {key: value for key, value in metrics.items() if key.startswith('ava_live_pump_hub_dropped_total')}
+        self.assertTrue(dropped and not any(dropped.values()), f'the event hub dropped events: {dropped}')
+
+        # The API: every call superseded once and ended bye; the loss reported to the client.
+        registry = json.loads(self.api_get('/v1/calls')['body'])['registry']
+        self.assertEqual((registry['active'], registry['ended'], registry['new_session'],
+                          registry['superseded_session'], registry['apply_errors']),
+                         (0, calls, calls, calls, 0), registry)  # review L5
+        for call_id in call_ids:
+            final = json.loads(self.api_get(f'/v1/calls/{call_id}')['body'])
+            self.assertEqual((final['status'], final['end_reason']), ('ended', 'bye'), final)
+            ours = [e for e in seen if e.get('call_id') == call_id]
+            self.assertEqual([e['type'] for e in ours].count('call.started'), 2, f'{call_id}: {ours}')
+            self.assertEqual([e.get('reason') for e in ours if e['type'] == 'call.ended'], ['bye'],
+                             f'{call_id}: the killed process sent no end: {ours}')
+        gaps = [e for e in seen if e['type'] == 'stream.gap']
+        self.assertTrue(gaps and all(g['dropped'] == 0 for g in gaps), f'gap report: {gaps}')
+        # Review M1: both losses reach the client, the source restart (kill) and the Redis
+        # outage; each is reported where the relay counts it.
+        relay_losses = relay_losses_seen() - losses_before
+        self.assertGreaterEqual(relay_losses, 2, 'the relay saw the kill and the Redis outage')
+        self.assertEqual(sum(g.get('upstream_interruptions', 0) for g in gaps), relay_losses,
+                         f'every relay loss reported to the client: {gaps}')
+        self.assertEqual(api_counter('ava_event_relay_loss_report_errors_total'), 0)
+        seqs = [e['seq'] for e in seen if e['type'] != 'stream.gap']  # review L3: the API hub numbers events
+        self.assertEqual(seqs, sorted(set(seqs)), 'seqs strictly increase')
+
+        records = self.live_records()
+        self.assertEqual([r.get('event') for r in records].count('starting'), 2, 'live started twice')
+        self.assertNotIn('stopped', [r.get('event') for r in records], 'SIGKILL: no graceful stop')
+        retry_waits = metrics['ava_live_store_waits_total{kind="retry_waits"}']
+        join_retries = metrics['ava_live_tap_events_total{kind="join_retries"}']
+        print(f'\nobserved: {calls} concurrent calls of {call_ms / 1000:.0f} s all completed; live back healthy '
+              f'{live_back_s:.1f} s after the kill, every call re-tapped by {retap_s:.1f} s; PostgreSQL+Redis '
+              f'restarts {outage_s:.1f} s with {remaining_s:.0f} s left; new sessions {new_scored} scored windows '
+              f'all stored; store retry waits {retry_waits:.0f}; bridge-join 422 retries {join_retries:.0f}; '
+              f'gap reports {gaps}')
 
     def check_monitoring(self, windows, ws_events):
         """Profile `monitoring` (18 Nov, FR-O6): Prometheus holds the call, every dashboard

@@ -757,6 +757,17 @@ items needing that data are listed at the end and stay out of the queue.
   unit-tested only: no 422 occurred in the final run. Two review rounds (conditional pass)
   fixed. Remaining: the retry seen working on the stack, recovery under load, a longer
   soak, plus the retention items above.
+  22 Nov (attempt 9): recovery under load
+  (`test_concurrent_calls_survive_a_live_kill_and_backing_service_restarts`,
+  Claude-authored). Four concurrent real calls run through a SIGKILL of live, its
+  restart, and then PostgreSQL and Redis restarts. Every call completed. The new process
+  swept one bridge per call and re-tapped all four within about 9 s. Each call has two
+  rows: the killed session ended `monitor_lost` by inference, and the new `bye` session
+  has every scored window stored (72) despite the database restart. Four supersedes were
+  counted in the store and in the API registry, and every relay loss reached the
+  client. Nothing was left in live or Asterisk. Passed twice on the final code; no defect found. Review
+  conditional pass, M1-M2 and L1-L6 fixed. Remaining: the 422 retry seen working on the
+  stack, a longer soak, and the retention items above.
 - [ ] 11.2 Requirements/evidence audit, runbooks and reproducible demo instructions.
   Progress (22 Nov, attempt 3): `docs/qa/requirements-evidence-audit.md`, one row per PRD
   functional requirement (83) with status, code, tests and gap; checked in CI by
