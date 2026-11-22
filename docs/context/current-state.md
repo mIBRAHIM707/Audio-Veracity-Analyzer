@@ -469,6 +469,21 @@ and about 50,000 original clips, excluding codec copies.
     that a newer image migrated, so back up before an image upgrade (not tested).
   - **Not done:** CPU parity (needs the trained head), image rollback with a database
     restore, and the same procedure on k3s.
+- **22 Nov (attempt 3), 11.2 requirements and evidence audit (partial).**
+  - **What:** `docs/qa/requirements-evidence-audit.md` gives every PRD functional
+    requirement (83) a status, the code and tests that evidence it, and the gap.
+    `scripts/check_requirements_audit.py` and Claude-authored
+    `tests/unit/test_requirements_audit.py` keep it consistent with the PRD and the
+    repository in CI.
+  - **Result:** 24 implemented, 32 partial, 14 data-dependent, 3 not started, 8 human,
+    2 deferred. Infrastructure evidence only; no accuracy claim.
+  - **Corrections found by review:** seven rows the backlog had treated as built miss a
+    PRD clause. Live windowing ignores `audio.hop_s` (FR-I4). from/to are not served
+    (FR-T3, privacy decision). The scoring sink holds an ended call up to 10 s against
+    FR-T5's 5 s. Published events lack `partial` (FR-I3). The API's model has no card
+    check (FR-O4). Compose and k3s do not expose retention (FR-O5). The ≥8 s evidence
+    selection is not built (FR-M11).
+  - **Not done:** the FR-O8 deployment guide, runbooks and demo instructions.
 - **17 Nov daily run (details in `daily-runs/2026-11-17.md`).** FR-O6 per-stage latency
   for the live loop (7.2/8.1): `ava_live_stage_seconds{stage}` with `queue_wait`,
   `batch_wait`, `apply` (scorer and hub publish) and `window_to_result` (offer to

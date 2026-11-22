@@ -1,8 +1,9 @@
 # Local analysis API (backlog 2.2)
 
 `app.py` exposes the bounded analysis service (`services/inference/`) over HTTP for
-the local prototype. CPU only, no runtime downloads, no authentication or
-persistence yet; bind it to localhost.
+the local prototype. CPU only, no runtime downloads. Local accounts and the audit log
+are opt-in (`--auth on`, below and `services/auth/README.md`); stored history needs
+`--database-url-env`. Without accounts, bind it to localhost.
 
 | Endpoint | Behaviour |
 |---|---|
@@ -131,8 +132,9 @@ session's `codec`, only when it is a JSON string matching the format-name rule (
 and `ava_alert_search_reads_total{outcome=ok|unavailable|busy|timeout|schema|error}`
 (`/v1/alerts`; it shares the one history connection, so a 10,000-row export can make
 history reads `busy`).
-Not yet wired into the Compose or k3s deployments: their network policies keep the API
-away from PostgreSQL, and a read-only role is an operator step (backlog 10.2).
+Compose and k3s both wire history reads through the read-only `ava_reader` login
+(20 Nov, `deploy/compose/README.md`, `deploy/k8s/README.md`); neither turns on
+`--auth on` yet.
 
 `--auth on` (19 Nov, attempt 7; PRD FR-U7; add `--with-requirements
 requirements-auth.txt`) needs `--database-url-env`: accounts, sessions and the audit log
@@ -262,7 +264,7 @@ only these fields:
 
 Query strings, upload bytes, caller data, URLs and credentials are never written. A
 fault in the log never reaches a request or a job. A `job_id` is a random UUID. Anyone
-who can read the log and reach the API (which has no authentication) can fetch that job
+who can read the log and reach the API without accounts (`--auth` off) can fetch that job
 while it is held. The `stopped` record's `event_log.stopped_in_time` is false when a
 blocked stderr kept the writer past its 2 s stop timeout; a line may then follow
 `stopped`. The WebSocket route is not logged
@@ -299,8 +301,9 @@ uv run --no-project --python 3.11 --with-requirements requirements-api.txt pytho
 route; a directory without `index.html` is refused at startup.
 
 Not yet: MP3/AMR/GSM decode and the 8 kHz path (backlog 3.x), language hint,
-durable jobs and cancellation (5.2), authentication and audit (7.3). The history routes
-expose call IDs and scores without authentication, like `/v1/calls`: bind to localhost.
+durable jobs and cancellation (5.2). Without `--auth on` (local accounts and the audit
+log, `services/auth/README.md`) the history routes expose call IDs and scores, like
+`/v1/calls`: bind to localhost.
 
 Tests for the history routes and option: `tests/unit/test_store_history.py`
 (Claude-authored, 19 Nov; the PostgreSQL cases need `AVA_TEST_POSTGRES_DSN`, see

@@ -736,6 +736,15 @@ items needing that data are listed at the end and stay out of the queue.
 ## 11 — Final software integration
 - [ ] 11.1 Recovery/load/soak, retention/deletion and end-to-end integration tests.
 - [ ] 11.2 Requirements/evidence audit, runbooks and reproducible demo instructions.
+  Progress (22 Nov, attempt 3): `docs/qa/requirements-evidence-audit.md`, one row per PRD
+  functional requirement (83) with status, code, tests and gap; checked in CI by
+  `scripts/check_requirements_audit.py` (stdlib; every PRD ID once, priorities, statuses,
+  cited files exist, gap rules, summary counts) and `tests/unit/test_requirements_audit.py`
+  (Claude-authored). Result: 24 implemented, 32 partial, 14 data-dependent, 3 not started,
+  8 human, 2 deferred. Independent review moved FR-I3, FR-I4 (live hop fixed at 2 s),
+  FR-T3 (from/to not served), FR-T5 (10 s end grace vs 5 s), FR-M11, FR-O4 and FR-O5 from
+  implemented to partial. Remaining: FR-O8 deployment guide and runbooks, demo
+  instructions.
 - [ ] 11.QA Separate complete software from data-dependent/unmeasured acceptance.
 
 Not autonomous acceptance: full representative model training, final calibration/

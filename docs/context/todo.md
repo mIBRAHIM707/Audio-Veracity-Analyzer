@@ -129,6 +129,10 @@ back, the "session could not be verified" warning stayed until the tab got focus
 missing model is refused at start-up while calls continue, and that restoring the
 previous env file rolls back. Human: back up PostgreSQL before any image upgrade, since
 an older image refuses a database that a newer one migrated.
+22 Nov (attempt 3): no data change. `docs/qa/requirements-evidence-audit.md` maps every
+PRD requirement to its evidence and gap (checked in CI). Human decisions it surfaces:
+whether caller numbers (from/to) may be stored and shown (FR-T3), and whether FR-T5's
+5 s cleanup or the 10 s end grace should change.
 
 Human decisions:
 - Should reloads be written to the audit log?
