@@ -1,0 +1,128 @@
+# PRD FR-O3, architecture §7.2: no AVA pod reaches the internet. Everything in the
+# namespace is denied in both directions, then each needed flow is allowed by name:
+#   all pods  -> cluster DNS (kube-system/kube-dns, 53)
+#   live      -> postgres:5432, redis:6379, the PBX's ARI (TCP 8088)
+#   api       -> redis:6379, postgres:5432 (20 Nov: history as the read-only `ava_reader`)
+#   PBX       -> live (UDP 32768-60999: tapped RTP on ephemeral ports)
+#   api-client pods in this namespace -> api:8000 (none by default)
+# Kubelet probes come from the node itself, which k3s's policy controller admits.
+# The PBX here is 192.0.2.10/32, a documentation address (RFC 5737): replace it in
+# `live-pbx` (and AVA_ARI_URL in config.yaml) with the site's PBX; the lab overlay
+# points both at its in-cluster Asterisk. Cluster DNS forwards outside names upstream:
+# a pod can resolve, not connect (deploy/k8s/README.md, "Egress").
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: default-deny
+  labels: {app.kubernetes.io/part-of: ava}
+spec:
+  podSelector: {}
+  policyTypes: [Ingress, Egress]
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-dns
+  labels: {app.kubernetes.io/part-of: ava}
+spec:
+  podSelector: {}
+  policyTypes: [Egress]
+  egress:
+    - to:
+        - namespaceSelector: {matchLabels: {kubernetes.io/metadata.name: kube-system}}
+          podSelector: {matchLabels: {k8s-app: kube-dns}}
+      ports:
+        - {protocol: UDP, port: 53}
+        - {protocol: TCP, port: 53}
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: postgres
+  labels: {app.kubernetes.io/part-of: ava}
+spec:
+  podSelector: {matchLabels: {app.kubernetes.io/name: postgres}}
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - podSelector: {matchLabels: {app.kubernetes.io/name: live}}
+        - podSelector: {matchLabels: {app.kubernetes.io/name: api}}
+      ports:
+        - {protocol: TCP, port: 5432}
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: redis
+  labels: {app.kubernetes.io/part-of: ava}
+spec:
+  podSelector: {matchLabels: {app.kubernetes.io/name: redis}}
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - podSelector: {matchLabels: {app.kubernetes.io/name: live}}
+        - podSelector: {matchLabels: {app.kubernetes.io/name: api}}
+      ports:
+        - {protocol: TCP, port: 6379}
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: live-storage
+  labels: {app.kubernetes.io/part-of: ava}
+spec:
+  podSelector: {matchLabels: {app.kubernetes.io/name: live}}
+  policyTypes: [Egress]
+  egress:
+    - to:
+        - podSelector: {matchLabels: {app.kubernetes.io/name: postgres}}
+      ports:
+        - {protocol: TCP, port: 5432}
+    - to:
+        - podSelector: {matchLabels: {app.kubernetes.io/name: redis}}
+      ports:
+        - {protocol: TCP, port: 6379}
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: live-pbx
+  labels: {app.kubernetes.io/part-of: ava}
+spec:
+  podSelector: {matchLabels: {app.kubernetes.io/name: live}}
+  policyTypes: [Ingress, Egress]
+  egress:
+    - to:
+        - ipBlock: {cidr: 192.0.2.10/32}
+      ports:
+        - {protocol: TCP, port: 8088}
+  ingress:
+    - from:
+        - ipBlock: {cidr: 192.0.2.10/32}
+      ports:
+        # The RTP receivers bind ephemeral ports: Linux's default range. A node with a
+        # different net.ipv4.ip_local_port_range needs this range changed to match.
+        - {protocol: UDP, port: 32768, endPort: 60999}
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: api
+  labels: {app.kubernetes.io/part-of: ava}
+spec:
+  podSelector: {matchLabels: {app.kubernetes.io/name: api}}
+  policyTypes: [Ingress, Egress]
+  egress:
+    - to:
+        - podSelector: {matchLabels: {app.kubernetes.io/name: redis}}
+      ports:
+        - {protocol: TCP, port: 6379}
+    - to:
+        - podSelector: {matchLabels: {app.kubernetes.io/name: postgres}}
+      ports:
+        - {protocol: TCP, port: 5432}
+  ingress:
+    - from:
+        - podSelector: {matchLabels: {ava.giki/api-client: "true"}}
+      ports:
+        - {protocol: TCP, port: 8000}

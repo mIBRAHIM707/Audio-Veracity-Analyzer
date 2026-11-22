@@ -1,0 +1,6 @@
+# Alert snippet encryption at rest (backlog 5.3; PRD FR-O5 AES-256-GCM). CPU only, no
+# runtime downloads. Python 3.11. Licences checked 14 Nov 2026: cryptography
+# Apache-2.0 OR BSD-3-Clause; cffi MIT-0; pycparser BSD-3-Clause.
+cryptography==50.0.2
+cffi==2.1.1
+pycparser==3.12

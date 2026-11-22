@@ -1,0 +1,8 @@
+# Local accounts for the API (backlog 7.3; PRD FR-U7; architecture §2.5 "Argon2").
+# argon2-cffi (MIT) with its bindings (MIT), cffi (MIT-0) and pycparser (BSD-3-Clause).
+# Resolved 19 Nov 2026 on Windows, Python 3.11; wheels are abi3/universal. Used with
+# requirements-store.txt (accounts live in PostgreSQL, migration 0003).
+argon2-cffi==25.1.0
+argon2-cffi-bindings==26.2.0
+cffi==2.1.1
+pycparser==3.12

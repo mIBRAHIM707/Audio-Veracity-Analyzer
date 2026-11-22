@@ -1,0 +1,48 @@
+<?xml version="1.0" encoding="ISO-8859-1" ?>
+<!DOCTYPE scenario SYSTEM "sipp.dtd">
+<!-- AVA lab softphone registration (backlog 6.1; PRD FR-T1 "SIP softphone endpoints"):
+     REGISTER as user `softphone` with Contact at this SIPp's own address and port, answer
+     the digest challenge (-au softphone -ap <password>), expect 200 OK. Run it with
+     -p <port>, then start the answering SIPp (uas_agent.xml) on the same port, as a
+     softphone would listen where it registered. -key expires <s> sets the lifetime
+     (0 removes the registration). -->
+<scenario name="AVA lab softphone register">
+  <send retrans="500">
+    <![CDATA[
+
+      REGISTER sip:[remote_ip]:[remote_port] SIP/2.0
+      Via: SIP/2.0/[transport] [local_ip]:[local_port];branch=[branch]
+      From: <sip:softphone@[remote_ip]:[remote_port]>;tag=[pid]SIPpTag00[call_number]
+      To: <sip:softphone@[remote_ip]:[remote_port]>
+      Call-ID: [call_id]
+      CSeq: 1 REGISTER
+      Contact: <sip:softphone@[local_ip]:[local_port]>
+      Expires: [expires]
+      Max-Forwards: 70
+      Content-Length: 0
+
+    ]]>
+  </send>
+
+  <recv response="401" auth="true"/>
+
+  <send retrans="500">
+    <![CDATA[
+
+      REGISTER sip:[remote_ip]:[remote_port] SIP/2.0
+      Via: SIP/2.0/[transport] [local_ip]:[local_port];branch=[branch]
+      From: <sip:softphone@[remote_ip]:[remote_port]>;tag=[pid]SIPpTag00[call_number]
+      To: <sip:softphone@[remote_ip]:[remote_port]>
+      Call-ID: [call_id]
+      CSeq: 2 REGISTER
+      Contact: <sip:softphone@[local_ip]:[local_port]>
+      Expires: [expires]
+      [authentication]
+      Max-Forwards: 70
+      Content-Length: 0
+
+    ]]>
+  </send>
+
+  <recv response="200"/>
+</scenario>

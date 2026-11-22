@@ -1,0 +1,30 @@
+# AVA on a single k3s node (backlog 10.2; PRD FR-O2, FR-O3, FR-O4; architecture §7.2,
+# ADR-8). Apply with `kubectl apply -k deploy/k8s/base` after creating the `ava-secrets`
+# Secret and placing the model files on the node (deploy/k8s/README.md). The PBX
+# address in `config.yaml` and `networkpolicy.yaml` (192.0.2.10, a documentation
+# address) must be replaced for a real site; `deploy/k8s/lab` is the lab overlay.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+namespace: ava
+resources:
+  - namespace.yaml
+  - config.yaml
+  - models.yaml
+  - postgres.yaml
+  - redis.yaml
+  - retention.yaml
+  - live.yaml
+  - api.yaml
+  - networkpolicy.yaml
+# 20 Nov (PRD FR-A9 config file plus reload): live's scoring settings. No hash suffix,
+# on purpose: a suffixed name would change on every edit and roll the pod, ending its
+# calls; with a fixed name the kubelet updates the mounted file in place (within about
+# a minute) and live applies valid changes to calls started afterwards (FR-I4).
+configMapGenerator:
+  - name: ava-scoring
+    files:
+      - scoring.json
+    options:
+      disableNameSuffixHash: true
+      labels:
+        app.kubernetes.io/part-of: ava

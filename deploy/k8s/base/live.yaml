@@ -1,0 +1,184 @@
+# The live tap scorer (architecture §2.1-§2.4; PRD FR-T2, FR-I1-I11, FR-A8). One
+# replica, replaced with Recreate: the tap owns the ARI application `ava-tap` on its
+# PBX and sweeps its bridges at start-up, so two tap processes on one PBX must not
+# overlap. Asterisk sends tapped RTP to this pod's own address (downward API), on
+# ephemeral UDP ports, so no Service fronts the RTP. The health endpoint (9100) serves
+# kubelet probes; the NetworkPolicy admits no other client to it in this base.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: live
+  labels: {app.kubernetes.io/name: live, app.kubernetes.io/part-of: ava}
+spec:
+  replicas: 1
+  strategy: {type: Recreate}
+  selector:
+    matchLabels: {app.kubernetes.io/name: live}
+  template:
+    metadata:
+      labels: {app.kubernetes.io/name: live, app.kubernetes.io/part-of: ava}
+    spec:
+      automountServiceAccountToken: false
+      enableServiceLinks: false
+      terminationGracePeriodSeconds: 30  # stop drains the pumps for at most 5 s
+      # The pause process is PID 1, so Python is not: a SIGTERM during the model load
+      # stops it at once instead of being ignored until its handler is installed (the
+      # Compose stack uses `init: true` for the same reason).
+      shareProcessNamespace: true
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
+        seccompProfile: {type: RuntimeDefault}
+      initContainers:
+        # Start-up refuses (exit 2) while PostgreSQL is unreachable, so wait for the
+        # storage first instead of restarting until it is up (at most 5 minutes).
+        - name: wait-for-storage
+          image: ava-live:dev
+          imagePullPolicy: Never
+          command:
+            - python
+            - -c
+            - |
+              import socket, sys, time
+              deadline = time.monotonic() + 300
+              for target in sys.argv[1:]:
+                  host, port = target.rsplit(':', 1)
+                  while True:
+                      try:
+                          socket.create_connection((host, int(port)), timeout=2).close()
+                          break
+                      except OSError as error:
+                          if time.monotonic() > deadline:
+                              sys.exit(f'{target} unreachable: {type(error).__name__}')
+                          time.sleep(1)
+          args: [postgres:5432, redis:6379]
+          resources:
+            requests: {cpu: 10m, memory: 32Mi}
+            limits: {cpu: 100m, memory: 64Mi}
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: {drop: [ALL]}
+        # 22 Nov (PRD FR-O5): with AVA_RETENTION "on", create the snippet key once if
+        # it is missing, else check and keep it; never replaced. With "off" it does
+        # nothing (services/retention/keygen.py, retention.yaml).
+        - name: retention-key
+          image: ava-live:dev
+          imagePullPolicy: Never
+          env:
+            - name: AVA_RETENTION
+              valueFrom: {configMapKeyRef: {name: ava-config, key: AVA_RETENTION}}
+          command: [python, -m, services.retention.keygen]
+          args: [--retention, $(AVA_RETENTION), --key-file, /var/lib/ava/retention-key/snippet.key]
+          resources:
+            requests: {cpu: 10m, memory: 32Mi}
+            limits: {cpu: 100m, memory: 64Mi}
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: {drop: [ALL]}
+          volumeMounts:
+            - {name: retention-key, mountPath: /var/lib/ava/retention-key}
+      containers:
+        - name: live
+          # Built locally (deploy/live/Dockerfile) and imported into the node's image
+          # store; never pulled. A registry deployment replaces this with a digest.
+          image: ava-live:dev
+          imagePullPolicy: Never
+          envFrom:
+            - configMapRef: {name: ava-config}
+          env:
+            - name: POD_IP
+              valueFrom: {fieldRef: {fieldPath: status.podIP}}
+            - name: AVA_ARI_PASSWORD
+              valueFrom: {secretKeyRef: {name: ava-secrets, key: ari-password}}
+            - name: PGPASSWORD
+              valueFrom: {secretKeyRef: {name: ava-secrets, key: db-password}}
+            - {name: ORT_DISABLE_TELEMETRY, value: "1"}
+          args:
+            - --card
+            - /models/card/$(AVA_CARD_FILE)
+            - --onnx
+            - /models/onnx/$(AVA_ONNX_FILE)
+            - --vad-model
+            - /models/vad/silero_vad.onnx
+            - --threads
+            - $(AVA_THREADS)
+            - --ari-url
+            - $(AVA_ARI_URL)
+            - --ari-user
+            - $(AVA_ARI_USER)
+            - --receiver-host
+            - $(POD_IP)
+            - --tap-extension
+            - $(AVA_TAP_EXTENSION)
+            - --database-url-env
+            - AVA_DATABASE_URL
+            - --redis-url-env
+            - AVA_REDIS_URL
+            - --health-port
+            - "9100"
+            - --health-host
+            - 0.0.0.0
+            # PRD FR-A9 config file plus reload: the `ava-scoring` ConfigMap (generated
+            # from scoring.json), reread every N seconds (services/live/README.md).
+            - --scoring-config
+            - /config/scoring/scoring.json
+            - --scoring-config-watch-s
+            - $(AVA_SCORING_CONFIG_WATCH_S)
+            # PRD FR-O5 alert snippets, "off" by default in `ava-config` (no audio
+            # stored; a start with "off" purges earlier snippets; the key is then not
+            # opened). Same flags either way, so only AVA_RETENTION changes.
+            - --retention
+            - $(AVA_RETENTION)
+            - --retention-dir
+            - /var/lib/ava/snippets
+            - --retention-key-file
+            - /var/lib/ava/retention-key/snippet.key
+            - --retention-ttl-days
+            - $(AVA_RETENTION_TTL_DAYS)
+          ports:
+            - {name: health, containerPort: 9100, protocol: TCP}
+          startupProbe:  # model check, load and warm-up before the first ARI connect
+            httpGet: {path: /healthz, port: health}
+            periodSeconds: 5
+            timeoutSeconds: 3
+            failureThreshold: 60
+          readinessProbe:  # ARI stream connected and the scoring loop turning (FR-A8)
+            httpGet: {path: /readyz, port: health}
+            periodSeconds: 5
+            timeoutSeconds: 3
+          livenessProbe:
+            httpGet: {path: /healthz, port: health}
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 6
+          resources:
+            requests: {cpu: "1", memory: 1Gi}
+            limits: {cpu: "4", memory: 2Gi}
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: {drop: [ALL]}
+          volumeMounts:
+            - {name: models, mountPath: /models/onnx, subPath: onnx, readOnly: true}
+            - {name: models, mountPath: /models/card, subPath: card, readOnly: true}
+            - {name: models, mountPath: /models/vad, subPath: vad, readOnly: true}
+            # Never a subPath here: a subPath mount of a ConfigMap is not updated, so an
+            # edit would reach the pod only after a restart.
+            - {name: scoring, mountPath: /config/scoring, readOnly: true}
+            - {name: tmp, mountPath: /tmp}
+            - {name: snippets, mountPath: /var/lib/ava/snippets}
+            - {name: retention-key, mountPath: /var/lib/ava/retention-key, readOnly: true}
+      volumes:
+        - name: models
+          persistentVolumeClaim: {claimName: ava-models, readOnly: true}
+        - name: scoring
+          configMap: {name: ava-scoring}
+        - name: snippets
+          persistentVolumeClaim: {claimName: ava-snippets}
+        - name: retention-key
+          persistentVolumeClaim: {claimName: ava-retention-key}
+        - name: tmp
+          emptyDir: {medium: Memory, sizeLimit: 64Mi}

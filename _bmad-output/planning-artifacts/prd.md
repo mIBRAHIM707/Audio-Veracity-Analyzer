@@ -39,6 +39,7 @@ Real-time audio deepfake detection for Urdu and Punjabi in bank and call-centre 
 | **Timeline rebaselined from 1 October 2026**; Phase 0 extended to 15 October | Phase 0 exit gate was unmet on its paper end date | §8 |
 | Detailed decision rationale moved to Appendix A; decisions D5 to D15 given IDs; references and limitations added | Structure review | §4, §1.4, §12, Appendix A |
 | **5 Oct 2026, project-owner decision:** public corpora whose licences permit derivative works (CSALT, Meta Omnilingual) may be used for voice cloning and training in this research under the university approval; Common Voice excluded from cloning pending its terms; participant cloning still needs the individual opt-in | Tughral, 5 Oct 2026 | D11, FR-D2, FR-D3, FR-D11, FR-E5, §6.4, Q1, R13, Appendix A |
+| **20 Nov 2026, accepted implementation change:** the passive tap no longer uses a Stasis hand-off; call start and end come from ARI channel events on the dialplan-marked caller leg | A Stasis hand-off makes a call wait on the tap application (independent review H1, 15 Nov 2026), against FR-T4; implemented and lab-tested in backlog 6.2 | FR-T2; architecture §2.1, §3, §6, ADR-4 |
 
 ---
 
@@ -205,7 +206,7 @@ Priorities: **P0** = must have for SDP completion, **P1** = should have, **P2** 
 | FR-M2 | Classification head: SLS (sensitive layer selection) over the retained layers' hidden states, feeding a small classifier. The layer sweep is run with the SLS head, not a placeholder. | P0 |
 | FR-M3 | Output: per-window synthesis probability in [0, 1] plus a 256-d embedding, with calibration applied (FR-M6). | P0 |
 | FR-M4 | Train and report three baselines on the same manifests, augmentation and splits: AASIST, RawNet2 (raw-waveform) and XLS-R + AASIST with RawBoost (SSL baseline). | P0 |
-| FR-M5 | Report EER, minDCF (ASVspoof 5 DF-track cost) and FAR at the operating point where FRR = 5%, each with 95% bootstrap confidence intervals, on: (a) full test set, (b) per language, (c) per codec, (d) held-out generator partition, (e) code-switched subset, (f) held-out dialects, (g) real phone-call set. | P0 |
+| FR-M5 | Report EER, minDCF (ASVspoof 5 Track 1 cost: C_miss = 1, C_fa = 10, π_spoof = 0.05, from the ASVspoof 5 Evaluation Plan v0.6, Table 1, checked 14 Nov 2026) and FAR at the operating point where FRR = 5%, each with 95% bootstrap confidence intervals, on: (a) full test set, (b) per language, (c) per codec, (d) held-out generator partition, (e) code-switched subset, (f) held-out dialects, (g) real phone-call set. | P0 |
 | FR-M6 | Score calibration (temperature scaling) on the dev set; Expected Calibration Error at or below 0.05; reliability diagram in the evaluation report. | P0 |
 | FR-M7 | Export to ONNX (opset 17, static 64,000-sample input, dynamic batch), validate numerical parity with PyTorch (max abs logit diff below 1e-3 on 100 windows), apply INT8 dynamic quantization, and re-measure dev EER. If INT8 loses more than 0.3 EER points, try static quantization, then ship FP32 with latency re-benchmarked. | P0 |
 | FR-M8 | Ablation: SLS head versus mean-pool + MLP head on the same truncated backbone, to justify the head. | P1 |
@@ -235,7 +236,7 @@ Priorities: **P0** = must have for SDP completion, **P1** = should have, **P2** 
 | ID | Requirement | Priority |
 |---|---|---|
 | FR-T1 | Provide a simulated telephony lab: Asterisk PBX, two or more SIP softphone endpoints, and a call generator (SIPp or scripted originations) that can play genuine and synthetic audio files into calls, with codec forcing for G.711 and GSM. | P0 |
-| FR-T2 | **Passive tap (primary).** An ARI application attaches a snoop channel to each call and streams the caller direction as plain RTP (ExternalMedia or equivalent) to AVA. Call start and end come from ARI events (StasisStart, StasisEnd or ChannelHangupRequest); call ID, from and to come from ARI channel fields. A tap socket with no packets for 30 s is torn down with `call.ended reason=timeout`. | P0 |
+| FR-T2 | **Passive tap (primary).** An ARI application attaches a snoop channel to each call and streams the caller direction as plain RTP (ExternalMedia or equivalent) to AVA. Call start and end come from ARI channel events (accepted change, 20 Nov 2026: calls are never sent into Stasis, because a Stasis hand-off makes a call wait on the tap, against FR-T4; the tap watches all channel events and snoops the dialplan-marked caller leg once it is answered; end is a hard ChannelHangupRequest or ChannelDestroyed; architecture §2.1); call ID, from and to come from ARI channel fields. A tap socket with no packets for 30 s is torn down with `call.ended reason=timeout`. | P0 |
 | FR-T3 | Map tapped sessions to call metadata (call ID, from, to, timestamps, codec) and expose it to the dashboard. | P0 |
 | FR-T4 | AVA must never be in the media path; failure of AVA must not affect the call. The deployment guide requires the PBX's recording-failure policy to be "continue the call", and the e2e test asserts a call survives AVA being stopped. | P0 |
 | FR-T5 | Support session teardown and cleanup of all per-call state within 5 s of the end event. | P0 |

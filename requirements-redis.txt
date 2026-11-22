@@ -1,0 +1,4 @@
+# Redis client for services/events/redis_bridge.py (backlog 5.1/5.2; architecture
+# §2.4/§2.5/§2.7, Redis 7). redis-py, MIT; no further dependencies on Python 3.11.3+.
+# Resolved 15 Nov 2026 on Windows, Python 3.11.
+redis==8.1.0

@@ -15,9 +15,9 @@ import pyarrow.parquet as pq
 import soundfile as sf
 
 if __name__ == '__main__' and not __package__:
-    from csalt_pilot import inspect_audio
+    from csalt_pilot import inspect_pcm
 else:
-    from data.collect.csalt_pilot import inspect_audio
+    from data.collect.csalt_pilot import inspect_pcm
 
 REPO = 'facebook/omnilingual-asr-corpus'
 REVISION = '8648ba8946377697b427ae952076e49fc0e5e44d'
@@ -26,6 +26,12 @@ SHARDS = {f'data/pnb_Arab/train-{i:05d}-of-00002.parquet' for i in range(2)}
 MAX_ARCHIVE_BYTES = 500_000_000
 MAX_AUDIO_BYTES = 10_000_000
 MAX_METADATA_BYTES = 8_000_000
+# Rows declared longer than a 10 MB PCM16 WAV holds at the publisher's 48 kHz mono
+# (about 104 s, less the 0.1 s declared/decoded tolerance) are excluded before
+# ranking, so one long row cannot deterministically withhold every rerun. Stereo or
+# higher-rate rows cannot be judged before decoding and may still fail there.
+# Rows declared over 625 s remain a whole-import sanity failure in _metadata.
+MAX_SELECTABLE_SECONDS = (MAX_AUDIO_BYTES - 44) / (48000 * 2) - .1
 METADATA_COLUMNS = ('language', 'speaker_id', 'prompt_id', 'prompt', 'segment_id',
                     'raw_text', 'duration', 'iso_639_3', 'glottocode', 'iso_15924')
 
@@ -205,8 +211,8 @@ def run_pilot(source_manifest, archive_root, raw_root, output_root, per_speaker=
     raw_root, output_root = Path(raw_root).resolve(), Path(output_root).resolve()
     repo = Path(__file__).resolve().parents[2]
     roots = (archive_root, raw_root, output_root)
-    if any(root.is_relative_to(repo) for root in (raw_root, output_root)):
-        raise ValueError('Raw audio and output must stay outside repository')
+    if any(root.is_relative_to(repo) for root in roots):
+        raise ValueError('Archive, raw audio and output must stay outside repository')
     if any(a.is_relative_to(b) or b.is_relative_to(a) for i, a in enumerate(roots) for b in roots[i+1:]):
         raise ValueError('Archive, raw and output roots must be disjoint')
     if raw_root.exists() or output_root.exists():
@@ -235,7 +241,10 @@ def run_pilot(source_manifest, archive_root, raw_root, output_root, per_speaker=
                         raise ValueError('Pilot metadata exceeds bounded inventory')
                     rows.append(dict(record, source_shard=shard, source_row_index=index))
                     index += 1
-    selected = select_rows(rows, document['revision'], per_speaker, max_sources)
+    selectable = [r for r in rows if r['duration'] <= MAX_SELECTABLE_SECONDS]
+    if {r['speaker_id'] for r in selectable} != {r['speaker_id'] for r in rows}:
+        raise ValueError('A publisher speaker has no rows within the selectable duration bound')
+    selected = select_rows(selectable, document['revision'], per_speaker, max_sources)
     chosen = {(r['source_shard'], r['source_row_index']): r for r in selected}
     raw_root.parent.mkdir(parents=True, exist_ok=True)
     output_root.parent.mkdir(parents=True, exist_ok=True)
@@ -261,8 +270,7 @@ def run_pilot(source_manifest, archive_root, raw_root, output_root, per_speaker=
                                 raise ValueError('Audio must contain embedded bytes')
                             payload = value.get('bytes')
                             decoded = _decode(payload, record['duration'])
-                            digest = hashlib.sha256(decoded).hexdigest()
-                            metrics = inspect_audio(decoded, {'size': len(decoded), 'lfs': {'oid': digest}})
+                            metrics = inspect_pcm(decoded)
                             (staged_raw / row['original_audio_path']).write_bytes(payload)
                             (staged_raw / row['path']).write_bytes(decoded)
                             _write_json(staged_raw / row['source_transcript_path'], {
@@ -285,7 +293,7 @@ def run_pilot(source_manifest, archive_root, raw_root, output_root, per_speaker=
         summary = {'pilot_complete': complete, 'sources': len(selected), 'selected_files': len(selected),
                    'verified_files': len(verified), 'errors': len(errors), 'speakers': len(counts),
                    'per_speaker': counts, 'selected_minutes': sum(r['duration_s'] for r in verified) / 60,
-                   'metadata_rows': len(rows)}
+                   'metadata_rows': len(rows), 'excluded_over_duration_bound': len(rows) - len(selectable)}
         _write_json(staged_output / 'inventory.json', {'files': inventory})
         _write_json(staged_output / 'report.json', {'summary': summary, 'errors': errors,
                     'source_manifest_sha256': manifest_hash, 'revision': document['revision'],

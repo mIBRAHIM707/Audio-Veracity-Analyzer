@@ -1,5 +1,166 @@
 # AVA working checklist
 
+6 November automation update: the approved software queue is `daily-backlog.md`.
+Daily work is noon–2 PM Asia/Karachi on `feat/4-daily-development`; verified commits
+are pushed to its dedicated draft PR without merging. This supersedes the older
+no-commit instruction for that branch only. Collection tasks below remain tracked.
+11 Nov: augmentation chain stage (`data/prepare/augment.py`) is ready for the first
+real prepared root once a noise corpus and the concealment choice are confirmed.
+14 Nov: the API now serves the FR-A3 call list and the FR-A4 WebSocket from an
+in-process event hub (backlog 5.2 partial); no participant data involved.
+14 Nov (catch-up): data-relevant change — augmented copies now start
+`review_status: unreviewed` (parent statuses kept as `parent_*`), so any augmented
+root made before this needs a re-run of `augment.py`; only plain PCM (format tag 1)
+WAVs are accepted on every intake path (`data/prepare/README.md`).
+14 Nov (catch-up 2): backlog 2.3 done — a local upload page (`dashboard/`) for
+single PCM16 WAV analysis; useful for the 2.QA public-pilot check, no data change.
+2.QA done on public CSALT clips with the real checkpoint (local only). Data-relevant:
+`augment.py` can now make GSM 06.10 and AMR-NB copies (with loss/jitter) through a
+pinned local ffmpeg 9.0.2 (`--ffmpeg`, `--ffmpeg-sha256`); verify needs the same binary.
+14 Nov (catch-up 4): no data change. ONNX export/INT8 tooling (`models/export/`) works
+on the real checkpoint; for the dev evaluation later: the INT8 dev EER must state its
+batching, and a static-INT8 calibration set must be disjoint from EER/test windows.
+15 Nov: data-relevant — `augment.py` can make Opus 8/12/16 kbps copies (with loss/
+jitter) and can measure the noise SNR over speech only (`noise.snr_basis:
+speech_active`, needs the local Silero model; check `insufficient_speech_refusals` per
+label). Live-call lab now works in Docker (Asterisk tap, real public clips through a
+call); PostgreSQL/Redis plumbing exists. A live service process now starts only with
+a matching model card, and scored a lab call with the exported (untrained-head) model.
+No participant data involved.
+16 Nov: data-relevant — `augment.py` can add room reverberation (`reverb` spec with
+hash-pinned 16 kHz RIR WAVs, `--rir`; one seeded RIR per clip before noise). Needs a
+person: download an RIR/noise corpus (OpenSLR SLR28, Apache-2.0) to `D:/AVA-Data`, and
+choose which RIRs count as handset vs speakerphone.
+16 Nov: backlog 7.1 done — the dashboard has a live call board at `#live` (cards,
+alert feed with banner and optional tone, per-call timeline), fed by the API's REST
+snapshot and event stream. Infrastructure only; no detector accuracy implied.
+17 Nov: no data change — live `/metrics` now times each window through the scoring
+loop (queue, batch, apply, offer to result) and counts alerts raised (FR-O6).
+17 Nov (attempt 2): no data change — the analysis API and dashboard now have a Docker
+image and run in the Compose stack (internal only; not reachable from a host browser
+until an authentication/publishing decision is made). The live `/metrics` also times
+resampling and VAD/windowing per chunk (FR-O6). Data-relevant: issue #28. AMR-NB
+augmented copies (`amr_nb_*` codecs) may not match real AMR coding: the waveform SNR is
+about 3 dB in every mode. Do not rely on AMR-augmented results until a human checks the
+codec path against the 3GPP reference vectors.
+18 Nov: no data change. The Compose stack has an optional `monitoring` profile with
+Prometheus and a Grafana dashboard (FR-O6), and it is internal only. The stack's env
+file now needs `AVA_GRAFANA_ADMIN_PASSWORD`. Later on 18 Nov, the live `/metrics` also
+times how long each RTP frame waits in the jitter buffer (FR-O6); no data change.
+18 Nov (attempts 4-5): backlog 7.2 done — the API `/metrics` times each event from the
+scorer's publish to its WebSocket send (FR-O6), shown on the Grafana dashboard. No data
+change; not a browser-render or load measurement.
+18 Nov (attempt 5): no data change. A lab test restarts the live service mid-call: the
+call continues and is monitored again; the API's call list now shows it as such.
+18 Nov (attempt 6): no data change. A lab test restarts PostgreSQL and Redis mid-call:
+the call continues and every scored window is still stored. The same holds when the API
+is restarted mid-call.
+18 Nov (attempt 7): no data change. If the live service is killed mid-call, the API's
+call list and the browser board now show the re-tapped call as a new session; the
+database side of that case is still open.
+19 Nov: no data change. The database side is done: after a kill the old monitoring
+session is closed as `monitor_lost` with no invented speech time (migration 0002), and a
+lab test kills the live service mid-call and checks the call still completes.
+19 Nov (attempt 2): no data change. A test shows a mu-law training copy with packet loss
+and the same call through the live tap give the detector identical audio.
+19 Nov (attempt 3): no data change. Kubernetes (k3s) manifests in `deploy/k8s` with a
+default-deny network policy; a lab node in Docker runs a real call through them and no
+AVA pod can reach the internet. Human: add `requirements-test.txt` to the CI workflow.
+19 Nov (attempt 4): no data change. The API can now show a call's full stored history
+from PostgreSQL (every session, alerts and window scores), read-only.
+19 Nov (attempt 5): no data change. `GET /v1/alerts` searches stored alerts (state, time,
+minimum confidence) and exports them as CSV. Human: confirm in the PRD that FR-A6
+"confidence" means the alert's peak (uncalibrated) EMA.
+19 Nov (attempt 6): no data change. The dashboard has a History page (`#history`): stored
+calls, alert search with CSV export, and every stored session of a call, from PostgreSQL.
+Times are shown in UTC.
+19 Nov (attempt 7): no data change. The API can require a login (`--auth on`): local
+accounts with Argon2 passwords, two roles, an audit log (logins, exports, uploads,
+account changes). Accounts are created by an operator (`python -m services.auth`). Human:
+decide audit-log retention, and whether analysts may upload files (FR-U7 says
+"read, feedback"; they can today). The dashboard now has a sign-in page.
+19 Nov (attempt 8): no data change. Signed-in analysts can mark a stored alert true or
+false positive (`POST /v1/alerts/{id}/feedback`); the label is stored with the alert's
+window scores and an audit row. Embeddings are not stored. Human: confirm in the PRD
+that FR-A7 "embeddings" are deferred to retraining from retained snippets. Dashboard
+buttons are next.
+19 Nov (attempt 9): no data change. The History page's call detail now has "Label this
+alert" buttons (true/false positive) for signed-in users, using the attempt-8 API.
+19 Nov (attempt 10): no data change. Signed-in users can play an alert's retained
+snippet from the call detail (FR-U5; audited before any audio is sent; missing, expired
+and unreadable snippets have their own messages). Human: decide whether the API may
+hold the retention key (Compose/k3s wiring) and whether refused playbacks are audited.
+20 Nov: no data change. The live service can reread its scoring settings file while it
+runs (FR-A9, `--scoring-config-watch-s`). Valid changes apply to new calls only.
+Restart-only and caller-less settings are refused.
+20 Nov (attempt 2): no data change. The stored call detail shows the codec the call
+used, as Asterisk reports it to the tap (FR-U5); older sessions say "not detected".
+20 Nov (attempt 3): no data change. Compose and k3s now start live with a scoring
+settings file (the §7.3 defaults) and reread it every 10 s (FR-A9): a host folder in
+Compose, the `ava-scoring` ConfigMap on k3s. Editing it changes new calls without a
+restart.
+20 Nov (attempt 4): no data change. In Compose and k3s the API now shows stored call
+history and alert search, reading PostgreSQL as `ava_reader`, a login that can only
+read the four history tables. Operators set a new password, `AVA_DB_READER_PASSWORD` or
+the Secret key `db-reader-password`. Human: decide whether `--auth on` gets its own
+writer login in the deployments.
+20 Nov (attempt 5): no data change. The AASIST baseline (FR-M4) now exists in AVA's
+format. It matches the official reference code within 1e-6 on the same weights. Not
+trained; XLS-R + AASIST still waits for XLS-R weights.
+20 Nov (attempt 6): no data change. The lab PBX can host a password-protected
+softphone (`AVA_SOFTPHONE_PASSWORD`, extension 702). Human: to try a real softphone app,
+publish UDP 5060 and the RTP range on a trusted interface only. Human, blocking 3.4 and
+XLS-R: the daily runner cannot access `D:/AVA-Data`; add it to the runner's allowed
+directories (Claude Code `--add-dir` / `additionalDirectories`).
+21 Nov: no data change. `scripts/image_sbom.py` writes a CycloneDX SBOM from inside each
+deployment image and checks the installed Python packages against the pins (FR-O7).
+Human: add a CI job that builds both images and runs it, and install
+`requirements-test.txt` in CI for the schema check. Also run `uv pip compile
+--generate-hashes` for the hashed locks; the runner's allowlist still refuses it.
+`D:/AVA-Data` is still refused to the shell (3.4, XLS-R).
+21 Nov (attempt 2): no data change. New browser tests kill and restart the real API
+under the live board and the history page, and check that the dashboard loads nothing
+from other origins (7.QA). They found a defect, now fixed: after an API restart, an
+alert that was never cleared could show as "Cleared" on the live board.
+22 Nov: no data change. Browser tests now restart the real API under signed-in pages
+(sign-in, feedback, snippet playback). They found a defect, now fixed: after the API came
+back, the "session could not be verified" warning stayed until the tab got focus.
+22 Nov (attempt 2): no data change. A Compose lab test shows that a mismatched or
+missing model is refused at start-up while calls continue, and that restoring the
+previous env file rolls back. Human: back up PostgreSQL before any image upgrade, since
+an older image refuses a database that a newer one migrated.
+22 Nov (attempt 3): no data change. `docs/qa/requirements-evidence-audit.md` maps every
+PRD requirement to its evidence and gap (checked in CI). Human decisions it surfaces:
+whether caller numbers (from/to) may be stored and shown (FR-T3), and whether FR-T5's
+5 s cleanup or the 10 s end grace should change.
+22 Nov (attempt 4): no data change. FR-O8 deployment guide
+(`docs/operations/deployment-guide.md`); its PostgreSQL backup and restore is lab-tested.
+Human: the guide's untested parts (image upgrade with a migration, k3s backup, a network
+to a real PBX) and its gaps (TLS, accounts in Compose/k3s) need site decisions.
+22 Nov (attempt 5): no data change. Lab demo script `docs/operations/demo.md` with a
+loopback-only Compose `demo` profile; an automated rehearsal on the real stack passes.
+Human: record the BO-4 demo video from the script, using public clips only.
+22 Nov (attempt 6): no data change. Operations runbooks `docs/operations/runbooks.md`
+(16 signal-to-action procedures), kept true to the code by a CI check.
+22 Nov (attempt 7): no data change. FR-O5 alert snippets can now be switched on in
+Compose and k3s (`AVA_RETENTION`, default off); a key job creates the key once.
+Human: whether the key may sit on the same host as the snippets, and a rotation policy.
+22 Nov (attempts 8-9): no data change. Compose lab load/soak and recovery under load
+(concurrent real calls through a live SIGKILL and PostgreSQL/Redis restarts); a tap
+bridge-join defect found and fixed in attempt 8.
+22 Nov (attempt 10): no data change. Backlog 11.QA done: `docs/qa/acceptance-separation.md`
+says, for every PRD §7 objective, §6 item and open backlog box, whether the software is
+finished or what holds it (data, box A1, a decision or a person). Dashboard tested at
+1366x768 and 1920x1080; unit coverage of tap, scorer and API measured at 95%.
+
+Human decisions:
+- Should reloads be written to the audit log? (11.QA review: PRD §6.3 already says
+  file-only settings are audited with `actor=system`, so this is now treated as
+  software work; confirm or overrule.)
+- Should calls record which settings version they used?
+- Should hop stay restart-only (FR-A9 lists it as reloadable)?
+- Live windows ignore `hop_s`; it is fixed at 2 s.
+
 Updated 4 October 2026. This is the active sequence; evidence lives in
 `current-state.md` and `handoffs/`. Check marks mean the stated bounded task passed
 its QA, not that the final dataset or product is accepted.
@@ -59,13 +220,21 @@ independent preparation. Do not treat elapsed time as approval.
       versions and transcript hashes; real pilot read-only run PASS (12 rows, 6
       speakers, 13.0646 min). Prior-hash comparison stays inactive until a fresh
       record is written beside the prototype's; see `handoffs/pnb-verifier.md`.
-    - [ ] Parameterised prepared-output verifier that recomputes segmentation, metrics
-      and flags, scans values for transcript text, checks root contents, reads FLAC.
-    - [ ] Importer tightening: vacuous publisher-hash branch and string `review_flags`,
-      625 s versus 10 MB bound, CLI exit-code and 48 kHz/stereo fixtures, archive root
-      outside the repo. Needs an Astra case update since the catalogue is Astra's.
-    - [ ] `tests/unit/test_audio_preparation.py` fixture cleanup retry (Windows
-      `WinError 145`); do not use `ignore_cleanup_errors`.
+    - [x] Parameterised prepared-output verifier `scripts/verify_prepared_output.py`
+      (backlog 1.1, 9 Nov): recomputes conditioning, metrics, flags, pause boundaries
+      and the retained optimum, rebuilds every clip, exact key sets, transcript and
+      Arabic-script scan, root contents, original FLAC hashes. 40 Claude-authored
+      tests; real PASS on the Punjabi (187 clips), CSALT conditioned (450) and
+      synthetic (50) outputs; review fixes applied. See `handoffs/prepared-verifier.md`.
+    - [x] Importer tightening (backlog 1.2, 9 Nov): `inspect_pcm` without the vacuous
+      publisher-hash claim and list `review_flags`; over-long rows (> ~104 s) excluded
+      before ranking, mirrored in the verifier; CLI exit-code, 48 kHz and stereo
+      fixtures; archive root outside the repo. Separate Claude-authored module
+      `tests/pnb/test_meta_pnb_followups.py`; the Astra catalogue is unchanged apart
+      from fixture teardown. Real pilot re-verified with the new rule: PASS.
+    - [x] Fixture cleanup retry `tests/fixture_cleanup.py` (WinError 5/32/145 only,
+      bounded, re-raises, reported on stderr; no `ignore_cleanup_errors`), used by
+      the preparation, conditioning, verifier and Punjabi suites.
 - [ ] 8. Prepare original data collection. Tughral reported approval obtained on
   4 October; the approved protocol and individual consent govern every activity.
   - [ ] 8a. Record the approval reference, body, protocol/form versions, scope
@@ -85,18 +254,32 @@ independent preparation. Do not treat elapsed time as approval.
   document missing identity/lineage that prevents final training-set assignment.
   Spec: `_bmad-output/implementation-artifacts/spec-split-proposals.md` (six gap
   decisions recorded 4 Oct).
-  - [ ] 9a. Implementation and Claude-authored baseline tests (`data/manifest/`,
+  - [x] 9a. Implementation and Claude-authored baseline tests (`data/manifest/`,
     `tests/unit/test_split_proposals.py`), real proposal run on the three local
     reports, validator pass. First run (v1) passed all checks but exposed that the
     CSALT synthetic benchmark shares all 17 speakers with CSALT genuine, so a
     `benchmark_only` partition swallowed every Urdu genuine clip. Decision 7 in the
-    spec: benchmark rows follow their speaker and stay ineligible by flag. v2 run in
-    progress, data-engineer role.
-  - [ ] 9d. Intake follow-up from 9a: two CSALT genuine source hashes appear under
-    two different publisher speaker folders (four duplicated clip hashes). The
-    proposer merges them; intake should annotate or quarantine the originals and
-    the datasheet must mention it.
-  - [ ] 9e. Apply the 5 Oct owner decision (PRD FR-D11) to data: regenerate the
+    spec: benchmark rows follow their speaker and stay ineligible by flag. Done
+    9 Nov (backlog 1.3/1.4): schema-2 proposal on the FR-D11-migrated reports is
+    valid; see `handoffs/policy-migration.md`.
+  - [x] 9d. Intake follow-up from 9a: two CSALT genuine source hashes appear under
+    two different publisher speaker folders (four duplicated clip hashes). Done
+    9 Nov (backlog 1.3): `csalt_pilot.annotate_duplicates` marks new intakes with
+    `duplicate_original_rows`/`_speakers` and summary counts; read-only count on the
+    v2 inventory confirms 2 hashes, 4 rows, all selected; recorded as a datasheet
+    item in `data/collect/README.md` (no dataset datasheet exists yet). Annotated,
+    not quarantined; existing v2 manifests unchanged.
+  - [x] Spec decision 7 implemented (9 Nov, backlog 1.3): benchmark rows follow their
+    speaker, proposal schema 2, benchmark/trainable tables, decision 9 (explicit
+    benchmark flags, content digest). 16 Claude-authored cases
+    in `tests/unit/test_split_proposals_cases.py` replace the Astra request (Astra
+    access ended); catalogue `docs/qa/split-proposal-test-cases.md`. Real v2 rerun
+    is backlog 1.4.
+  - [x] 9e (done 9 Nov, backlog 1.4: `data/manifest/migrate_policy.py`; three
+    migrated manifests re-prepared and verified PASS; schema-2 proposal valid with
+    637 trainable rows; see `handoffs/policy-migration.md`). **Deviation to confirm:**
+    CSALT publisher synthetic rows were kept benchmark-only (not trainable), unlike
+    the wording below; reason and shortcut risk in the handoff. Apply the 5 Oct owner decision (PRD FR-D11) to data: regenerate the
     CSALT genuine, CSALT synthetic and Meta pnb manifests into new versions with
     `cloning_status: permitted_public_corpus`, `training_eligible: true` and the
     approval/licence basis recorded; rerun the split proposal on them; keep the

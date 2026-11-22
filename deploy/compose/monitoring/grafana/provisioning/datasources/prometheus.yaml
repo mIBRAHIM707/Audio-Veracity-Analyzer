@@ -1,0 +1,14 @@
+# Grafana data source for the AVA lab stack (backlog 7.2; PRD FR-O6). The dashboard in
+# ../../dashboards refers to it by this uid.
+apiVersion: 1
+
+datasources:
+  - name: Prometheus
+    uid: ava-prometheus
+    type: prometheus
+    access: proxy
+    url: http://prometheus:9090
+    isDefault: true
+    editable: false
+    jsonData:
+      timeInterval: 15s

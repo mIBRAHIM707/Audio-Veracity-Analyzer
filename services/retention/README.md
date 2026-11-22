@@ -1,0 +1,90 @@
+# Alert snippet retention (backlog 5.3 partial; PRD FR-O5)
+
+`snippets.py` implements opt-in retention of the audio around an alert. Default is
+off: no raw audio is buffered or stored.
+
+- `RetentionPolicy(enabled, ring_seconds=30, ttl_s=7 days)`: read when a call starts,
+  so a toggle applies to calls started afterwards (FR-O5).
+- `CallRetention(call_id, policy, store, sample_rate=...)`: with the policy on, a
+  preallocated 30 s int16 `RingBuffer` per direction; `on_alert_raised(alert_id,
+  direction)` persists the ring ending at the alert, never raises (write failures
+  must not block the alert). With the policy off nothing is buffered.
+- `SnippetStore(root, sealer, clock=...)`: one file per alert ID, named by SHA-256 of
+  the ID, written to a unique temp file, fsynced and hard-linked to its final name
+  (exclusive, so concurrent writers store exactly one snippet); a plaintext header
+  holds only the format version, creation time and sealer algorithm; call ID,
+  direction, sample rate and audio are sealed, with magic + header + alert-ID hash as
+  associated data (a changed TTL timestamp fails authentication). `cleanup(policy)`
+  deletes snippets older than the TTL, or every snippet when retention is off (purge
+  within one run), deletes unreadable snippet files (fail closed) and temp files
+  older than 60 s. The root must be outside the repository. Feed and store errors are
+  counted, never raised into the call path.
+
+**Encryption (14 Nov 2026).** `AesGcmSealer(key)` is AES-256-GCM from the pinned
+`cryptography==50.0.2` (`requirements-retention.txt`; Apache-2.0 OR BSD-3-Clause,
+installed under the owner's 14 Nov install decision): a random 96-bit nonce per
+snippet stored before the ciphertext and 16-byte tag. `AesGcmSealer.from_key_file(path)`
+loads exactly 32 raw bytes from a regular file outside the repository. Only an exact
+`AesGcmSealer` is accepted by the store (no subclasses, no declared imitation);
+without the package the constructor raises, so retention cannot start.
+`open_snippet(root, alert_id, sealer)` reads a snippet back: any change to audio,
+metadata, header/TTL timestamp or nonce, a wrong key, or a file copied under another
+alert's name fails authentication. Store-logic tests still use an explicitly insecure
+XOR sealer through the private `_insecure_test_sealer` keyword.
+
+**Key job (22 Nov 2026; backlog 11.1).** `keygen.py` (`python -m
+services.retention.keygen --retention on|off --key-file PATH`, standard library only)
+does nothing with `off` (the default), so a key volume cannot stop live while retention
+is off. With `on` it removes its own temporary files older than 60 s and creates the key
+if it is missing: 32 bytes from `os.urandom`, owner read only (0400 on POSIX), written to a
+temporary file, fsynced and hard-linked to the name, so two jobs at once create one key.
+An existing file that passes the loader's rules is kept as it is. One that breaks them
+(size, symlink, not a regular file, group/other bits) is refused with exit 2 and left in
+place, never replaced. A missing folder is refused too, as a mount mistake. It prints one
+JSON line with no key or path. The Compose `retention-key` service and the k3s
+`retention-key` init container run it before live
+(`deploy/compose/README.md`, "Alert snippets"). Claude-authored tests:
+`tests/unit/test_retention_keygen.py`.
+
+Open: storage protection and rotation (an operator decision; a
+rotated key makes older snippets unreadable, and unreadable snippets are only purged
+by TTL or switch-off). On POSIX the key file must not be group/world readable; on
+Windows file ACLs are not checked. File names are a plain SHA-256 of the alert ID, so
+if alert IDs were guessable a directory listing would reveal which alerts have
+snippets (today's IDs are random; a keyed name is the fix if that changes). The pins
+in `requirements-retention.txt` are exact versions without hashes.
+TTL cleanup treats a header whose creation time is not a finite number at most 300 s
+in the future as unreadable and deletes it; it never raises.
+
+Known limits: the root needs a file system with hard links (NTFS/ext4; on FAT or
+some network mounts every write fails and is counted); TTL cleanup reads the
+unauthenticated header, so a tampered timestamp is only detected when a snippet is
+opened; if a temp file cannot be unlinked (a scanner holding it) a sealed copy can
+outlive a purge until the next cleanup run (60 s grace); feeding an unscored
+direction is counted as a feed error.
+
+Spec questions: architecture §2.7 mentions a "30 s WAV" while this writes a sealed
+container (FR-U5 playback would decrypt to WAV); whether a call started before a
+switch-off may still write after the purge until its end; whether the snippet should
+end at the alert window rather than the latest audio fed; a disk quota.
+
+**Playback (19 Nov 2026, attempt 10; PRD FR-U5).** `playback.py` `SnippetReader(root,
+sealer, ttl_s=, clock=)` reads one alert's snippet with `open_snippet` and returns it as
+an in-memory PCM16 mono WAV, or `SnippetUnavailable` with a fixed reason: `missing`,
+`expired` (authenticated creation time at least the TTL ago: the same comparison as
+`cleanup`, so a snippet cleanup has not reached yet is not served), `unreadable`
+(authentication or layout failure, a creation time more than 300 s ahead) or `error`
+(OS error). Malformed alert IDs (1-128 characters without NUL) are refused before any
+file access. Served by the API's `GET /v1/alerts/{id}/snippet` (`services/api/README.md`).
+Claude-authored tests: `tests/unit/test_snippet_playback.py`.
+
+Since 17 Nov the live service wires the store to the tap audio, `alert.raised` and a
+cleanup thread (`services/live/README.md`, "Alert snippets"). Since 22 Nov the setting
+is in the Compose env file and the k3s ConfigMap (`AVA_RETENTION`, default off). Still
+not done: a setting that applies without a restart, and secure deletion (deleted
+files are unlinked, not overwritten; on Windows a file being scanned can briefly
+appear as `<NAME>.tmp` during deletion, removed by the next cleanup).
+
+```text
+uv run --no-project --python 3.11 --with-requirements requirements-api.txt --with-requirements requirements-retention.txt python -m unittest tests.unit.test_snippet_retention tests.unit.test_snippet_aes_gcm -v
+```

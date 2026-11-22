@@ -1,0 +1,30 @@
+# 22 Nov (backlog 11.1; PRD FR-O5): storage for alert snippets, used only when
+# AVA_RETENTION is "on" in `ava-config` (default "off": no raw audio is stored).
+#   ava-snippets       sealed snippets, one per alert (live writes; TTL and purge)
+#   ava-retention-key  the AES-256-GCM key, created once by live's `retention-key`
+#                      init container (services/retention/keygen.py), mounted
+#                      read-only into the live container
+# Two claims, each mounted whole (no subPath: the kubelet would create a subPath folder
+# as root, which uid 10001 could not write). From the node's default storage class
+# (k3s: local-path, whose folders uid 10001 can write). The live pod sets no fsGroup on
+# purpose: the kubelet's fsGroup change adds group read to files, and live refuses a
+# group-readable key. Deleting `ava-retention-key` makes every stored snippet unreadable.
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: ava-snippets
+  labels: {app.kubernetes.io/name: ava-snippets, app.kubernetes.io/part-of: ava}
+spec:
+  accessModes: [ReadWriteOnce]
+  resources:
+    requests: {storage: 1Gi}
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: ava-retention-key
+  labels: {app.kubernetes.io/name: ava-retention-key, app.kubernetes.io/part-of: ava}
+spec:
+  accessModes: [ReadWriteOnce]
+  resources:
+    requests: {storage: 16Mi}
