@@ -44,6 +44,10 @@ inside the stack, and checks:
 - (22 Nov, backlog 11.2, PRD FR-O8) the deployment guide's PostgreSQL backup and restore:
   an online dump restored into a new stack after `down -v` gives every table back
   unchanged, and scoring and the read-only history resume.
+- (22 Nov, backlog 11.1) a bounded load and soak run: several rounds of concurrent real
+  calls; every call completes and is stored with every scored window, nothing is left
+  behind in live or Asterisk, and live's threads, open files and memory do not grow from
+  round to round (AVA_SOAK_ROUNDS, AVA_SOAK_CALLS; see the case's docstring).
 The project and its volumes are removed afterwards.
 """
 import base64
@@ -201,6 +205,47 @@ SNIPPET_PROBE = textwrap.dedent(r'''
     print(json.dumps(out))
 ''')
 
+# Run inside the live container (python -c SCRIPT), 22 Nov (backlog 11.1): the live
+# process's resident memory (kB), thread count and open file descriptors, from /proc.
+# The process is the one started as `python -m services.live` (not this probe, whose own
+# command line contains that text inside the script).
+LIVE_RESOURCES = textwrap.dedent(r'''
+    import json, os
+    from pathlib import Path
+    found = []
+    for p in Path('/proc').iterdir():
+        if not p.name.isdigit():
+            continue
+        try:
+            argv = (p / 'cmdline').read_bytes().split(b'\0')
+        except OSError:
+            continue
+        if argv[1:3] == [b'-m', b'services.live']:
+            found.append(p)
+    if len(found) != 1:
+        raise SystemExit(f'expected one live process, found {len(found)}')
+    status = dict(line.split(':', 1) for line in (found[0] / 'status').read_text().splitlines() if ':' in line)
+    print(json.dumps({'rss_kb': int(status['VmRSS'].split()[0]), 'threads': int(status['Threads']),
+                      'fds': len(os.listdir(found[0] / 'fd'))}))
+''')
+
+SOAK_ROUNDS_LIMIT, SOAK_CALLS_LIMIT = 50, 8  # calls: at most live's default --max-calls
+GROSS_RSS_GROWTH_MB = 64  # total resident-memory growth of live after round 1 (soak case)
+
+
+def soak_shape():
+    """(rounds, concurrent calls) for the soak case: AVA_SOAK_ROUNDS (default 3, 1-50) and
+    AVA_SOAK_CALLS (default 4, 1-8). Out-of-range or non-integer values are refused, not
+    clamped, so a run never silently tests less than it was asked to."""
+    shape = []
+    for name, default, limit in (('AVA_SOAK_ROUNDS', 3, SOAK_ROUNDS_LIMIT), ('AVA_SOAK_CALLS', 4, SOAK_CALLS_LIMIT)):
+        text = os.environ.get(name, str(default))
+        if not re.fullmatch(r'[0-9]{1,3}', text) or not 1 <= int(text) <= limit:  # review N3: ASCII only
+            raise ValueError(f'{name} must be an integer from 1 to {limit}, not {text!r}')
+        shape.append(int(text))
+    return tuple(shape)
+
+
 EGRESS_PROBE = ('import socket,sys\n'
                 'try:\n socket.create_connection(("1.1.1.1", 443), timeout=3)\n'
                 'except OSError as e:\n print("blocked", type(e).__name__); sys.exit(0)\n'
@@ -343,9 +388,17 @@ class ComposeStackLabTests(unittest.TestCase):
         def stop():
             if process.poll() is None:
                 process.kill()
-            process.wait(timeout=30)
+            try:
+                process.wait(timeout=30)
+            except subprocess.TimeoutExpired:  # review L4: never fail the cleanup chain here
+                pass
             reader.join(timeout=30)
-            process.stdout.close()
+            # 22 Nov: on Windows, killing `docker` can leave its `docker-compose` child
+            # holding the pipe, so the reader may still be blocked in a read; closing the
+            # pipe then waits on the reader's lock and the test hung in cleanup. Leave it
+            # to the daemon thread (it ends when `compose down` removes the container).
+            if not reader.is_alive():
+                process.stdout.close()
         self.addCleanup(stop)
         try:
             first = lines.get(timeout=60)
@@ -1599,6 +1652,213 @@ class ComposeStackLabTests(unittest.TestCase):
               f'{remaining_s:.0f} s of the call left; the new client got {len(ours)} events of the call '
               '(not every event after the restart: it connects after the relay subscribes); '
               f'{stored_scored} scored windows stored = scorer count {scorer_windows}')
+
+    def live_resources(self, samples=1):
+        """{'rss_kb', 'threads', 'fds'} of the live process (LIVE_RESOURCES). With several
+        samples about 1 s apart, the minimum of each (review M2): a health request or
+        Prometheus scrape in progress briefly holds one thread and one socket, a leak
+        stays in every sample. Every sample is kept in 'samples'."""
+        taken = []
+        for index in range(samples):
+            if index:
+                time.sleep(1)
+            taken.append(json.loads(self.compose('exec', '-T', 'live', 'python', '-c', LIVE_RESOURCES).stdout))
+        low = {key: min(sample[key] for sample in taken) for key in ('rss_kb', 'threads', 'fds')}
+        return dict(low, samples=taken) if samples > 1 else low
+
+    def asterisk_leftovers(self):
+        """(active channel count, bridge lines) left in the lab PBX, read with its console."""
+        channels = self.compose('exec', '-T', 'asterisk', 'asterisk', '-rx', 'core show channels count').stdout
+        found = re.search(r'^(\d+) active channels?$', channels, re.MULTILINE)
+        self.assertIsNotNone(found, f'unexpected console output: {channels!r}')
+        bridges = self.compose('exec', '-T', 'asterisk', 'asterisk', '-rx', 'bridge show all').stdout
+        # Header "Bridge-ID  Chans  Type  Technology  Duration" then one line per bridge.
+        rows = [line for line in bridges.splitlines()[1:] if line.strip()]
+        return int(found.group(1)), rows
+
+    def test_concurrent_calls_over_repeated_rounds_lose_no_window_and_do_not_grow_live(self):
+        """Backlog 11.1 load and soak (Claude-authored, 22 Nov 2026; PRD FR-I9/FR-O6 live
+        capacity, FR-A3/A4 storage and events, "AVA failure must not stop a call";
+        architecture §2.4-§2.6). In the Compose stack, AVA_SOAK_ROUNDS rounds (default 3)
+        of AVA_SOAK_CALLS concurrent real calls (default 4, at most live's default
+        --max-calls of 8), each about 55 s of public speech through the lab PBX. Checks:
+        - every call completes (SIPp exit 0); in every round live held all calls at once
+          (`ava_live_calls_active` reached the call count) and refused none for capacity;
+        - every call is one PostgreSQL row ended `bye`, with all its scored windows stored
+          (scored rows = the scorer's `windows_by_direction`) and no alert left open; the
+          store pump ends with no backlog and nothing refused, skipped or unstored;
+        - the API's WebSocket subscriber gets every call from `call.started` to a `bye`
+          `call.ended` with strictly increasing seqs and no `stream.gap`, and the API's
+          registry ends every call with no apply error;
+        - after each round live has no call state left (no active call, direction, waiting
+          or batched window) and Asterisk has no channel or bridge left (no snoop or
+          ExternalMedia leg kept by the tap);
+        - with at least 2 rounds: live's thread and open-file counts after every later
+          round equal those after round 1 (minimum of 3 samples, review M2); its resident
+          memory grows at most 64 MB in all after round 1 (warm-up happens in round 1), and
+          with 3 or more rounds the smallest growth of any round is at most 1 MB + 0.25 MB
+          per call. A steady leak shows in every round; a one-off allocator or ONNX Runtime
+          step (seen: +26.6 MB once in 10 rounds, then flat) does not, so it is allowed.
+          This catches a steady leak above about 0.5 MB per call at 4 calls a round; with 1
+          round nothing is assessed, with 2 only the gross bound applies;
+        - live started once, lost no call (`monitor_lost`), and had no loop, pump or
+          detector errors.
+        Degraded or unmonitored scoring under this load is allowed (FR-I10 is the designed
+        response to overload) and is reported, not hidden. This is infrastructure
+        evidence on this laptop with the untrained export; it is not the §6.1 capacity
+        measurement (8.QA) and says nothing about detection."""
+        rounds, calls = soak_shape()
+        self.compose('up', '-d', '--wait', '--wait-timeout', '360', timeout=600)
+        self.wait_healthy('live', 120)
+        self.wait_healthy('api', 240)
+        self.wait_relay_subscribed(60)
+        lines = self.start_subscriber(rounds * 300 + 300, ends=rounds * calls)
+        seen = []
+        collect = self.collector(lines, seen)
+
+        clips = json.loads(QA_CONFIG.read_text(encoding='utf-8'))['genuine'][:3] * 4
+        payloads = rtp_pcap.rtp_payloads(b''.join(rtp_pcap.wav_to_pcm8k(path) for path in clips), 'ulaw')
+        pcap = self.folder / 'inject.pcap'
+        rtp_pcap.write_pcap(payloads, 0, pcap)
+        self.compose('cp', str(pcap), 'asterisk:/lab/io/inject.pcap')
+        call_ms = len(payloads) * 20
+        self.assertLess(call_ms, 60000, 'the lab dialplan hangs up at 60 s')
+
+        idle = self.live_resources()
+        after, peaks, strides = [], [], []
+        for round_no in range(rounds):
+            processes = []
+            for index in range(calls):
+                output = tempfile.TemporaryFile()  # review M3 of 18 Nov: never an unread pipe
+                self.addCleanup(output.close)
+                low = 16000 + 100 * index  # each SIPp its own RTP ports (the PBX uses 10000-10200)
+                process = subprocess.Popen(self.compose_args(
+                    'exec', '-T', 'asterisk', 'sipp', '127.0.0.1:5060', '-sf', '/lab/sipp/uac_inject.xml', '-s', '700',
+                    '-key', 'caller', f'sk{round_no}x{index}{secrets.token_hex(3)}', '-key', 'pt', '0', '-key', 'codec',
+                    'PCMU', '-m', '1', '-d', str(call_ms + 1500), '-i', '127.0.0.1', '-mi', '127.0.0.1',
+                    '-min_rtp_port', str(low), '-max_rtp_port', str(low + 99), '-timeout', '150s', '-timeout_error',
+                    '-nostdin'), stdout=output, stderr=subprocess.STDOUT)
+
+                def stop(process=process):  # on failure; the stack's `down` ends SIPp itself
+                    if process.poll() is None:
+                        process.kill()
+                    process.wait(timeout=30)
+                self.addCleanup(stop)
+                processes.append((process, output))
+
+            peak, deadline = 0, time.monotonic() + call_ms / 1000 + 150
+            while any(process.poll() is None for process, _ in processes):
+                self.assertLess(time.monotonic(), deadline, f'round {round_no + 1}: SIPp did not finish')
+                metrics = self.live_metrics()
+                peak = max(peak, int(metrics['ava_live_calls_active']))
+                strides.append(metrics['ava_live_max_effective_stride_seconds'])
+                time.sleep(2)
+            for index, (process, output) in enumerate(processes):
+                output.seek(0)
+                self.assertEqual(process.returncode, 0,
+                                 f'round {round_no + 1} call {index}: did not complete: {output.read()[-1500:]!r}')
+            peaks.append(peak)
+            # The first run (22 Nov) left one call of a round untapped; say so directly,
+            # with the step and reason the tap now logs, rather than as a missing end.
+            failures = self.live_metrics()['ava_live_tap_events_total{kind="tap_failures"}']
+            self.assertEqual(failures, 0, f'round {round_no + 1}: calls not tapped: '
+                                          f'{[r for r in self.live_records() if r.get("event") == "tap_failure"]}')
+
+            ended = (round_no + 1) * calls
+            self.assertTrue(collect(lambda e: sum(x['type'] == 'call.ended' for x in seen) >= ended, 90),
+                            f'round {round_no + 1}: not every call ended over the WebSocket: {seen[-20:]}')
+            metrics, rows, deadline = {}, [], time.monotonic() + 60
+            while time.monotonic() < deadline:
+                metrics, rows = self.live_metrics(), self.call_rows()
+                if (len(rows) == ended and all(r.split('|')[1] == 'bye' for r in rows)
+                        and metrics.get('ava_live_store_backlog') == 0 and metrics.get('ava_live_calls_active') == 0):
+                    break
+                time.sleep(1)
+            self.assertEqual(len(rows), ended, f'round {round_no + 1}: stored rows {rows}')
+            self.assertEqual({r.split('|')[1] for r in rows}, {'bye'}, rows)
+            # Review L1: read strictly, so a missing family (a malformed pipeline snapshot)
+            # fails instead of passing as "nothing left". Retention is off here, so the
+            # snippet queue gauge is not rendered and not checked.
+            self.assertEqual(metrics['ava_live_pipeline_snapshot_valid'], 1)
+            for name in ('ava_live_calls_active', 'ava_live_directions', 'ava_live_windows_waiting',
+                         'ava_live_windows_in_batcher', 'ava_live_store_backlog'):
+                self.assertEqual(metrics[name], 0, f'round {round_no + 1}: {name} left after the calls')
+            channels, bridges = self.asterisk_leftovers()
+            self.assertEqual((channels, bridges), (0, []), f'round {round_no + 1}: left in Asterisk')
+            after.append(self.live_resources(samples=3))
+
+        # Concurrency really happened, and no call was turned away.
+        self.assertEqual(peaks, [calls] * rounds, 'live held every call of a round at once')
+        self.assertEqual(metrics['ava_live_calls_refused_capacity_total'], 0)
+
+        # Storage: one row per call, every scored window stored, no open alert or row.
+        query = ("SELECT c.call_id || '|' || (SELECT count(*) FROM window_scores w WHERE w.call_pk = c.id AND w.scored) "
+                 "|| '|' || (SELECT coalesce(sum(value::int), 0) FROM jsonb_each_text(c.end_data->'windows_by_direction'))"
+                 " || '|' || (SELECT count(*) FROM alerts a WHERE a.call_pk = c.id AND a.status = 'open') FROM calls c")
+        stored = [row.split('|') for row in self.compose('exec', '-T', 'postgres', 'psql', '-U', 'ava', '-d', 'ava',
+                                                          '-tAc', query).stdout.split()]
+        self.assertEqual(len({row[0] for row in stored}), rounds * calls, f'distinct calls: {stored}')
+        for call_id, scored, scorer, open_alerts in stored:
+            self.assertGreaterEqual(int(scorer), 10, f'{call_id} was scored throughout')
+            self.assertEqual(int(scored), int(scorer), f'{call_id}: every scored window is in PostgreSQL')
+            self.assertEqual(open_alerts, '0', f'{call_id}: no alert left open')
+        for outcome in ('not_stored', 'refused', 'skipped_faulty'):
+            self.assertEqual(metrics[f'ava_live_store_events_total{{outcome="{outcome}"}}'], 0, outcome)
+        errors = {key: value for key, value in metrics.items() if value and key.startswith((
+            'ava_live_pump_faults_total', 'ava_live_loop_errors_total', 'ava_live_hook_errors_total',
+            'ava_live_detector_failures_total', 'ava_live_metrics_render_errors_total'))}
+        self.assertEqual(errors, {}, 'no live errors under load')
+        dropped = {key: value for key, value in metrics.items() if key.startswith('ava_live_pump_hub_dropped_total')}
+        self.assertTrue(dropped and not any(dropped.values()), f'the event hub dropped events: {dropped}')
+
+        # Events: every call whole and in order over Redis and the WebSocket.
+        self.assertNotIn('stream.gap', [e['type'] for e in seen], 'no relay loss reported')
+        seqs = [e['seq'] for e in seen]
+        self.assertEqual(seqs, sorted(set(seqs)), 'seqs strictly increase')
+        for call_id in {row[0] for row in stored}:
+            ours = [e for e in seen if e.get('call_id') == call_id]
+            self.assertTrue(ours, f'{call_id}: no events over the WebSocket')
+            types = [e['type'] for e in ours]
+            self.assertEqual((types[0], types[-1], ours[-1].get('reason')), ('call.started', 'call.ended', 'bye'),
+                             f'{call_id}: {types}')
+            self.assertEqual(types.count('call.started'), 1, f'{call_id} monitored once: {types}')
+        registry = json.loads(self.api_get('/v1/calls')['body'])['registry']
+        self.assertEqual((registry['active'], registry['ended'], registry['apply_errors'],
+                          registry['superseded_session']), (0, rounds * calls, 0, 0), registry)
+
+        # Resources: no growth from round to round once round 1 has warmed live up.
+        growth_mb = (after[-1]['rss_kb'] - after[0]['rss_kb']) / 1024
+        deltas_mb = [round((b['rss_kb'] - a['rss_kb']) / 1024, 2) for a, b in zip(after, after[1:])]
+        if rounds >= 2:  # review L2: one round has nothing to compare
+            for later in after[1:]:
+                self.assertEqual((later['threads'], later['fds']), (after[0]['threads'], after[0]['fds']),
+                                 f'threads/open files grew: idle {idle}, after each round {after}')
+            # A steady leak grows live in every round; the allocator and ONNX Runtime can
+            # step up once (the 10-round run of 22 Nov: +26.6 MB between rounds 2 and 3,
+            # then +0.03 to +0.14 MB per round). So: a gross bound on the total, and with 3
+            # or more rounds the smallest per-round growth bounded at 1 MB + 0.25 MB per call.
+            self.assertLessEqual(growth_mb, GROSS_RSS_GROWTH_MB, f'resident memory grew {growth_mb:.1f} MB '
+                                                                 f'after round 1; per round {deltas_mb}')
+            steady = 1 + 0.25 * calls
+            if len(deltas_mb) >= 2:
+                self.assertLessEqual(min(deltas_mb), steady, f'resident memory grew in every round: {deltas_mb} MB')
+            resources = (f'RSS growth after round 1 {growth_mb:.1f} MB (gross bound {GROSS_RSS_GROWTH_MB} MB), per '
+                         f'round {deltas_mb} MB (smallest at most {steady:.1f} MB)')
+        else:
+            resources = 'resources not assessed (1 round)'
+
+        live_logs = self.compose('logs', '--no-color', '--no-log-prefix', 'live').stdout
+        self.assertEqual([r.get('event') for r in self.live_records()].count('starting'), 1, 'live started once')
+        self.assertNotIn('monitor_lost', live_logs)
+        windows = sum(int(row[2]) for row in stored)
+        skipped = metrics['ava_live_windows_offered_total{outcome="stride_skipped"}']
+        join_retries = metrics['ava_live_tap_events_total{kind="join_retries"}']  # 422 retries (22 Nov fix)
+        print(f'\nobserved: {rounds} rounds x {calls} concurrent calls of {call_ms / 1000:.0f} s all completed; '
+              f'{windows} scored windows stored; peak active {peaks}; largest effective stride '
+              f'{max(strides):.0f} s, unmonitored entries {metrics["ava_live_unmonitored_entries_total"]:.0f}, '
+              f'stride-skipped windows {skipped:.0f}; bridge-join 422 retries {join_retries:.0f}; '
+              f'{resources}; live idle {idle}, after each round '
+              f'{[{k: v for k, v in r.items() if k != "samples"} for r in after]}')
 
     def check_monitoring(self, windows, ws_events):
         """Profile `monitoring` (18 Nov, FR-O6): Prometheus holds the call, every dashboard

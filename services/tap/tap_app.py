@@ -76,6 +76,9 @@ END_DRAIN_S = 0.04
 RECEIVER_REFRESH_S = 1.0  # how often open calls' RTP/jitter counts are re-read for /metrics
 NATIVE_FORMAT_VARIABLE = 'CHANNEL(audionativeformat)'
 CODEC_READ_TIMEOUT_S = 1.0  # review L1: bounded, shorter than the client's 5 s
+# A bridge join refused with 422 (the channel has not entered the app yet) is retried;
+# pauses 0.02 + 0.04 + 0.06 + 0.08 s = 0.2 s at most per join (22 Nov, see `_join`).
+JOIN_ATTEMPTS, JOIN_RETRY_S, JOIN_RETRY_TIMEOUT_S = 5, 0.02, 1.0
 # An Asterisk format name ("ulaw", "alaw", "gsm", "g722", "slin16", ...); a native format
 # with several audio formats is kept as their names joined by "|" (at most 4). The same
 # rule is applied again when stored calls are read (services/store/history.py).
@@ -120,7 +123,7 @@ class TappedCall:
 class TapApp:
     def __init__(self, ari, sink, *, receiver_host, bind_host='0.0.0.0', silence_timeout_s=SILENCE_TIMEOUT_S,
                  max_calls=64, clock=time.monotonic, session_factory=RtpSession, tap_prefixes=('PJSIP/',),
-                 tap_extensions=None, rtp_source=None, jitter_depth_s=DEFAULT_DEPTH_S):
+                 tap_extensions=None, rtp_source=None, jitter_depth_s=DEFAULT_DEPTH_S, sleep=time.sleep):
         if type(max_calls) is not int or max_calls < 1:
             raise ValueError('max_calls must be a positive integer')
         self.jitter_depth_s = jitter_depth_s  # None: arrival order, no concealment
@@ -128,6 +131,7 @@ class TapApp:
         self.receiver_host, self.bind_host, self.rtp_source = receiver_host, bind_host, rtp_source
         self.silence_timeout_s, self.max_calls, self._clock = silence_timeout_s, max_calls, clock
         self._session_factory = session_factory
+        self._sleep = sleep  # the 422 join retry's pause (`_join`)
         self.tap_prefixes = tuple(tap_prefixes)
         self.tap_extensions = None if tap_extensions is None else frozenset(tap_extensions)
         self.calls = {}
@@ -136,7 +140,8 @@ class TapApp:
         self._done_set = set()
         self._marked = {}  # channel IDs marked as inbound caller legs (insertion-ordered)
         self.stats = {'events': 0, 'bad_events': 0, 'tapped': 0, 'tap_failures': 0, 'refused_capacity': 0,
-                      'ended': 0, 'sink_errors': 0, 'cleanup_errors': 0, 'swept': 0, 'codec_unknown': 0}
+                      'ended': 0, 'sink_errors': 0, 'cleanup_errors': 0, 'swept': 0, 'codec_unknown': 0,
+                      'join_retries': 0}
         # Receiver and `jitter_` buffer counts summed over ended calls (FR-I2, FR-O6).
         self.receiver_totals = {}
         # The same plus each open call's counts as last read (at most RECEIVER_REFRESH_S
@@ -146,6 +151,8 @@ class TapApp:
         self.calls_degraded = 0  # open calls in a sustained-loss episode (LossMonitor), same refresh
         self._call_counts = {}  # call ID -> its counts at the last refresh (loop thread only)
         self._refreshed_at = None
+        # The latest tap set-up failure: {'stage', 'reason'} (see `_start`), or None.
+        self.last_failure = None
 
     # -- event dispatch ----------------------------------------------------------------
 
@@ -215,6 +222,7 @@ class TapApp:
         caller, dialplan = channel.get('caller') or {}, channel.get('dialplan') or {}
         call = TappedCall(channel_id, str(caller.get('number', '')), str(dialplan.get('exten', '')),
                           str(channel.get('creationtime', '')))
+        stage = 'rtp_session'
         try:
             jitter = None if self.jitter_depth_s is None else JitterBuffer(depth_s=self.jitter_depth_s)
             call.monitor = LossMonitor()
@@ -222,23 +230,51 @@ class TapApp:
                                                  allowed_source=self.rtp_source, jitter=jitter)
             # Bridge first and each channel into it at once, so whatever a crash leaves
             # behind sits in an `ava-tap` bridge that `sweep()` finds.
+            stage = 'bridge'
             call.bridge_id = self.ari.create_bridge(name=TAP_TAG)['id']
+            stage = 'snoop'
             call.snoop_id = self.ari.snoop(channel_id, spy='in', app_args=TAP_TAG)['id']
             self._ours.add(call.snoop_id)
-            self.ari.add_to_bridge(call.bridge_id, [call.snoop_id])
+            stage = 'snoop_join'
+            self._join(call.bridge_id, call.snoop_id)
+            stage = 'external_media'
             call.media_id = self.ari.external_media(f'{self.receiver_host}:{call.session.port}', fmt='ulaw')['id']
             self._ours.add(call.media_id)
-            self.ari.add_to_bridge(call.bridge_id, [call.media_id])
+            stage = 'media_join'
+            self._join(call.bridge_id, call.media_id)
         except (AriError, OSError, KeyError, TypeError, ValueError) as error:
+            reason = getattr(error, 'reason', None) if isinstance(error, AriError) else None
+            # 22 Nov (backlog 11.1): which step failed and why, for the operations log; a
+            # new dict each time (read by the event-log thread). Fixed tokens only.
+            self.last_failure = {'stage': stage, 'reason': reason or type(error).__name__}
             self.stats['tap_failures'] += 1
             self._release(call)
             self._remember(channel_id)
-            self._emit('failed', channel_id, f'{type(error).__name__}')
+            self._emit('failed', channel_id, f'{stage}:{reason or type(error).__name__}')
             return
         call.call_codec = self._read_codec(channel_id)
         self.calls[channel_id] = call
         self.stats['tapped'] += 1
         self._emit('started', call)
+
+    def _join(self, bridge_id, channel_id):
+        """Add one of the tap's own channels to its bridge. A channel created in the tap's
+        app enters it asynchronously, and until it has, Asterisk refuses the join with HTTP
+        422 ("Channel not in Stasis application", ARI Bridges reference). The 22 Nov soak
+        hit this on 1 of 40 concurrent calls (`snoop_join`, `http_422`), so a 422 is retried
+        JOIN_ATTEMPTS times with a growing pause (at most 0.2 s in all on this thread); any
+        other error, or a 422 on the last attempt, is raised. Retries use a 1 s request
+        timeout (review L1), so one join blocks at most 5 + 4 x 1 + 0.2 s, not 25 s."""
+        for attempt in range(JOIN_ATTEMPTS):
+            try:
+                if attempt == 0:
+                    return self.ari.add_to_bridge(bridge_id, [channel_id])
+                return self.ari.add_to_bridge(bridge_id, [channel_id], timeout=JOIN_RETRY_TIMEOUT_S)
+            except AriError as error:
+                if error.status != 422 or attempt == JOIN_ATTEMPTS - 1:
+                    raise
+            self.stats['join_retries'] += 1
+            self._sleep(JOIN_RETRY_S * (attempt + 1))
 
     def _read_codec(self, channel_id):
         """The call's detected codec (FR-U5), or None. Advisory: any failure is counted,

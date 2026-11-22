@@ -106,6 +106,38 @@ class EventLogTests(unittest.TestCase):
         self.tick()
         self.assertEqual(self.lines(), [], 'nothing new, nothing written')
 
+    def test_a_tap_failure_line_names_the_latest_step_and_reason(self):
+        """Claude-authored (22 Nov 2026, backlog 11.1): the Compose soak found a call that
+        was not tapped with no way to tell why. The `tap_failure` line now carries the
+        tap's latest failure (`last_stage`, `last_reason`); a stand-in without one, or with
+        anything other than a short token, writes nothing or None, never free text."""
+        self.log.pump()
+        self.service.tap.stats['tap_failures'] = 1  # no last_failure attribute: no fields
+        self.tick()
+        self.assertEqual([(l['event'], l['count'], 'last_stage' in l) for l in self.lines()], [('tap_failure', 1, False)])
+        self.service.tap.last_failure = {'stage': 'snoop', 'reason': 'http_404'}
+        self.service.tap.stats['tap_failures'] = 3
+        self.tick()
+        [line] = self.lines()
+        self.assertEqual((line['level'], line['count'], line['last_stage'], line['last_reason']),
+                         ('error', 2, 'snoop', 'http_404'))
+        for bad in ('ARI POST channels failed with HTTP 404', '03001234567', 'x' * 49, '', 7):
+            self.service.tap.last_failure = {'stage': 'snoop', 'reason': bad}
+            self.service.tap.stats['tap_failures'] += 1
+            self.tick()
+            [line] = self.lines()
+            self.assertIsNone(line['last_reason'], bad)
+        self.service.tap.last_failure = {'stage': 'snoop join', 'reason': 'a' * 48}  # bad stage, longest reason
+        self.service.tap.stats['tap_failures'] += 1
+        self.tick()
+        [line] = self.lines()
+        self.assertEqual((line['last_stage'], line['last_reason']), (None, 'a' * 48))
+        self.service.tap.last_failure = 'not a dict'
+        self.service.tap.stats['tap_failures'] += 1
+        self.tick()
+        [line] = self.lines()
+        self.assertEqual(set(line), {'ts', 'level', 'event', 'count'})
+
     def test_detector_failure_run_is_logged_once_each_way(self):
         self.log.pump()
         for run in (1, FAILING_AFTER - 1):

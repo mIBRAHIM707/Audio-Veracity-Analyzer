@@ -356,7 +356,15 @@ an edit applied and a hop change refused).
 
 **Calls.** Not affected. A failed tap means that call is not scored.
 
-**Check.** Whether it repeats on every call or once. A `tap_failure` on every call
+**Check.** Whether it repeats on every call or once. A `tap_failure` line also names the
+latest failure's step (`last_stage`: `rtp_session`, `bridge`, `snoop`, `snoop_join`,
+`external_media`, `media_join`) and reason (`last_reason`: `http_<status>` from ARI,
+`too_large` or `not_json` for a bad reply, or an error class such as `TimeoutError`,
+`ConnectionRefusedError` or `KeyError`). With a `count` above 1 only the latest failure is
+named. `snoop_join` or `media_join` with `http_422` means Asterisk had still not put
+the tap's own channel into its app after five tries over 0.2 s (a loaded PBX);
+`ava_live_tap_events_total{kind="join_retries"}` rising with no `tap_failure` is that
+retry working and needs no action. A `tap_failure` on every call
 usually means the ARI user cannot create the snoop or ExternalMedia channels (for
 example it is read-only; deployment guide, "PBX tap configuration"). After a crash,
 leftover `ava-tap` bridges are removed when live starts
@@ -367,7 +375,9 @@ keep the log for a bug report if the errors continue on a correct setup. A singl
 `shutdown_error` during a stop needs no action.
 
 **Tested.** `test_call_goes_on_when_the_tap_crashes_mid_call` (lab: leftovers removed by
-the next start). The individual error counters have unit tests only.
+the next start). The individual error counters have unit tests only, as do the step and
+reason fields (`test_tap_failure_names_the_later_steps_and_non_ari_errors`,
+`test_a_tap_failure_line_names_the_latest_step_and_reason`).
 
 ## R14. Live healthy but no call is tapped
 

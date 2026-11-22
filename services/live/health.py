@@ -58,7 +58,7 @@ SERVICE_COUNTERS = (('ava_live_ari_connects_total', 'connects', 'ARI event strea
                     ('ava_live_hook_errors_total', 'hook_errors', 'Faults in loop tick hooks.'),
                     ('ava_live_shutdown_errors_total', 'shutdown_errors', 'Faults while shutting down.'))
 TAP_COUNTERS = ('events', 'bad_events', 'tapped', 'tap_failures', 'refused_capacity', 'ended', 'sink_errors',
-                'cleanup_errors', 'swept', 'codec_unknown')
+                'cleanup_errors', 'swept', 'codec_unknown', 'join_retries')
 SINK_COUNTERS = ('started', 'refused', 'audio_chunks', 'audio_unfed', 'ended', 'ended_elsewhere', 'end_retries',
                  'ends_forced', 'end_cancelled_tail', 'health_published', 'health_failures', 'pump_errors',
                  'errors', 'recorder_errors', 'timer_failures')

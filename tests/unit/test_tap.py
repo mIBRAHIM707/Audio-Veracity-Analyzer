@@ -169,10 +169,42 @@ class AriClientTests(unittest.TestCase):
         self.assertEqual(client.create_bridge(), {'id': 'x'})
         server.reply = (204, b'')
         self.assertIsNone(client.hangup('x'))
-        for reply in ((200, b'<html>not json'), (200, b'[' * 100000), (500, b'{}'), (404, b'')):
+        # 22 Nov (Claude-authored): each carries a fixed reason token for the log.
+        for reply, reason in (((200, b'<html>not json'), 'not_json'), ((200, b'[' * 100000), 'not_json'),
+                              ((500, b'{}'), 'http_500'), ((404, b''), 'http_404'),
+                              ((200, b' ' * ((1 << 20) + 1)), 'too_large')):
             server.reply = reply
-            with self.assertRaises(AriError, msg=reply[0]):
+            with self.assertRaises(AriError, msg=reply[0]) as caught:
                 client.create_bridge()
+            self.assertEqual(caught.exception.reason, reason, reply[0])
+
+    def test_transport_failures_name_the_socket_error(self):
+        """Claude-authored (22 Nov 2026): a refused connection is reported by the socket
+        error's class (inside urllib's URLError), never with the URL or credentials."""
+        probe = socket.socket()
+        probe.bind(('127.0.0.1', 0))
+        port = probe.getsockname()[1]
+        probe.close()  # nothing listens there now
+        # Windows retries a refused localhost connect for about 2 s; Linux refuses at once.
+        client = AriClient(f'http://127.0.0.1:{port}', 'ava', 's3cret', 'ava-tap', timeout=15)
+        with self.assertRaises(AriError) as caught:
+            client.create_bridge()
+        self.assertEqual(caught.exception.reason, 'ConnectionRefusedError')
+        self.assertIsNone(caught.exception.status)
+        self.assertNotIn('s3cret', str(caught.exception))
+        self.assertNotIn(str(port), str(caught.exception))
+
+    def test_a_server_that_never_replies_is_a_timeout(self):
+        """Claude-authored (22 Nov 2026, review L6): the connection is accepted (listen
+        backlog) but no reply comes; the reason is `TimeoutError`."""
+        silent = socket.socket()
+        silent.bind(('127.0.0.1', 0))
+        silent.listen(4)
+        self.addCleanup(silent.close)
+        client = AriClient(f'http://127.0.0.1:{silent.getsockname()[1]}', 'ava', 's3cret', 'ava-tap', timeout=0.5)
+        with self.assertRaises(AriError) as caught:
+            client.create_bridge()
+        self.assertEqual((caught.exception.reason, caught.exception.status), ('TimeoutError', None))
 
 
 class FakeAri:
@@ -220,7 +252,7 @@ class FakeAri:
             raise AriError('list failed', 500)
         return self.bridges
 
-    def add_to_bridge(self, bridge_id, channels):
+    def add_to_bridge(self, bridge_id, channels, timeout=None):
         return self._do('add', bridge_id, tuple(channels))
 
     def hangup(self, channel_id):
@@ -312,16 +344,112 @@ class TapAppTests(unittest.TestCase):
         self.assertEqual((app.stats['ended'], app.stats['tapped'], app.calls), (1, 1, {}))
 
     def test_tap_failure_is_contained_and_releases_everything(self):
-        for step in ('snoop', 'external_media', 'bridge', 'add'):
+        # 22 Nov: the failure names the set-up step and the ARI reason (was 'AriError').
+        stages = {'snoop': 'snoop', 'external_media': 'external_media', 'bridge': 'bridge', 'add': 'snoop_join'}
+        for step, stage in stages.items():
             app = self.make(fail={step})
             app.handle(answered('c2'))
             self.assertEqual(app.calls, {}, step)
-            self.assertEqual(self.sink.events, [('failed', 'c2', 'AriError')], step)
+            self.assertEqual(self.sink.events, [('failed', 'c2', f'{stage}:http_500')], step)
+            self.assertEqual(app.last_failure, {'stage': stage, 'reason': 'http_500'}, step)
             self.assertEqual(set(self.ari.created), self.ari.released(), step)
             self.assertFalse(any(c[1] == 'c2' for c in self.ari.calls if c[0] == 'hangup'))
             self.assertEqual(app._ours, set(), step)
             app.handle(answered('c2'))  # not retried on every later event
             self.assertEqual(app.stats['tap_failures'], 1, step)
+
+    def test_tap_failure_names_the_later_steps_and_non_ari_errors(self):
+        """Claude-authored (22 Nov 2026, backlog 11.1): found by the Compose soak, where one
+        of four concurrent calls was not tapped and the log said only `tap_failure`. The
+        second bridge join, an RTP socket that cannot open and a reply without an ID each
+        name their step; a later success leaves the last failure as it was."""
+        ari = FakeAri()
+        joins = []
+        real_add = ari.add_to_bridge
+
+        def add_twice_fails(bridge_id, channels, timeout=None):
+            joins.append(channels)
+            if len(joins) == 2:
+                raise AriError('add failed', 409)
+            return real_add(bridge_id, channels)
+        ari.add_to_bridge = add_twice_fails
+        self.sink = Sink()
+        app = TapApp(ari, self.sink, receiver_host='h', bind_host='127.0.0.1', jitter_depth_s=None)
+        self.addCleanup(app.close)
+        app.handle(answered('m1'))
+        self.assertEqual((self.sink.events[-1], app.last_failure),
+                         (('failed', 'm1', 'media_join:http_409'), {'stage': 'media_join', 'reason': 'http_409'}))
+        self.assertEqual(set(ari.created), ari.released(), 'everything created is released')
+
+        def no_socket(**_):
+            raise OSError('no port')
+        app = self.make(session_factory=no_socket)
+        app.handle(answered('m2'))
+        self.assertEqual(app.last_failure, {'stage': 'rtp_session', 'reason': 'OSError'})
+        self.assertEqual(self.ari.calls, [], 'no ARI call when the socket cannot open')
+
+        app = self.make()
+        self.ari.create_bridge = lambda name='': {}  # a reply without an ID
+        app.handle(answered('m3'))
+        self.assertEqual(app.last_failure, {'stage': 'bridge', 'reason': 'KeyError'})
+        self.ari.create_bridge = lambda name='': self.ari._do('bridge', name)
+        app.handle(answered('m4'))
+        self.assertIn('m4', app.calls)
+        self.assertEqual(app.last_failure, {'stage': 'bridge', 'reason': 'KeyError'}, 'kept after a success')
+
+    def test_a_join_refused_with_422_is_retried_briefly_then_given_up(self):
+        """Claude-authored (22 Nov 2026, backlog 11.1): the 10-round Compose soak logged
+        `snoop_join` / `http_422` ("Channel not in Stasis application": the snoop had not
+        entered the tap's app yet). A 422 is retried with pauses of 0.02, 0.04, ... s; a
+        join that succeeds on a later attempt taps the call; five 422s, or any other
+        status, fail the tap at once with everything released."""
+        def flaky(refusals, status=422, join=0):
+            """The `join`-th bridge join (0 snoop, 1 ExternalMedia) is refused `refusals` times."""
+            ari, pauses = FakeAri(), []
+            real_add, left, seen = ari.add_to_bridge, [refusals], []
+
+            def add(bridge_id, channels, timeout=None):
+                ari.calls.append(('add_attempt', bridge_id, tuple(channels), timeout))
+                if tuple(channels) not in seen:
+                    seen.append(tuple(channels))
+                if seen.index(tuple(channels)) == join and left[0]:
+                    left[0] -= 1
+                    raise AriError('add failed', status)
+                return real_add(bridge_id, channels)
+            ari.add_to_bridge = add
+            sink = Sink()
+            app = TapApp(ari, sink, receiver_host='h', bind_host='127.0.0.1', jitter_depth_s=None,
+                         sleep=pauses.append)
+            self.addCleanup(app.close)
+            app.handle(answered('j1'))
+            return app, ari, sink, pauses
+
+        app, ari, sink, pauses = flaky(2)
+        self.assertIn('j1', app.calls, 'tapped after two refusals')
+        self.assertEqual((app.stats['join_retries'], app.stats['tap_failures']), (2, 0))
+        self.assertEqual(pauses, [0.02, 0.04])
+        attempts = [c for c in ari.calls if c[0] == 'add_attempt']
+        self.assertEqual(len(attempts), 4, 'snoop: 3 attempts, media: 1')
+        # Review L1: retries use the short request timeout; first attempts the client's.
+        self.assertEqual([c[3] for c in attempts], [None, 1.0, 1.0, None])
+
+        app, ari, sink, pauses = flaky(3, join=1)  # review L2: the ExternalMedia join too
+        self.assertIn('j1', app.calls, 'tapped after three media-join refusals')
+        self.assertEqual((app.stats['join_retries'], pauses), (3, [0.02, 0.04, 0.06]))
+        app, ari, sink, pauses = flaky(5, join=1)
+        self.assertEqual(sink.events, [('failed', 'j1', 'media_join:http_422')])
+        self.assertEqual(set(ari.created), ari.released())
+
+        app, ari, sink, pauses = flaky(5)
+        self.assertEqual(app.calls, {})
+        self.assertEqual(sink.events, [('failed', 'j1', 'snoop_join:http_422')])
+        self.assertEqual((app.stats['join_retries'], len(pauses)), (4, 4))
+        self.assertAlmostEqual(sum(pauses), 0.2)
+        self.assertEqual(set(ari.created), ari.released(), 'everything created is released')
+
+        for status in (400, 404, 409, 500):
+            app, ari, sink, pauses = flaky(1, status)
+            self.assertEqual((sink.events, pauses), ([('failed', 'j1', f'snoop_join:http_{status}')], []), status)
 
     def test_capacity(self):
         app = self.make(max_calls=1)

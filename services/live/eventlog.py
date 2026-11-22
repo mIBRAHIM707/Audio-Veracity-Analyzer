@@ -13,7 +13,11 @@ thread) and writes one JSON object per line:
 - From the service's counters, read as copies each turn: ARI connects and drops, new
   loop/hook/shutdown errors, the detector entering and leaving a failure run
   (`detector_failing` at `FAILING_AFTER` batches in a row, `detector_recovered` at 0),
-  and new tap, sink and pipeline faults, as deltas.
+  and new tap, sink and pipeline faults, as deltas. A `tap_failure` line also carries
+  the latest failure's `last_stage` (rtp_session, bridge, snoop, snoop_join,
+  external_media, media_join) and `last_reason` (`http_<status>`, `too_large`,
+  `not_json`, or an error class name such as `TimeoutError` or `KeyError`)
+  from the tap (22 Nov, backlog 11.1): without them a failed tap could not be traced.
 - `log_dropped`: hub lines lost to the rate limit (`max_lines_per_s`, a token bucket
   with a one-second burst) or to hub overflow, reported once the budget allows. The
   service lines above come first and are never rate-limited; counters are compared at
@@ -31,6 +35,7 @@ missed.
 """
 from datetime import datetime, timezone
 import json
+import re
 import time
 
 from services.events.fanout import MAX_BUFFER
@@ -57,6 +62,7 @@ DELTAS = (('service', 'connects', 'ari_connected', 'info'),
           ('pipeline', 'result_errors', 'scoring_result_error', 'error'),
           ('pipeline', 'unmonitored_entered', 'direction_unmonitored', 'warning'))
 _SAFE_TEXT = 128  # longest string value written (IDs, reasons, states)
+_TOKEN = re.compile(r'[A-Za-z][A-Za-z0-9_]{0,47}')  # tap failure stage/reason tokens
 
 
 def _iso(seconds):
@@ -132,6 +138,22 @@ class EventLog:
             self.counts['read_failures'] += 1
             return None
 
+    def _last_tap_failure(self):
+        """`last_stage`/`last_reason` of the tap's latest set-up failure at write time
+        (TapApp `last_failure`; with a merged count above 1, earlier failures may differ,
+        and a failure after the counters were read may show here and be counted on the
+        next line). Only short identifier-like tokens are written, anything else becomes
+        None; that is a format check, the privacy rests on the tap only setting fixed
+        tokens."""
+        failure = getattr(self.service.tap, 'last_failure', None)
+        if not isinstance(failure, dict):
+            return {}
+        out = {}
+        for key in ('stage', 'reason'):
+            value = failure.get(key)
+            out[f'last_{key}'] = value if isinstance(value, str) and _TOKEN.fullmatch(value) else None
+        return out
+
     def _config_lines(self):
         """Reload outcomes (at most one per distinct file state, bounded by the watcher):
         values pass through `_safe`, problem lists through `_safe` per item."""
@@ -162,7 +184,10 @@ class EventLog:
             for source, key, event, level in DELTAS:
                 now, before = current[source].get(key, 0), previous[source].get(key, 0)
                 if isinstance(now, int) and isinstance(before, int) and now > before:
-                    lines.append({'event': event, 'level': level, 'count': now - before})
+                    line = {'event': event, 'level': level, 'count': now - before}
+                    if event == 'tap_failure':  # 22 Nov: the latest failure's step and reason
+                        line.update(self._last_tap_failure())
+                    lines.append(line)
         run = current['failure_run']
         if isinstance(run, int):
             if not self._failing and run >= FAILING_AFTER:

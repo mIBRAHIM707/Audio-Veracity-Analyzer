@@ -490,6 +490,38 @@ checkpoint and checks:
 - `api` cannot reach 1.1.1.1:443 and runs as uid 10001.
 Run time was 69 s with the images built.
 
+### Load and soak (22 Nov 2026; backlog 11.1)
+
+`test_concurrent_calls_over_repeated_rounds_lose_no_window_and_do_not_grow_live`
+(Claude-authored) places `AVA_SOAK_ROUNDS` rounds (default 3, at most 50) of
+`AVA_SOAK_CALLS` concurrent real calls (default 4, at most 8 = live's default
+`--max-calls`), each 55 s of public speech, and checks that every call completes, is
+stored to `bye` with every scored window, reaches the WebSocket whole and in order, and
+leaves nothing in live or Asterisk. It also checks that live's threads, open files and
+resident memory do not keep growing (see the case's docstring for the bounds). To run
+it longer, put the two variables in the env file passed to `uv run --env-file`.
+
+Runs on this laptop (8 CPUs, 7.6 GB for Docker; untrained export, so this is plumbing
+and resource evidence, not the §6.1 capacity measurement):
+- 3 rounds × 4: passed in 239 s. 288 scored windows were stored, the peak was 4 active
+  calls in every round, there was no degraded stride, and memory grew 0.5 MB over the
+  8 calls after round 1;
+- 10 rounds × 4 (final code): passed in 698 s. 960 scored windows were stored, the peak
+  was 4 active calls every round, the stride stayed at 2 s and no window was skipped.
+  Threads stayed at 19 and open files at 10 after every round. Memory grew 1.1 MB in
+  all after round 1 (0.03 to 0.30 MB per round);
+- one earlier 10-round run grew 26.6 MB once, between rounds 2 and 3, then stayed flat
+  (+0.03 to +0.14 MB per round). That is why the memory check bounds the smallest
+  growth of any round, not the total alone.
+
+Defect found: in 2 of the first 3 runs, one call of a round was not tapped (1 of 12 and
+1 of 28 calls; the call itself went on). The log said only `tap_failure`. The tap now
+logs the step and the reason. That showed `snoop_join` / `http_422`: ARI refuses to add
+a channel that has not yet entered the tap's Stasis app ("Channel not in Stasis
+application"). The join is now retried for up to 0.2 s (`services/tap/README.md`).
+In the final run no 422 occurred (`join_retries` 0), so the retry has unit tests but has
+not been seen working on the stack yet.
+
 ## Model change and rollback (22 Nov 2026; backlog 10.QA; PRD FR-O4)
 
 A model change is an env-file change (`AVA_ONNX_DIR`, `AVA_ONNX_FILE`, `AVA_CARD_DIR`,

@@ -85,7 +85,18 @@ only marks the caller leg (`Set(AVA_TAP=caller)`). On
 TapApp sink contract: `started(call)` (call ID, caller number, dialled extension,
 creation time; `codec` is the tap's format; `call_codec` the call's detected codec or
 None), `audio(call_id, pcm16_8k, concealment)`, optional `quality(call_id, change)`,
-`ended(call_id, reason, receiver_stats)`, `failed(call_id, error)`.
+`ended(call_id, reason, receiver_stats)`, `failed(call_id, error)` (`error` is
+`capacity`, or since 22 Nov `<stage>:<reason>`, e.g. `snoop_join:http_422`; the same
+step and reason are kept in `TapApp.last_failure` and written on live's `tap_failure`
+log line as `last_stage`/`last_reason`).
+
+Bridge joins (22 Nov, backlog 11.1): the snoop and ExternalMedia channels are created in
+the tap's ARI app and enter it asynchronously; until then Asterisk refuses
+`bridges/{id}/addChannel` with HTTP 422 ("Channel not in Stasis application", ARI
+Bridges reference, read 22 Nov 2026). A Compose soak of 40 concurrent calls left one call
+untapped this way. A 422 is now retried up to 5 times with pauses of 0.02, 0.04, 0.06 and
+0.08 s (at most 0.2 s on the tap's loop thread), counted as `join_retries`
+(`ava_live_tap_events_total{kind="join_retries"}`); any other status fails the tap at once.
 
 Detected codec (PRD FR-U5, 20 Nov): ARI's channel object has no codec, so once a call's
 tap is set up the tap reads `CHANNEL(audionativeformat)` over ARI (at most 1 s), e.g.

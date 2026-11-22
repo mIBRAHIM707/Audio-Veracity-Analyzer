@@ -745,6 +745,18 @@ items needing that data are listed at the end and stay out of the queue.
   snippet, purged after off). Review M1 (off depended on the key volume) and L1-L7 fixed.
   Remaining: a switch without a live restart, key rotation, snippet backup test,
   FR-U5 playback in the stacks (needs `--auth on`), recovery/load/soak.
+  22 Nov (attempt 8): load and soak in the Compose lab
+  (`test_concurrent_calls_over_repeated_rounds_lose_no_window_and_do_not_grow_live`,
+  Claude-authored; `AVA_SOAK_ROUNDS`/`AVA_SOAK_CALLS`): concurrent real calls per round,
+  every call stored to `bye` with all scored windows, events whole over the WebSocket,
+  nothing left in live or Asterisk, threads/fds flat, memory without steady growth.
+  10 rounds x 4 passed (960 windows, +1.1 MB). Defect found: about 1 in 30 concurrent
+  calls was not tapped, logged only as `tap_failure`. The tap now logs `last_stage`/
+  `last_reason`, which showed `snoop_join` `http_422` (channel not yet in the Stasis app);
+  joins are retried on 422 for up to 0.2 s (`join_retries` metric). The retry is
+  unit-tested only: no 422 occurred in the final run. Two review rounds (conditional pass)
+  fixed. Remaining: the retry seen working on the stack, recovery under load, a longer
+  soak, plus the retention items above.
 - [ ] 11.2 Requirements/evidence audit, runbooks and reproducible demo instructions.
   Progress (22 Nov, attempt 3): `docs/qa/requirements-evidence-audit.md`, one row per PRD
   functional requirement (83) with status, code, tests and gap; checked in CI by

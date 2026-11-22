@@ -23,9 +23,14 @@ MAX_BODY = 1 << 20
 
 
 class AriError(RuntimeError):
-    def __init__(self, message, status=None):
+    """`status`: the HTTP status, if any. `reason` (22 Nov, backlog 11.1): a short fixed
+    token safe to log, `http_<status>`, the transport error's class name (for example
+    `TimeoutError`, `ConnectionRefusedError`), `too_large` or `not_json`; never a URL,
+    a body or the credentials."""
+    def __init__(self, message, status=None, reason=None):
         super().__init__(message)
         self.status = status
+        self.reason = reason if reason is not None else (f'http_{status}' if status is not None else None)
 
 
 class AriClient:
@@ -60,15 +65,18 @@ class AriClient:
         except urllib.error.HTTPError as error:
             raise AriError(f'{what} failed with HTTP {error.code}', error.code) from None
         except (urllib.error.URLError, OSError, TimeoutError, http.client.HTTPException) as error:
-            raise AriError(f'{what} failed: {type(error).__name__}') from None
+            # URLError wraps the socket error; its class is the useful part.
+            cause = getattr(error, 'reason', None) if isinstance(error, urllib.error.URLError) else None
+            name = type(cause).__name__ if isinstance(cause, BaseException) else type(error).__name__
+            raise AriError(f'{what} failed: {name}', reason=name) from None
         if len(body) > MAX_BODY:
-            raise AriError(f'{what} returned more than {MAX_BODY} bytes')
+            raise AriError(f'{what} returned more than {MAX_BODY} bytes', reason='too_large')
         if not body.strip():
             return None
         try:
             return json.loads(body)
         except (ValueError, RecursionError):
-            raise AriError(f'{what} returned a body that is not JSON') from None
+            raise AriError(f'{what} returned a body that is not JSON', reason='not_json') from None
 
     # -- the calls the tap uses ------------------------------------------------------
 
@@ -86,9 +94,9 @@ class AriClient:
     def create_bridge(self, name=''):
         return self._request('POST', 'bridges', {'type': 'mixing', 'name': name})
 
-    def add_to_bridge(self, bridge_id, channel_ids):
+    def add_to_bridge(self, bridge_id, channel_ids, *, timeout=None):
         return self._request('POST', f'bridges/{_id(bridge_id)}/addChannel',
-                             {'channel': ','.join(_id(c) for c in channel_ids)})
+                             {'channel': ','.join(_id(c) for c in channel_ids)}, timeout=timeout)
 
     def hangup(self, channel_id):
         return self._request('DELETE', f'channels/{_id(channel_id)}', timeout=CLEANUP_TIMEOUT_S)

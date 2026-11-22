@@ -547,6 +547,24 @@ and about 50,000 original clips, excluding codec copies.
   - **Not done:** a switch that applies without a live restart (the restart ends open
     calls `monitor_lost`), key rotation, snippet backup testing, and FR-U5 playback in
     the stacks (the API runs without `--auth on`).
+- **22 Nov (attempt 8), 11.1 load and soak in the Compose lab, and a tap defect (partial).**
+  - **What:** Claude-authored lab case
+    `test_concurrent_calls_over_repeated_rounds_lose_no_window_and_do_not_grow_live`
+    (rounds of concurrent 55 s SIPp calls; `AVA_SOAK_ROUNDS` default 3, `AVA_SOAK_CALLS`
+    default 4). The tap's set-up failure now names its step and reason
+    (`AriError.reason`, `TapApp.last_failure`, `last_stage`/`last_reason` on live's
+    `tap_failure` line). A bridge join refused with 422 is retried for up to 0.2 s
+    (`ava_live_tap_events_total{kind="join_retries"}`). Runbook R13 updated.
+  - **Measured (this laptop, untrained export):** 10 rounds × 4 calls passed: 960 scored
+    windows stored = the scorer's counts, every call `bye`, no `stream.gap`, nothing left
+    in Asterisk, threads 19 and fds 10 after every round, memory +1.1 MB after round 1.
+    One earlier run showed a one-off +26.6 MB step, then flat.
+  - **Defect:** 1 of 12 and 1 of 28 concurrent calls were not tapped in two runs before
+    the fix (the calls went on). Diagnosed as `snoop_join` `http_422` ("Channel not in
+    Stasis application", ARI Bridges reference). The retry has unit tests, but no 422
+    occurred in the final run, so it has not been seen working on the stack.
+  - **Review:** two independent conditional passes; findings fixed (memory and thread
+    bounds, strict metric reads, cleanup hang on Windows, retry timeout cap, tests).
 - **17 Nov daily run (details in `daily-runs/2026-11-17.md`).** FR-O6 per-stage latency
   for the live loop (7.2/8.1): `ava_live_stage_seconds{stage}` with `queue_wait`,
   `batch_wait`, `apply` (scorer and hub publish) and `window_to_result` (offer to
