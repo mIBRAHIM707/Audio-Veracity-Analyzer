@@ -584,6 +584,31 @@ and about 50,000 original clips, excluding codec copies.
     the kill alone), M2 (open rows were not asserted), and L1-L6 (supersede ordering
     before the database restart, slow-restart guard, sweep/tap counters, registry
     counters, seq order) were fixed and re-run.
+- **22 Nov (attempt 10), 11.QA acceptance separation (complete).**
+  - **What:** `docs/qa/acceptance-separation.md` classifies every PRD §7 objective (11),
+    every §6.1/6.2/6.3/6.5/6.6 item (29) and every open backlog box. A criterion is
+    `met`, `software-gap`, `decision`, `unmeasured` (box A1 and the trained INT8 model),
+    `data-dependent` or `human`, taking the first that applies. The CI check
+    `scripts/check_acceptance_separation.py` keeps the rows aligned with the PRD and
+    the backlog.
+  - **Result:** 4 met, 14 software-gap, 1 decision, 6 unmeasured, 11 data-dependent and
+    4 human. The data-free software left is mainly TLS between the dashboard and the
+    API, k3s DNS egress, an image credential check, audit rows for setting reloads, a
+    bootstrap interval for EER differences, FR-D5, monitoring on k3s, batched file jobs,
+    a per-worker memory measurement, browser-side event latency, a live-lab campaign
+    driver, MLflow and 9.QA.
+  - **Gap found and fixed:** PRD §6.6 viewports had no test. New Claude-authored
+    Playwright cases `tests/browser/dashboard-viewport.spec.cjs` (VP00 self-check;
+    VP01-VP03 at 1366x768 and 1920x1080: no sideways scroll, no clipped or off-width
+    element, alert banner and feed on the first screen) passed 7/7 locally (the
+    `dashboard` project is not in CI).
+  - **Measured:** unit-suite line coverage (coverage.py 7.10.7, full API/backend
+    packages, Windows, 98 skips) is 95% for `services/tap`, `services/scorer` and
+    `services/api` together (PRD §6.5 asks for ≥ 70%). It is not gated in CI.
+  - **Review:** independent conditional pass. M1-M6 (two overclaimed `met` rows, four
+    statuses hiding data-free work) and L1-L9 were fixed. Stale notes were corrected:
+    `deploy/k8s/README.md` (TLS no longer waits on authentication) and
+    `services/live/README.md` (the reload audit is software; config mounts exist).
 - **17 Nov daily run (details in `daily-runs/2026-11-17.md`).** FR-O6 per-stage latency
   for the live loop (7.2/8.1): `ava_live_stage_seconds{stage}` with `queue_wait`,
   `batch_wait`, `apply` (scorer and hub publish) and `window_to_result` (offer to

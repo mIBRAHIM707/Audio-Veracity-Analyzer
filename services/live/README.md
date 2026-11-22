@@ -548,11 +548,14 @@ Limits:
   start-up; editing only them reports `unchanged`.
 - A poll in the pump thread's final turn at shutdown can apply a reload whose log line
   is lost; the stopped record's counts still show it.
-- Open for a human/PRD (review): reloads are not written to the PRD §6.3 `audit_log`
-  (`system` actor) even with a database; `call.started` does not carry the config
-  version, so an alert cannot be tied to its thresholds; FR-A9 lists hop as reloadable,
-  here it needs a restart.
-- Compose and k3s do not pass a scoring config yet.
+- Not built yet: reloads are not written to the PRD §6.3 `audit_log`. The PRD settles
+  the case (file-only settings are audited with `actor=system`), so this is software
+  work, not an open decision (backlog 11.QA, `docs/qa/acceptance-separation.md` row
+  6.3.5).
+- Open for a human/PRD (review): `call.started` does not carry the config version, so
+  an alert cannot be tied to its thresholds; FR-A9 lists hop as reloadable, here it
+  needs a restart.
+- Compose and k3s mount the scoring config with the reload on (since 20 November).
 
 Tests (Claude-authored, 20 Nov): `tests/unit/test_live_config_reload.py`, 21 cases
 (incl. the caller-direction refusal and a running call keeping its `min_windows`). A

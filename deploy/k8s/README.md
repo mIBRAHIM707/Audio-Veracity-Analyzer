@@ -14,8 +14,8 @@ development stack; these manifests are the deployment form the PRD asks for.
 - `lab/`: overlay for the laboratory. Adds the Asterisk lab PBX in namespace
   `ava-lab-pbx` and points live's ARI URL and its PBX policy at it.
 
-Not here yet: an Ingress with TLS for the dashboard (the API has no authentication;
-publication waits for that decision), Prometheus and Grafana (Compose `monitoring`
+Not here yet: an Ingress with TLS for the dashboard (local accounts exist since
+19 November, `--auth`, so this no longer waits on an authentication decision), Prometheus and Grafana (Compose `monitoring`
 profile only), SIPREC and the webhook (P2), and a registry (the AVA images are local
 builds imported into the node).
 

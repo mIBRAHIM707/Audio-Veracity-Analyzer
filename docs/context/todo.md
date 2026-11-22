@@ -148,9 +148,15 @@ Human: whether the key may sit on the same host as the snippets, and a rotation 
 22 Nov (attempts 8-9): no data change. Compose lab load/soak and recovery under load
 (concurrent real calls through a live SIGKILL and PostgreSQL/Redis restarts); a tap
 bridge-join defect found and fixed in attempt 8.
+22 Nov (attempt 10): no data change. Backlog 11.QA done: `docs/qa/acceptance-separation.md`
+says, for every PRD §7 objective, §6 item and open backlog box, whether the software is
+finished or what holds it (data, box A1, a decision or a person). Dashboard tested at
+1366x768 and 1920x1080; unit coverage of tap, scorer and API measured at 95%.
 
 Human decisions:
-- Should reloads be written to the audit log?
+- Should reloads be written to the audit log? (11.QA review: PRD §6.3 already says
+  file-only settings are audited with `actor=system`, so this is now treated as
+  software work; confirm or overrule.)
 - Should calls record which settings version they used?
 - Should hop stay restart-only (FR-A9 lists it as reloadable)?
 - Live windows ignore `hop_s`; it is fixed at 2 s.

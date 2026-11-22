@@ -8,3 +8,6 @@ pyyaml==6.0.3
 # cyclonedx-python-lib Apache-2.0; the json-validation extra adds jsonschema (MIT) and its
 # format checkers (MIT/BSD/Apache/MPL-2.0). Offline: the schemas ship in the wheel.
 cyclonedx-python-lib[json-validation]==11.12.0
+# Measures unit-test line coverage for PRD §6.5 (docs/qa/acceptance-separation.md row
+# 6.5.2); measurement only, nothing imports it. coverage.py, Apache-2.0.
+coverage==7.10.7

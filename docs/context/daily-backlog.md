@@ -814,7 +814,21 @@ items needing that data are listed at the end and stay out of the queue.
   value, log event, readiness reason, panel, path and test exists; every live readiness
   reason and warning/error log event has a runbook. Remaining: the recorded BO-4 video
   (human); then 11.2 can close.
-- [ ] 11.QA Separate complete software from data-dependent/unmeasured acceptance.
+- [x] 11.QA Separate complete software from data-dependent/unmeasured acceptance.
+  Evidence (22 Nov, attempt 10): `docs/qa/acceptance-separation.md`, one row for every
+  PRD §7 objective (11), every §6.1/6.2/6.3/6.5/6.6 item (29) and every open backlog box,
+  each with a status (met, software-gap, decision, unmeasured, data-dependent, human;
+  first that applies) or the holds keeping a box open. Result: 4 met, 14 software-gap,
+  1 decision, 6 unmeasured, 11 data-dependent, 4 human. CI check
+  `scripts/check_acceptance_separation.py` with `tests/unit/test_acceptance_separation.py`
+  (Claude-authored). Gap found and fixed in the same change: PRD §6.6 viewports were
+  untested; `tests/browser/dashboard-viewport.spec.cjs` (Claude-authored, VP00-VP03) at
+  1366x768 and 1920x1080. Unit line coverage of `services/tap`, `scorer` and `api`
+  measured at 95% (coverage.py 7.10.7 pinned in `requirements-test.txt`).
+  Independent review conditional pass: M1-M6 (two `met` overclaims, four statuses hiding
+  data-free work) and L1-L9 fixed; stale notes in `services/live/README.md` and
+  `deploy/k8s/README.md` corrected. Not autonomous: everything listed as data-dependent,
+  unmeasured or human there.
 
 Not autonomous acceptance: full representative model training, final calibration/
 accuracy, native listening/intelligibility decisions, participant recruitment,
