@@ -1,6 +1,6 @@
 import { Fragment, useCallback, useEffect, useRef, useState } from 'react';
 import type { FormEvent, ReactNode } from 'react';
-import { ApiError } from './api';
+import { ApiError, SERVICE_ANSWERED_EVENT } from './api';
 import { SESSION_CHECK_EVENT, SESSION_ENDED_EVENT, checkLoginForm, fetchSession, login, logout,
          recheckDelayMs } from './auth';
 import type { Session } from './auth';
@@ -13,7 +13,8 @@ import { SessionContext } from './session';
 //
 // When the session is re-checked (review H1/M2): at once when a page gets a 401 or the
 // live socket closes, when the tab regains focus, at the session's absolute end, and on
-// a timer just after the server's idle limit. Nothing polls more often, so these checks
+// a timer just after the server's idle limit; and, only after a failed re-check, on a later
+// API answer a page gets (at most one every 5 s). Nothing polls more often, so these checks
 // never keep an idle session alive. (An open live board's socket is re-checked by the
 // server every minute, which does count as activity: a watched board stays signed in.)
 
@@ -23,6 +24,8 @@ type GateState =
   | { phase: 'ready'; session: Session; notice: string | null; unverified: string | null };
 
 const ENDED = 'Your session has ended. Sign in again.';
+/** Least time between two session checks triggered by API answers (review M2). */
+const ANSWER_RECHECK_MIN_MS = 5000;
 
 /** Same signed-in session (the time left, `endsInMs`, differs at every check). */
 function sameUser(a: Session, b: Session): boolean {
@@ -139,6 +142,40 @@ export function AuthGate({ children }: { children: ReactNode }) {
     for (const name of events) window.addEventListener(name, onEvent);
     return () => { for (const name of events) window.removeEventListener(name, onEvent); };
   }, [kind, check]);
+
+  // While a re-check failed (`unverified`; the banner below when signed in), an API answer
+  // a page gets suggests the service is back: re-check then, not only on focus or the
+  // idle timer (defect found by AR01, 22 Nov 2026). The session check itself does not send
+  // this event, so it cannot loop. A burst of answers (a reconnect re-reads every call)
+  // starts one check, not one each (review M2): one answer-triggered check at a time and
+  // at most one every ANSWER_RECHECK_MIN_MS, so a session check that keeps failing while
+  // other reads succeed adds a bounded load.
+  const unverified = state.phase === 'ready' && state.unverified !== null;
+  const answerCheck = useRef<{ inFlight: boolean; lastMs: number }>({ inFlight: false, lastMs: -Infinity });
+  // An answer dropped by that limit is not lost (re-review Low): one deferred check runs
+  // when the limit allows, so a quiet page (an idle board after its snapshot) still clears
+  // the warning.
+  useEffect(() => {
+    if (!unverified) return undefined;
+    const guard = answerCheck.current;
+    let deferred: number | null = null;
+    const onAnswer = () => {
+      const now = performance.now();
+      const wait = guard.inFlight ? ANSWER_RECHECK_MIN_MS : guard.lastMs + ANSWER_RECHECK_MIN_MS - now;
+      if (wait > 0) {
+        if (deferred === null) deferred = window.setTimeout(() => { deferred = null; onAnswer(); }, wait);
+        return;
+      }
+      guard.inFlight = true;
+      guard.lastMs = now;
+      void check().finally(() => { guard.inFlight = false; });
+    };
+    window.addEventListener(SERVICE_ANSWERED_EVENT, onAnswer);
+    return () => {
+      window.removeEventListener(SERVICE_ANSWERED_EVENT, onAnswer);
+      if (deferred !== null) window.clearTimeout(deferred);
+    };
+  }, [unverified, check]);
 
   // Timers while signed in: just after the idle limit (re-check), and at the absolute
   // end (the pages go at once, whatever the server answers then). The end is timed from

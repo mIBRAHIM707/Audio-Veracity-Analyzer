@@ -555,6 +555,15 @@ items needing that data are listed at the end and stay out of the queue.
   continuing call showed as "Cleared". Fixed in `applySnapshot`, with pure case LS14.
   Remaining: the dashboard project is not in CI (a human workflow edit); sign-in,
   feedback and snippet pages across a restart; Astra-style catalogue review.
+  22 Nov: signed-in pages across a real restart (`tests/browser/dashboard-auth-recovery.spec.cjs`,
+  Claude-authored, PostgreSQL 16; the restarted server reuses the schema, snippet folder
+  and key). AR01 live board keeps its session through a crash; AR02 feedback and snippet
+  requests to the dead API are reported and never claimed or retried, then work after the
+  restart with exactly one label and one playback audited; AR03 a session revoked on the
+  restarted API returns the board to sign-in. AR01 found a defect: the "session could not
+  be verified" warning stayed on a reconnected board until focus; fixed in `AuthGate.tsx`
+  (re-check on the next 2xx while the warning shows). Remaining: CI (human), catalogue
+  review.
 
 ## 8 — CPU capacity (FR-I9/I10)
 - [ ] 8.1 Warm-up, batching, thread limits, live/batch priority and capacity refusal.

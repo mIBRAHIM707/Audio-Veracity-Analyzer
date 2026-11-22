@@ -295,6 +295,74 @@ test.describe('AN without a database', () => {
     await expect(page.getByTestId('session-unverified')).toHaveCount(0);
   });
 
+  // Claude-authored, 22 Nov 2026 (7.QA review M1/M2 of the AR01 fix): no focus event is
+  // sent after the warning appears, so only a page's 2xx can clear it.
+  test('AN06 [mock] after a failed re-check, a later 2xx re-checks once and clears the warning; bursts and verified sessions send no extra checks', async ({ page }) => {
+    let me = { status: 200, body: USER };
+    let meCalls = 0;
+    await page.route('**/v1/auth/me', route => {
+      meCalls += 1;
+      return route.fulfill({ status: me.status, contentType: 'application/json', body: JSON.stringify(me.body) });
+    });
+    const json = body => route => route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(body) });
+    await page.route('**/v1/history/calls**', json({ calls: [], next_before: null }));
+    await page.route('**/v1/alerts?**', json({ alerts: [], next_cursor: null }));
+    await page.goto(server.base);
+    await expect(page.getByTestId('account-user')).toHaveText('ana');
+
+    // Verified: 2xx answers send no session check.
+    await page.getByRole('link', { name: 'History' }).click();
+    await expect(page.getByTestId('history-calls')).toBeVisible();
+    await expect(page.getByTestId('alerts-status')).not.toContainText('Loading');
+    await page.waitForTimeout(500);
+    const verifiedCalls = meCalls;
+    await page.getByRole('button', { name: 'Refresh' }).click();
+    await page.getByRole('button', { name: 'Search' }).click();
+    await page.waitForTimeout(500);
+    expect(meCalls).toBe(verifiedCalls);
+
+    // A failed re-check shows the warning.
+    me = { status: 503, body: { detail: 'Account store unavailable (unavailable)' } };
+    await page.evaluate(() => window.dispatchEvent(new Event('focus')));
+    await expect(page.getByTestId('session-unverified')).toContainText('The session could not be verified');
+    const failedCalls = meCalls;
+
+    // The service is back: two 2xx in one click (calls and alerts) start exactly one check.
+    me = { status: 200, body: USER };
+    await page.getByRole('button', { name: 'Refresh' }).click();
+    await page.getByRole('button', { name: 'Search' }).click();
+    await expect(page.getByTestId('session-unverified')).toHaveCount(0);
+    await page.waitForTimeout(500);
+    expect(meCalls).toBe(failedCalls + 1);
+    // Verified again: further 2xx send nothing more.
+    await page.getByRole('button', { name: 'Refresh' }).click();
+    await page.waitForTimeout(500);
+    expect(meCalls).toBe(failedCalls + 1);
+
+    // A session check that fails while reads succeed (re-review Nit 1: past the earlier
+    // check's 5 s limit first, so this phase runs its own limit). Four refreshes start
+    // exactly one check, which fails; the warning stays.
+    me = { status: 503, body: { detail: 'Account store unavailable (unavailable)' } };
+    await page.evaluate(() => window.dispatchEvent(new Event('focus')));
+    await expect(page.getByTestId('session-unverified')).toBeVisible();
+    await page.waitForTimeout(5500);
+    const stuckCalls = meCalls;
+    for (let i = 0; i < 4; i += 1) {
+      await page.getByRole('button', { name: 'Refresh' }).click();
+      await page.waitForTimeout(150);
+    }
+    await page.waitForTimeout(500);
+    expect(meCalls - stuckCalls).toBe(1);
+    await expect(page.getByTestId('session-unverified')).toBeVisible(); // still failing: still said
+    // The store recovers and the page goes quiet: the answers dropped by the limit leave
+    // one deferred check, which clears the warning with no focus and no further request.
+    me = { status: 200, body: USER };
+    await expect(page.getByTestId('session-unverified')).toHaveCount(0, { timeout: 8000 });
+    expect(meCalls - stuckCalls).toBe(2);
+    await page.waitForTimeout(1000);
+    expect(meCalls - stuckCalls).toBe(2); // and nothing after it
+  });
+
   test('AN04 [mock] review M1: a session check answered after sign-in does not sign the user out again', async ({ page }) => {
     let calls = 0;
     await page.route('**/v1/auth/me', async route => {

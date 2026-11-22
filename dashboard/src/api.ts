@@ -59,8 +59,17 @@ export const SESSION_ENDED_EVENT = 'ava:session-ended';
  * (a refused handshake reaches the browser as code 1006, not as a 401). */
 export const SESSION_CHECK_EVENT = 'ava:session-check';
 
+/** Window event a page sends when the API answered it with a 2xx. While the sign-in gate
+ * could not verify the session (the service was unreachable), it re-checks at once, so
+ * its "may be out of date" banner goes as soon as the service is back (defect found by
+ * AR01, 22 Nov 2026: the banner stayed on a reconnected board until the tab got focus). */
+export const SERVICE_ANSWERED_EVENT = 'ava:service-answered';
+
+/** Every page reports each API answer's status here: 401 means the session ended, a 2xx
+ * that the service is reachable again. */
 export function reportSessionEnded(status: number): void {
   if (status === 401) window.dispatchEvent(new Event(SESSION_ENDED_EVENT));
+  else if (status >= 200 && status < 300) window.dispatchEvent(new Event(SERVICE_ANSWERED_EVENT));
 }
 
 export function requestSessionCheck(): void {

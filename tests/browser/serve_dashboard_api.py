@@ -54,6 +54,18 @@ the system temp directory and a random in-memory AES-256-GCM key, and serves
 `age_s` seconds ago (answer: whether it was stored); `POST /snippet-tamper` with
 `{"alert_id"}` flips one byte of that snippet's ciphertext. The folder is deleted at
 `/drop-schema` and at exit. No real audio is involved.
+
+Restarts (backlog 7.QA, Claude-authored 22 November 2026): a spec that kills this server
+and starts another on the same port can keep the stored state. `--schema NAME` (with
+`--history-dsn-env`) uses that schema instead of a random one: it is created if missing,
+the migrations are applied (a no-op when current), and the test users are added only if
+absent, so the accounts, sessions, audit rows, calls and feedback of the killed process
+are what the new one reads. `--snippet-dir DIR` with `--snippet-key-file FILE` (with
+`--snippets`) uses that folder and a key kept in FILE (32 random bytes written on first
+use, read afterwards) instead of a temp folder and an in-memory key; nothing is deleted at
+exit, the spec owns both. The key file is published with a hard link, so its folder must
+be on a file system that has them (the spec uses the system temp folder). Test support
+only.
 """
 import argparse
 import atexit
@@ -62,6 +74,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
 import os
 from pathlib import Path
+import re
 import shutil
 import tempfile
 import threading
@@ -79,18 +92,42 @@ MAX_CONTROL_BODY = 64 * 1024
 AUTH_TEST_PASSWORD = 'browser-test-password-2026'  # fictional, test only
 AUTH_TEST_USERS = (('ana', 'analyst'), ('boss', 'admin'))
 SNIPPET_TEST_TTL_S = 3600.0
+SCHEMA_NAME = re.compile(r'ava_browser_[a-z0-9_]{1,40}')
 
 
 class SnippetFixture:
     """A temp retention folder with the production AES-256-GCM store and reader."""
 
-    def __init__(self):
+    def __init__(self, root=None, key_file=None):
         from services.retention.playback import SnippetReader
         from services.retention.snippets import AesGcmSealer
-        self.root = Path(tempfile.mkdtemp(prefix='ava-browser-snippets-'))
-        self._key = os.urandom(32)
+        if (root is None) != (key_file is None):
+            raise ValueError('a snippet folder and a key file go together')
+        if root is None:
+            self.root = Path(tempfile.mkdtemp(prefix='ava-browser-snippets-'))
+            self._key = os.urandom(32)
+            atexit.register(self.drop)
+        else:  # kept across a restart: the spec owns the folder and the key file
+            self.root = Path(root)
+            self.root.mkdir(parents=True, exist_ok=True)
+            self._key = self._load_key(Path(key_file))
         self.reader = SnippetReader(self.root, AesGcmSealer(self._key), ttl_s=SNIPPET_TEST_TTL_S, clock=time.time)
-        atexit.register(self.drop)
+
+    @staticmethod
+    def _load_key(path):
+        if not path.exists():  # first process: a new random key, published whole (review L5)
+            temp = path.with_name(f'{path.name}.{os.getpid()}.tmp')
+            temp.write_bytes(os.urandom(32))
+            try:
+                os.link(temp, path)  # fails if another process published first: its key wins
+            except FileExistsError:
+                pass
+            finally:
+                temp.unlink()
+        key = path.read_bytes()
+        if len(key) != 32:
+            raise ValueError(f'{path} does not hold a 32-byte key')
+        return key
 
     def put(self, body):
         from services.retention.snippets import AesGcmSealer, SnippetStore
@@ -120,6 +157,8 @@ def auth_fixture(fixture):
     passwords = Argon2Passwords(time_cost=1, memory_kib=8192, parallelism=1)
     store = PostgresAuthStore(fixture.connect)
     for username, role in AUTH_TEST_USERS:
+        if store.find_user(username) is not None:  # a reused schema (--schema) keeps its accounts
+            continue
         store.add_user(username, passwords.hash(AUTH_TEST_PASSWORD), role, actor='system:browser-test')
     return Authenticator(store, passwords)
 
@@ -140,7 +179,7 @@ class HistoryFixture:
     """A fresh schema in a disposable PostgreSQL database, written by the production event
     store and read by the production history reader (see the module docstring)."""
 
-    def __init__(self, dsn):
+    def __init__(self, dsn, schema=None):
         import uuid
 
         import psycopg
@@ -150,16 +189,21 @@ class HistoryFixture:
         from services.store.history import PostgresCallHistory
 
         self._psycopg, self._dsn = psycopg, dsn
-        self.schema = f'ava_browser_{uuid.uuid4().hex[:12]}'
-        with psycopg.connect(dsn, autocommit=True) as admin:
-            admin.execute(f'CREATE SCHEMA {self.schema}')
+        if schema is not None and not SCHEMA_NAME.fullmatch(schema):
+            raise ValueError(f'--schema must match {SCHEMA_NAME.pattern}')
+        self.schema = schema or f'ava_browser_{uuid.uuid4().hex[:12]}'
+        with psycopg.connect(dsn, autocommit=True) as admin:  # the name is checked above: no injection
+            admin.execute(f'CREATE SCHEMA IF NOT EXISTS {self.schema}' if schema else f'CREATE SCHEMA {self.schema}')
         self._connections = []
         self._lock = threading.Lock()
         self.history = None
         try:
             migrate.apply_migrations(self.connect())
         except BaseException:
-            self.drop()  # never leave a half-made schema behind (review L7)
+            if schema is None:  # never leave a half-made schema behind (review L7) ...
+                self.drop()
+            else:  # ... but a reused one holds a killed process's state (22 Nov review L2)
+                self._close_connections()
             raise
         self.store = PostgresEventStore(self.connect)
         self.history = PostgresCallHistory(self.connect)
@@ -176,14 +220,17 @@ class HistoryFixture:
         with self._lock:  # one writer, as the live process
             return self.store.record(envelope)
 
-    def drop(self):
-        if self.history is not None:
-            self.history.close()
+    def _close_connections(self):
         for connection in self._connections:
             try:
                 connection.close()
             except Exception:
                 pass
+
+    def drop(self):
+        if self.history is not None:
+            self.history.close()
+        self._close_connections()
         with self._psycopg.connect(self._dsn, autocommit=True) as admin:
             admin.execute(f'DROP SCHEMA IF EXISTS {self.schema} CASCADE')
 
@@ -283,9 +330,18 @@ def main():
     parser.add_argument('--snippets', action='store_true',
                         help='FR-U5 snippet playback from a temp folder with a random key (needs --auth and '
                              'requirements-retention.txt)')
+    parser.add_argument('--schema', help='use (or create) this schema, keeping its rows across a restart '
+                        '(needs --history-dsn-env)')
+    parser.add_argument('--snippet-dir', help='keep snippets in this folder across a restart (needs --snippets '
+                        'and --snippet-key-file)')
+    parser.add_argument('--snippet-key-file', help='32-byte key file, written on first use (needs --snippet-dir)')
     args = parser.parse_args()
     if args.snippets and not args.auth:
         parser.error('--snippets needs --auth')
+    if args.schema and not args.history_dsn_env:
+        parser.error('--schema needs --history-dsn-env')
+    if (args.snippet_dir is None) != (args.snippet_key_file is None) or (args.snippet_dir and not args.snippets):
+        parser.error('--snippet-dir and --snippet-key-file go together, with --snippets')
     if args.history_dsn_env and not args.control_port:
         parser.error('--history-dsn-env needs --control-port')
     if args.auth and not args.history_dsn_env:
@@ -301,12 +357,12 @@ def main():
         dsn = os.environ.get(args.history_dsn_env)
         if not dsn:
             parser.error(f'environment variable {args.history_dsn_env} is not set')
-        fixture = HistoryFixture(dsn)
+        fixture = HistoryFixture(dsn, args.schema)
     auth = auth_fixture(fixture) if args.auth else None
     if args.ws_session_recheck_s is not None:
         from services.api import app as app_module
         app_module.SESSION_RECHECK_S = args.ws_session_recheck_s  # read at each check; test support only
-    snippets = SnippetFixture() if args.snippets else None
+    snippets = SnippetFixture(args.snippet_dir, args.snippet_key_file) if args.snippets else None
     if args.control_port:
         hub = EventHub()
         control_server(hub, args.control_port, fixture, auth, snippets)

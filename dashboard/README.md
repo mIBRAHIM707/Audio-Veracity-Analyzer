@@ -176,6 +176,21 @@ CI, so they have never run on Linux. LS14 does run in CI. RC02 gives each proces
 schema, so it proves the page reads again after a restart, not that the history
 survives one.
 
+Signed-in pages across a restart (Claude-authored, 22 Nov 2026, backlog 7.QA):
+`tests/browser/dashboard-auth-recovery.spec.cjs`, PostgreSQL only (skipped without
+`AVA_TEST_POSTGRES_DSN`). The restarted server reuses the killed one's schema, snippet
+folder and key (`serve_dashboard_api.py --schema`, `--snippet-dir`,
+`--snippet-key-file`), so what survives is what the database and folder hold. AR01: a
+signed-in live board through a crash shows the disconnection and the "could not be
+verified" warning but never the sign-in form; after the restart it reconnects under the
+same session (no `auth.*` audit row), and the warning goes. AR02: a label sent to the dead
+API says its outcome is unknown and is sent once; snippet playback and Refresh say the
+service could not be reached; after the restart the labels read back show none, a new
+label is stored, the snippet written before the crash plays with the same key, and the
+audit holds exactly one label and one playback. AR03: an account disabled on the
+restarted API (sessions revoked in PostgreSQL) sends the reconnecting board to sign-in.
+AR01 failed before the warning fix above.
+
 Found while building it: `requirements-api.txt` had no WebSocket library, so a real
 uvicorn refused every `WS /v1/events` upgrade (earlier tests used the in-process
 TestClient). `websockets==17.4` is now pinned there.
@@ -284,7 +299,16 @@ as a decision); so does a board whose socket keeps failing to connect, since eac
 asks for a session check. A server without accounts is asked again only after a 401 (it
 was restarted with accounts on). A failed first check shows its reason and Try again, never the pages; a
 failed re-check keeps the page with a "could not be verified" warning (the same store
-failure refuses every data read). Refusals never say whether a name exists. A different
+failure refuses every data read). While that warning is shown, the next 2xx answer any
+page gets (`SERVICE_ANSWERED_EVENT` from `reportSessionEnded`) triggers one more check, so
+the warning goes as soon as the service is back; before 22 Nov it stayed on a reconnected
+live board until the tab regained focus (found by AR01, below). A burst of answers (a
+reconnect re-reads every call) starts one check: one answer-triggered check at a time and
+at most one every 5 s, so a session check that keeps failing while other reads succeed
+adds at most one request per 5 s. An answer dropped by that limit leaves one deferred
+check for when the limit allows, so a page that then goes quiet (an idle board after its
+snapshot) still clears the warning. Once a check succeeds the listener is removed (AN06,
+[mock], no database). Refusals never say whether a name exists. A different
 user signing in from another tab remounts the pages. There is no settings page yet
 (admin-only routes are not built), so both roles see the same pages.
 

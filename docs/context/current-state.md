@@ -440,7 +440,22 @@ and about 50,000 original clips, excluding codec copies.
     reconnecting". The mark is sticky: only `alert.cleared` or the call ending changes
     it (pure LS14, which runs in CI).
   - **Not done:** the `dashboard` Playwright project is not in CI. Sign-in, feedback and
-    snippet pages have not been tested across a restart.
+    snippet pages have not been tested across a restart (done 22 Nov, below).
+- **22 Nov, 7.QA signed-in pages across a real API restart (partial).**
+  - **What:** Claude-authored `tests/browser/dashboard-auth-recovery.spec.cjs`, on
+    PostgreSQL 16. The restarted test server reuses the killed one's schema, snippet
+    folder and key (`serve_dashboard_api.py --schema`, `--snippet-dir`,
+    `--snippet-key-file`). AR01: a signed-in live board keeps its session through the
+    crash and reconnects with no new sign-in and no `auth.*` audit row. AR02: a label
+    sent to the dead API says its outcome is unknown, is sent once, and is not stored;
+    after the restart a label is stored and the snippet written before the crash plays,
+    with exactly one label and one playback audited. AR03: a session revoked on the
+    restarted API sends the board to sign-in.
+  - **Defect found and fixed:** the "session could not be verified ... may be out of
+    date" warning stayed on a reconnected live board until the tab got focus (up to the
+    30-min idle check). While it shows, the gate now re-checks on the next 2xx answer
+    any page gets (`SERVICE_ANSWERED_EVENT`, `dashboard/src/AuthGate.tsx`).
+  - **Not done:** the `dashboard` project is still not in CI (human workflow edit).
 - **17 Nov daily run (details in `daily-runs/2026-11-17.md`).** FR-O6 per-stage latency
   for the live loop (7.2/8.1): `ava_live_stage_seconds{stage}` with `queue_wait`,
   `batch_wait`, `apply` (scorer and hub publish) and `window_to_result` (offer to

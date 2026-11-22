@@ -122,6 +122,9 @@ Human: add a CI job that builds both images and runs it, and install
 under the live board and the history page, and check that the dashboard loads nothing
 from other origins (7.QA). They found a defect, now fixed: after an API restart, an
 alert that was never cleared could show as "Cleared" on the live board.
+22 Nov: no data change. Browser tests now restart the real API under signed-in pages
+(sign-in, feedback, snippet playback). They found a defect, now fixed: after the API came
+back, the "session could not be verified" warning stayed until the tab got focus.
 
 Human decisions:
 - Should reloads be written to the audit log?
