@@ -444,22 +444,25 @@ even subscribe to the hub. With
   once at start. The loop thread never writes to disk or encrypts.
 - `--retention off --retention-dir DIR` runs only that cleanup thread, which deletes
   every snippet in DIR (FR-O5 "switching off purges ... within one cleanup run"). No key
-  is needed. Cleanup only ever touches names the store creates: `<sha256>.snip`,
+  is needed. Since 22 Nov a `--retention-key-file` given with an explicit
+  `--retention off` is accepted and never opened, so the Compose and k3s stacks pass the same flags either way and change
+  only `--retention` (`deploy/compose/README.md`, "Alert snippets"). Cleanup only ever touches names the store creates: `<sha256>.snip`,
   `snip-*.tmp` and `<sha256>.snip.tmp`. So a mistyped folder loses no other file, and
   an unreadable file with a snippet name is still deleted (fail closed).
 - Open FR-O5 decisions (for the PRD; not decided here):
   - Turning retention off by simply dropping the flags (no `--retention-dir`) purges
-    nothing and stops TTL deletion, so the operator must pass the folder again. A fixed
-    snippet folder in deployment configuration, or a refusal while an earlier run's
-    folder exists, would close this.
+    nothing and stops TTL deletion, so the operator must pass the folder again. The
+    Compose and k3s stacks (22 Nov) close this with a fixed snippet folder, always
+    passed; a hand-run command line still can drop it.
   - Snippets are deleted only while the service runs, so a service stopped for longer
     than the TTL keeps them past it.
   - The snippet ends when the alert is seen, a moment after the window that raised it.
     Under a scoring backlog the evidence can fall partly outside the 30 s.
 - Start-up refusals: `--retention on` without both paths, a key file that is not 32
   raw bytes (or is group/other-readable on POSIX), a folder inside the repository, a
-  missing `cryptography` (`requirements-retention.txt`), or `--retention-key-file`
-  without `--retention on`. No path or key appears in any record.
+  missing `cryptography` (`requirements-retention.txt`), or a `--retention-key-file`
+  without an explicit `--retention` (it suggests `on` was meant; until 22 Nov an
+  explicit `off` with a key file was refused too). No path or key appears in any record.
 - Limits:
   - one ring per admitted call (480 kB);
   - at most 16 queued snippets (more alerts count `queue_full`);
@@ -468,7 +471,8 @@ even subscribe to the hub. With
   Counts are exported as `ava_live_snippets_total{outcome}` and
   `ava_live_snippets_queued`, with the pump's alive/stuck/faults, and appear in the
   `stopped` record. Faults in the recorder are counted in the sink's `recorder_errors`.
-  Key provisioning and rotation remain open. FR-U5 playback (19 Nov) is served by the
+  Key provisioning: the Compose and k3s stacks create the key once with
+  `services/retention/keygen.py` (22 Nov); rotation remains open. FR-U5 playback (19 Nov) is served by the
   API from the same folder and key (`services/api/README.md`, "Snippet playback").
 
 Evidence (Claude-authored, 17 Nov):

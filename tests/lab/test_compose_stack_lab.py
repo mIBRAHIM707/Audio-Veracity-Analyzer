@@ -47,6 +47,7 @@ inside the stack, and checks:
 The project and its volumes are removed afterwards.
 """
 import base64
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -169,6 +170,36 @@ READER_PROBE = textwrap.dedent(r'''
 # restore"; tests/unit/test_deployment_guide.py checks the guide gives the same ones):
 # empty the database, then restore the dump in one transaction.
 EMPTY_DATABASE_SQL = ('DROP DATABASE ava WITH (FORCE)', 'CREATE DATABASE ava OWNER ava')
+
+# Run inside the live container (python -c SCRIPT [ALERT_ID ...]), 22 Nov (FR-O5): the
+# snippet folder's file names, the folder's and key file's mode/owner, whether the key
+# exists and its size and SHA-256 (never the key), and for each alert ID its decrypted snippet's metadata, peak
+# sample and whether its first 200 samples appear in plaintext in any snippet file.
+SNIPPET_PROBE = textwrap.dedent(r'''
+    import hashlib, json, stat, sys
+    from pathlib import Path
+    folder, key = Path('/var/lib/ava/snippets'), Path('/var/lib/ava/retention-key/snippet.key')
+    where = folder.stat()
+    out = {'files': sorted(p.name for p in folder.iterdir()),
+           'folder_mode': oct(stat.S_IMODE(where.st_mode)), 'folder_uid': where.st_uid, 'key': key.exists(),
+           'snippets': {}}
+    if key.exists():
+        info = key.stat()
+        out.update({'key_mode': oct(stat.S_IMODE(info.st_mode)), 'key_uid': info.st_uid, 'key_size': info.st_size,
+                    'key_sha256': hashlib.sha256(key.read_bytes()).hexdigest()})
+    if len(sys.argv) > 1:
+        from services.retention.snippets import AesGcmSealer, open_snippet
+        sealer = AesGcmSealer.from_key_file(key)
+        raw = b''.join(p.read_bytes() for p in folder.iterdir())
+        for alert_id in sys.argv[1:]:
+            s = open_snippet(folder, alert_id, sealer)
+            pcm = s['pcm']
+            out['snippets'][alert_id] = {
+                'call_id': s['call_id'], 'direction': s['direction'], 'sample_rate': s['sample_rate'],
+                'samples': int(len(pcm)), 'peak': int(abs(pcm.astype('int32')).max()) if len(pcm) else 0,
+                'plaintext_in_file': pcm[:200].astype('<i2').tobytes() in raw}
+    print(json.dumps(out))
+''')
 
 EGRESS_PROBE = ('import socket,sys\n'
                 'try:\n socket.create_connection(("1.1.1.1", 443), timeout=3)\n'
@@ -875,6 +906,153 @@ class ComposeStackLabTests(unittest.TestCase):
         self.assertGreaterEqual(int(after[1].split('|')[2]), 1, 'the new call is scored again')
         print(f'\nobserved: refusals per bad change {observed}; a call completed while live refused; '
               f'rollback healthy in {back_s:.1f} s with {first["model_version"]}; second call stored {after[1]}')
+
+    def snippet_probe(self, *alert_ids):
+        """SNIPPET_PROBE inside live (as uid 10001)."""
+        return json.loads(self.compose('exec', '-T', 'live', 'python', '-c', SNIPPET_PROBE, *alert_ids).stdout)
+
+    def live_own_metrics(self):
+        """live's `/metrics`, read inside the live container (the API is not started)."""
+        script = ('import urllib.request,sys; sys.stdout.write(urllib.request.urlopen('
+                  f'"http://{self.live_metrics_ip}:9100/metrics", timeout=10).read().decode())')
+        values = {}
+        for line in self.compose('exec', '-T', 'live', 'python', '-c', script).stdout.splitlines():
+            if line and not line.startswith('#'):
+                key, _, value = line.rpartition(' ')
+                values[key] = float(value)
+        return values
+
+    def alert_ids(self):
+        """{call_id: [alert_id, ...]} from PostgreSQL."""
+        text = self.compose('exec', '-T', 'postgres', 'psql', '-U', 'ava', '-d', 'ava', '-tAc',
+                            "SELECT c.call_id || '|' || a.alert_id FROM alerts a JOIN calls c ON c.id = a.call_pk "
+                            'ORDER BY a.raised_at').stdout
+        found = {}
+        for line in text.split():
+            call_id, _, alert_id = line.partition('|')
+            found.setdefault(call_id, []).append(alert_id)
+        return found
+
+    def test_retention_on_stores_one_sealed_snippet_per_alert_and_off_purges_them(self):
+        """FR-O5 through the Compose wiring (Claude-authored, 22 Nov 2026; backlog 11.1;
+        PRD FR-O5 "default no raw audio stored ... one snippet per alert ID persisted at
+        alert.raised, AES-256-GCM at rest ... switching off purges existing snippets within
+        one cleanup run"). The scoring file sets tiny alert thresholds so the untrained
+        head's windows raise an alert: this is about storage plumbing, not detection.
+        - AVA_RETENTION unset: the key job does nothing (`skipped`, review M1), no key
+          exists, and live starts in purge mode.
+        - AVA_RETENTION=on and `up -d live`: the `retention-key` job creates the key (32 bytes, 0400, uid
+          10001) in its volume; live starts with `retention: on` and the TTL; a real call
+          raises alerts, and for each stored alert exactly one snippet file exists, named
+          by the SHA-256 of its alert ID, that decrypts with the key to the call's caller
+          audio at 8 kHz (not silence, at most 30 s), with no plaintext in the file.
+        - AVA_RETENTION=off and `up -d live`: the job skips, the key is unchanged; live starts in
+          purge mode and the folder is empty within one cleanup run (counted in its
+          metrics); another call raises an alert and no snippet is written.
+        Live alone (with PostgreSQL, Redis, Asterisk); the API is not needed."""
+        scoring = self.folder / 'scoring-alert'
+        scoring.mkdir()
+        document = json.loads((ROOT / 'deploy' / 'compose' / 'config' / 'scoring.json').read_text(encoding='utf-8'))
+        document['scoring']['min_windows'] = 1
+        document['scoring']['thresholds'] = {'suspicious_enter': 2e-6, 'suspicious_exit': 1e-6,
+                                             'alert_enter': 2e-6, 'alert_exit': 1e-6}
+        (scoring / 'scoring.json').write_text(json.dumps(document, indent=2), encoding='utf-8')
+        def key_job():
+            return [json.loads(line) for line in self.compose('logs', '--no-color', '--no-log-prefix',
+                                                              'retention-key').stdout.splitlines()
+                    if line.startswith('{')]
+        # The default (AVA_RETENTION unset): the job does nothing (review M1), no key.
+        self.set_env(AVA_RETENTION_TTL_DAYS='3', AVA_SCORING_CONFIG_DIR=scoring.as_posix())
+        self.compose('up', '-d', '--wait', '--wait-timeout', '300', 'live', 'asterisk', timeout=600)
+        self.wait_healthy('live', 120)
+        self.assertEqual(key_job()[-1], {'event': 'retention_key', 'result': 'skipped'})
+        [starting] = [r for r in self.live_records() if r.get('event') == 'starting']
+        self.assertEqual(starting['retention'], {'mode': 'purge', 'ttl_days': 3.0}, starting)
+        self.assertFalse(self.snippet_probe()['key'], 'off creates no key')
+
+        self.set_env(AVA_RETENTION='on')
+        self.compose('up', '-d', '--wait', '--wait-timeout', '300', 'live', timeout=600)
+        self.wait_healthy('live', 120)
+        self.assertEqual(key_job()[-1], {'event': 'retention_key', 'result': 'created'})
+        [starting] = [r for r in self.live_records() if r.get('event') == 'starting']
+        self.assertEqual(starting['retention'], {'mode': 'on', 'ttl_days': 3.0}, starting)
+        empty = self.snippet_probe()
+        self.assertEqual(empty['files'], [], 'nothing stored before an alert')
+        self.assertEqual((empty['key_mode'], empty['key_uid'], empty['key_size']), ('0o400', 10001, 32), empty)
+        self.assertEqual((empty['folder_mode'], empty['folder_uid']), ('0o700', 10001), empty)
+
+        def ended_rows(count, seconds=60):
+            rows, deadline = [], time.monotonic() + seconds
+            while time.monotonic() < deadline:
+                rows = self.call_rows()
+                if len(rows) >= count and all(r.split('|')[1] for r in rows):
+                    break
+                time.sleep(1)
+            return rows
+
+        code, output = self.place_call('ret')
+        self.assertEqual(code, 0, f'sipp: {output}')
+        rows = ended_rows(1)
+        self.assertEqual(len(rows), 1, rows)
+        call_id = rows[0].split('|')[0]
+        alerts = self.alert_ids().get(call_id, [])
+        self.assertGreaterEqual(len(alerts), 1, f'the tiny thresholds raised no alert: {rows}')
+        expected = sorted(hashlib.sha256(a.encode('utf-8')).hexdigest() + '.snip' for a in alerts)
+        deadline, stored = time.monotonic() + 60, empty
+        while time.monotonic() < deadline:
+            stored = self.snippet_probe()
+            if len(stored['files']) >= len(expected):
+                break
+            time.sleep(1)
+        self.assertEqual(stored['files'], expected, 'exactly one snippet per alert ID, nothing else')
+        opened = self.snippet_probe(*alerts)
+        for alert_id in alerts:
+            snippet = opened['snippets'][alert_id]
+            self.assertEqual((snippet['call_id'], snippet['direction'], snippet['sample_rate']),
+                             (call_id, 'caller', 8000), snippet)
+            self.assertLessEqual(snippet['samples'], 30 * 8000, snippet)
+            self.assertGreater(snippet['samples'], 0, snippet)
+            self.assertGreater(snippet['peak'], 0, 'caller audio, not silence')
+            self.assertFalse(snippet['plaintext_in_file'], 'audio is encrypted at rest')
+        on_metrics = self.live_own_metrics()
+        self.assertEqual(on_metrics['ava_live_snippets_total{outcome="written"}'], len(alerts), on_metrics)
+        self.assertEqual(on_metrics['ava_live_snippets_total{outcome="write_failed"}'], 0, on_metrics)
+
+        # Switch off: the same flags, only AVA_RETENTION changes; `up -d live` recreates live.
+        self.set_env(AVA_RETENTION='off')
+        self.compose('up', '-d', '--wait', '--wait-timeout', '300', 'live', timeout=600)
+        self.wait_healthy('live', 120)
+        self.assertEqual(key_job()[-1], {'event': 'retention_key', 'result': 'skipped'})
+        [starting] = [r for r in self.live_records() if r.get('event') == 'starting']
+        self.assertEqual(starting['retention'], {'mode': 'purge', 'ttl_days': 3.0}, starting)
+        deadline, purged = time.monotonic() + 60, None
+        while time.monotonic() < deadline:
+            purged = self.snippet_probe()
+            if not purged['files']:
+                break
+            time.sleep(1)
+        self.assertEqual(purged['files'], [], 'switching off purges within one cleanup run')
+        self.assertEqual(purged['key_sha256'], empty['key_sha256'], 'the key job never replaces a key')
+        off_metrics = self.live_own_metrics()
+        self.assertEqual(off_metrics['ava_live_snippets_total{outcome="cleanup_deleted"}'], len(alerts), off_metrics)
+        self.assertEqual(off_metrics['ava_live_snippets_total{outcome="cleanup_runs"}'], 1, off_metrics)
+
+        code, output = self.place_call('off')
+        self.assertEqual(code, 0, f'sipp: {output}')
+        rows = ended_rows(2)
+        self.assertEqual(len(rows), 2, rows)
+        later = self.alert_ids().get(rows[1].split('|')[0], [])
+        self.assertGreaterEqual(len(later), 1, 'the second call raised an alert too')
+        time.sleep(5)  # longer than the retention pump's write interval
+        self.assertEqual(self.snippet_probe()['files'], [], 'retention off: no audio is stored')
+        final = self.live_own_metrics()
+        self.assertEqual(final.get('ava_live_snippets_total{outcome="written"}', 0), 0, final)
+        logs = self.compose('logs', '--no-color', '--no-log-prefix', 'live', 'retention-key').stdout
+        for text in ('/var/lib/ava', empty['key_sha256'], self.folder.as_posix()):
+            self.assertNotIn(text, logs, 'no path or key material in the logs')
+        print(f'\nobserved: {len(alerts)} alert(s) -> {len(expected)} sealed snippet(s) '
+              f'({[opened["snippets"][a]["samples"] / 8000 for a in alerts]} s each), purged '
+              f'{len(alerts)} after switching off; {len(later)} later alert(s) stored no audio')
 
     def table_digests(self):
         """{table: 'rows:md5'} for every table in the public schema, the rows ordered by

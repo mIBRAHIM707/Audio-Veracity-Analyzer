@@ -128,6 +128,49 @@ threshold edit was applied (version 1 to 2), a hop edit was refused as "needs a
 restart", a removed file was reported as unreadable, and the restored file as
 unchanged. There was no restart, and no path appeared in the log. Run time was 36 s.
 
+## Alert snippets (22 Nov 2026; backlog 11.1; PRD FR-O5)
+
+Off by default: with `AVA_RETENTION` unset or `off`, live stores no audio. With
+`AVA_RETENTION=on`, live keeps a 30 s ring of each admitted call's tapped audio and writes
+one AES-256-GCM snippet per `alert.raised` to the `snippets` volume
+(`services/live/retention.py`). Snippets are deleted `AVA_RETENTION_TTL_DAYS` after they
+were written (default 7, above 0, at most 365), checked every 10 minutes.
+
+- Key: the one-shot `retention-key` job (live image, no network) runs before live at
+  every `up` and gets the same `AVA_RETENTION`. With `off` it does nothing (`skipped`), so
+  the key volume can never stop live from starting while retention is off. With `on`, if
+  `snippet.key` is missing from the `retentionkey` volume, it writes 32 random bytes
+  (mode 0400, uid 10001); otherwise it checks the file and keeps it. It never replaces a
+  key, and it refuses (exit 2, so live does not start) a file that breaks the loader's
+  rules (`services/retention/keygen.py`). Live mounts the volume read only.
+- Upgrade: rebuild `ava-live:dev` first. An older local image has no key job module,
+  so `retention-key` fails and live does not start.
+- Changing the setting: edit the env file, then `docker compose ... up -d live`. Live is
+  recreated, so its calls in progress end `monitor_lost` and are tapped again. Only calls
+  the PBX created after the restart are buffered (FR-O5 "applies to calls started after
+  the change"). Live passes the same flags either way; with `off` it does not open the key.
+- Switching off purges: a start with `off` deletes every snippet in the volume in its
+  first cleanup run, at start-up, counted as `ava_live_snippets_total{outcome="cleanup_deleted"}`.
+- Write failures never block an alert. They are counted (`outcome="write_failed"`); see
+  runbook R15 in `docs/operations/runbooks.md`.
+- Backup: the snippets are useless without the key, so back up both volumes together or
+  neither. Deleting the `retentionkey` volume (`down -v` deletes both) makes every
+  stored snippet unreadable for good.
+- Rotation is not built. A new key cannot open older snippets. To rotate, switch off (which
+  purges), stop live, remove the `retentionkey` volume, then switch on again.
+- Not wired: playback in the dashboard (FR-U5). The API here has no authentication, and
+  playback needs `--auth on` to audit each listener (`services/api/README.md`).
+
+Lab evidence (Claude-authored, 22 Nov): `test_retention_on_stores_one_sealed_snippet_per_alert_and_off_purges_them`.
+With the default, the key job skipped and no key existed. With retention on, the key job
+created a 0400 key owned by uid 10001. A real call raised
+one alert (tiny thresholds on the untrained head; plumbing only), which gave exactly one
+snippet, named by its alert ID's hash. It decrypted to 6.9 s of the call's caller audio at
+8 kHz, and no plaintext was in the file. After switching off, the job skipped, the key
+was unchanged, live purged the snippet in its first cleanup run, and a later alert
+stored no audio. No path or key hash appeared in the logs. Run time: see the 22 Nov
+daily report.
+
 ## Reaching the dashboard
 
 Nothing is published, and the API has no authentication (`services/api/README.md`).

@@ -170,7 +170,8 @@ class BaseManifestTests(unittest.TestCase):
                 self.assertEqual(init['image'], spec['containers'][0]['image'], f'{name}: no extra image')
             self.assertEqual(set(wait['args']), needs, name)
         self.assertEqual([c['name'] for c in self.by_kind['Deployment']['live']['spec']['template']['spec']
-                          ['initContainers']], ['wait-for-storage'], 'live never waits on the API\'s reader role')
+                          ['initContainers']], ['wait-for-storage', 'retention-key'],
+                         'live never waits on the API\'s reader role (22 Nov: plus the FR-O5 key job)')
 
     def test_every_variable_reference_resolves(self):
         """Kubernetes leaves an unknown `$(NAME)` in args as literal text: a typo would

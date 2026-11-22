@@ -529,6 +529,24 @@ and about 50,000 original clips, excluding codec copies.
     code and dashboard, and that every live readiness reason and warning/error log event
     has a runbook. The procedures themselves are only as tested as each **Tested** line
     says; several (Asterisk restart, real network loss, full disk, real load) are not.
+- **22 Nov (attempt 7), 11.1 FR-O5 retention switch in Compose and k3s (partial).**
+  - **What:** `AVA_RETENTION` (default `off`) and `AVA_RETENTION_TTL_DAYS` (7) in the
+    Compose env file and the k3s `ava-config`. Live always gets the snippet folder and
+    key path, so a start with `off` purges earlier snippets. A one-shot key job
+    (`services/retention/keygen.py`, standard library) creates a 32-byte key once (0400,
+    uid 10001) in its own volume/claim and never replaces it. Live mounts the key read only.
+    `--retention off` now accepts a key file and does not open it.
+  - **Tested:** unit tests (key job, the CLI change, static Compose/k3s/Dockerfile
+    checks), and the Compose lab case
+    `test_retention_on_stores_one_sealed_snippet_per_alert_and_off_purges_them`, and
+    the k3s lab `check_retention` on a real node. In both, the default skipped the key
+    job, one alert gave one sealed 6.9 s snippet of caller audio, and switching off
+    purged it. The alerts came from tiny thresholds on the untrained head, so this is
+    plumbing evidence only. Review M1 fixed: the key job does nothing while retention
+    is off, so the key volume cannot stop the scorer.
+  - **Not done:** a switch that applies without a live restart (the restart ends open
+    calls `monitor_lost`), key rotation, snippet backup testing, and FR-U5 playback in
+    the stacks (the API runs without `--auth on`).
 - **17 Nov daily run (details in `daily-runs/2026-11-17.md`).** FR-O6 per-stage latency
   for the live loop (7.2/8.1): `ava_live_stage_seconds{stage}` with `queue_wait`,
   `batch_wait`, `apply` (scorer and hub publish) and `window_to_result` (offer to

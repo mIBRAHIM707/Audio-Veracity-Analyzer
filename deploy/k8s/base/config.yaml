@@ -17,6 +17,12 @@ data:
   AVA_CARD_FILE: model_card.json
   AVA_THREADS: "4"
   AVA_SCORING_CONFIG_WATCH_S: "10"  # 1-60; live rereads the `ava-scoring` file this often
+  # 22 Nov (PRD FR-O5): alert snippets. "off" stores no audio and purges what an earlier
+  # "on" left, at the next live start; "on" keeps one AES-256-GCM snippet per alert for
+  # AVA_RETENTION_TTL_DAYS (above 0, at most 365). A change needs a live restart
+  # (`kubectl -n ava rollout restart deployment/live`) and applies to later calls.
+  AVA_RETENTION: "off"
+  AVA_RETENTION_TTL_DAYS: "7"
   AVA_API_THREADS: "2"
   # The password is not in the URL: libpq reads PGPASSWORD (from the Secret), so any
   # character works in it (as in the Compose stack).

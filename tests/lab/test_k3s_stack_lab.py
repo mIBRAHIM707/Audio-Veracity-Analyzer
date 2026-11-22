@@ -36,6 +36,10 @@ generates the Secrets from files. Then:
   `config_reloaded`, `ava_live_config_version` + 1), with no restart;
 - no container restarted (init containers wait for the storage); AVA pods run as
   their non-root users; no password appears in any pod log.
+- (22 Nov, PRD FR-O5) retention is off by default and the key init container does
+  nothing; turned on through `ava-config` and a rollout restart, it creates the key and
+  an alert's snippet lands in the claim and decrypts; turned off again, the snippet is
+  purged and the key kept (`check_retention`).
 The node container and its volumes are removed afterwards. The node itself pulls the
 k3s system images and the digest-pinned PostgreSQL and Redis images from Docker Hub
 when it starts (lab set-up; the pods' own egress is what FR-O3 constrains).
@@ -426,12 +430,122 @@ class K3sStackLabTests(unittest.TestCase):
         for secret in (self.ari_password, self.db_password, self.reader_password):
             self.assertNotIn(secret, logs, 'no password in any AVA pod log')
         self.assertNotIn(caller, logs, 'the caller number is not in the AVA logs')
+        snippets = self.check_retention(payloads, call_id)
         kubectl_version = self.kubectl('version', '-o', 'json', check=False).stdout
         server = json.loads(kubectl_version).get('serverVersion', {}).get('gitVersion') \
             if kubectl_version.strip() else None
         print(f'\nobserved: k3s {server}; call {call_id} stored with {windows} windows and ended in the API '
               f'registry; egress {egress}; in-namespace flows {flows}; ConfigMap edit applied by live '
-              f'{reload_s:.0f} s after the patch (version {config_v:g} -> {config_v + 1:g})')
+              f'{reload_s:.0f} s after the patch (version {config_v:g} -> {config_v + 1:g}); retention {snippets}')
+
+    def live_records(self):
+        records = []
+        for line in self.kubectl('-n', 'ava', 'logs', 'deploy/live', check=False).stdout.splitlines():
+            try:
+                record = json.loads(line)
+            except ValueError:
+                continue
+            if isinstance(record, dict):
+                records.append(record)
+        return records
+
+    def restart_live(self, **config):
+        """Patch `ava-config` (and nothing else), then restart live as the README says."""
+        patched = self.kubectl('-n', 'ava', 'patch', 'configmap', 'ava-config', '--type', 'merge', '-p',
+                               json.dumps({'data': config}), check=False)
+        self.assertEqual(patched.returncode, 0, f'{patched.stdout} {patched.stderr}')
+        self.kubectl('-n', 'ava', 'rollout', 'restart', 'deployment/live')
+        done = self.kubectl('-n', 'ava', 'rollout', 'status', 'deployment/live', '--timeout=360s', check=False,
+                            timeout=420)
+        self.assertEqual(done.returncode, 0, f'{done.stdout} {done.stderr}\n{self.diagnose()}')
+        self.wait_available('ava', 'deploy/live', 120)
+
+    def check_retention(self, payloads, first_call):
+        """22 Nov (Claude-authored; backlog 11.1, PRD FR-O5) on the real node: retention is
+        off by default (the start record says `purge`: the folder is always passed) and the
+        `retention-key` init container does nothing, so no key exists; live cannot write
+        the key claim. Turned on through `ava-config` and a rollout restart
+        (deploy/k8s/README.md): the init container creates a 0400 key owned by uid 10001,
+        which shows the local-path claim is writable without fsGroup. With tiny alert
+        thresholds in `ava-scoring` the untrained head raises an alert (plumbing, not
+        detection): a real call's alert gives exactly one snippet in the `ava-snippets`
+        claim, decrypting to its caller audio. Turned off again: the key is unchanged and
+        the snippet is purged at start-up."""
+        from tests.lab.test_compose_stack_lab import SNIPPET_PROBE
+        import hashlib
+
+        def probe(*alert_ids):
+            return json.loads(self.in_pod('ava', 'deploy/live', 'python', '-c', SNIPPET_PROBE, *alert_ids).stdout)
+
+        def key_job():
+            text = self.kubectl('-n', 'ava', 'logs', 'deploy/live', '-c', 'retention-key', check=False).stdout
+            return [json.loads(line) for line in text.splitlines() if line.startswith('{')]
+        [starting] = [r for r in self.live_records() if r.get('event') == 'starting']
+        self.assertEqual(starting['retention'], {'mode': 'purge', 'ttl_days': 7.0}, starting)
+        self.assertEqual(key_job(), [{'event': 'retention_key', 'result': 'skipped'}], 'off: the job does nothing')
+        default = probe()
+        self.assertEqual((default['files'], default['key']), ([], False), default)
+        read_only = self.in_pod('ava', 'deploy/live', 'python', '-c',
+                                "import os; print(os.access('/var/lib/ava/retention-key', os.W_OK))").stdout.strip()
+        self.assertEqual(read_only, 'False', 'live cannot write the key claim')
+
+        document = json.loads((K8S / 'base' / 'scoring.json').read_text(encoding='utf-8'))
+        document['scoring']['min_windows'] = 1
+        document['scoring']['thresholds'] = {'suspicious_enter': 2e-6, 'suspicious_exit': 1e-6,
+                                             'alert_enter': 2e-6, 'alert_exit': 1e-6}
+        patched = self.kubectl('-n', 'ava', 'patch', 'configmap', 'ava-scoring', '--type', 'merge', '-p',
+                               json.dumps({'data': {'scoring.json': json.dumps(document, indent=2)}}), check=False)
+        self.assertEqual(patched.returncode, 0, f'{patched.stdout} {patched.stderr}')
+        self.restart_live(AVA_RETENTION='on')
+        [starting] = [r for r in self.live_records() if r.get('event') == 'starting']
+        self.assertEqual(starting['retention'], {'mode': 'on', 'ttl_days': 7.0}, starting)
+        self.assertEqual(key_job(), [{'event': 'retention_key', 'result': 'created'}])
+        before = probe()
+        self.assertEqual(before['files'], [])
+        self.assertEqual((before['key_mode'], before['key_uid'], before['key_size']), ('0o400', 10001, 32), before)
+
+        sipp = self.in_pod('ava-lab-pbx', 'deploy/asterisk', 'sipp', '127.0.0.1:5060', '-sf',
+                           '/lab/sipp/uac_inject.xml', '-s', '700', '-key', 'caller', f'k3r{secrets.token_hex(4)}',
+                           '-key', 'pt', '0', '-key', 'codec', 'PCMU', '-m', '1', '-d', str(len(payloads) * 20 + 1500),
+                           '-i', '127.0.0.1', '-mi', '127.0.0.1', '-min_rtp_port', '16000', '-max_rtp_port', '16100',
+                           '-timeout', '60s', '-timeout_error', '-nostdin', check=False, timeout=180)
+        self.assertEqual(sipp.returncode, 0, f'sipp: {sipp.stdout[-1500:]} {sipp.stderr[-1500:]}')
+        call_id, deadline = None, time.monotonic() + 60
+        while time.monotonic() < deadline and call_id is None:
+            rows = self.psql(f"SELECT call_id FROM calls WHERE end_reason = 'bye' AND call_id <> '{first_call}'")
+            call_id = rows.split()[0] if rows.split() else None
+            time.sleep(1)
+        self.assertIsNotNone(call_id, f'the second call was not stored\n{self.diagnose()}')
+        alerts = self.psql("SELECT a.alert_id FROM alerts a JOIN calls c ON c.id = a.call_pk "
+                           f"WHERE c.call_id = '{call_id}'").split()
+        self.assertGreaterEqual(len(alerts), 1, 'the tiny thresholds raised no alert')
+        expected = sorted(hashlib.sha256(a.encode('utf-8')).hexdigest() + '.snip' for a in alerts)
+        deadline, stored = time.monotonic() + 60, before
+        while time.monotonic() < deadline and len(stored['files']) < len(expected):
+            time.sleep(1)
+            stored = probe()
+        self.assertEqual(stored['files'], expected, 'one snippet per alert ID in the claim')
+        opened = probe(*alerts)
+        for alert_id in alerts:
+            snippet = opened['snippets'][alert_id]
+            self.assertEqual((snippet['call_id'], snippet['direction'], snippet['sample_rate']),
+                             (call_id, 'caller', 8000), snippet)
+            self.assertTrue(0 < snippet['samples'] <= 30 * 8000, snippet)
+            self.assertGreater(snippet['peak'], 0, snippet)
+            self.assertFalse(snippet['plaintext_in_file'], snippet)
+
+        self.restart_live(AVA_RETENTION='off')
+        [starting] = [r for r in self.live_records() if r.get('event') == 'starting']
+        self.assertEqual(starting['retention'], {'mode': 'purge', 'ttl_days': 7.0}, starting)
+        deadline, after = time.monotonic() + 60, stored
+        while time.monotonic() < deadline and after['files']:
+            time.sleep(1)
+            after = probe()
+        self.assertEqual(after['files'], [], 'switching off purges at start-up')
+        self.assertEqual(after['key_sha256'], before['key_sha256'], 'the key is never replaced')
+        self.assertEqual(key_job(), [{'event': 'retention_key', 'result': 'skipped'}])
+        return {'alerts': len(alerts), 'snippet_s': [opened['snippets'][a]['samples'] / 8000 for a in alerts],
+                'purged': True}
 
 
 if __name__ == '__main__':

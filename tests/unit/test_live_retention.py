@@ -399,14 +399,14 @@ class CommandLineTests(unittest.TestCase):
 
     def test_default_is_off_with_nothing_to_do(self):
         args = self.parse()
-        self.assertEqual((args.retention, args.retention_ttl_days), ('off', 7.0))
+        # 22 Nov: an absent --retention parses as None and means off.
+        self.assertEqual((args.retention, args.retention_ttl_days), (None, 7.0))
         self.assertIsNone(cli._retention(args))
 
     def test_refusals_never_show_the_key_or_path(self):
         key = self.key(b'S' * 31)
         for extra, words in ((['--retention', 'on'], 'needs --retention-dir and --retention-key-file'),
-                             (['--retention', 'on', '--retention-dir', str(self.tmp / 's')], 'needs'),
-                             (['--retention-key-file', str(key)], 'only used with --retention on')):
+                             (['--retention', 'on', '--retention-dir', str(self.tmp / 's')], 'needs')):
             with self.subTest(extra):
                 message = cli._retention(self.parse(*extra))
                 self.assertIsInstance(message, str)
@@ -443,6 +443,28 @@ class CommandLineTests(unittest.TestCase):
                                                   '--retention-key-file', str(key), '--retention-ttl-days', '2'))
         self.assertFalse(store.cleanup_only)
         self.assertEqual((policy.enabled, policy.ttl_s), (True, 2 * 86400.0))
+
+    def test_off_with_a_key_file_never_opens_it(self):
+        """Claude-authored (22 Nov 2026, backlog 11.1): Compose and k3s pass the same
+        flags with retention on or off, so an explicit `off` accepts a key file and never
+        reads it: a missing, short or directory "key" changes nothing, without a folder it
+        is off, with one it purges. Without --retention a key file is refused (review L1:
+        `on` was probably meant, and the start would purge the folder silently)."""
+        broken = self.key(b'S' * 5)
+        for key in (self.tmp / 'missing.key', broken, self.tmp):
+            with self.subTest(key=key.name):
+                self.assertIsNone(cli._retention(self.parse('--retention', 'off', '--retention-key-file', str(key))))
+                for implicit in (['--retention-key-file', str(key)],
+                                 ['--retention-dir', str(self.tmp / 's'), '--retention-key-file', str(key)]):
+                    message = cli._retention(self.parse(*implicit))
+                    self.assertEqual(message, '--retention-key-file needs an explicit --retention on (or off)')
+                self.assertFalse((self.tmp / 's').exists(), 'a refused start purges nothing')
+                with mock.patch('services.retention.snippets.AesGcmSealer.from_key_file',
+                                side_effect=AssertionError('the key was opened')):
+                    store, policy = cli._retention(self.parse('--retention', 'off', '--retention-dir',
+                                                              str(self.tmp / 's'), '--retention-key-file', str(key)))
+                self.assertTrue(store.cleanup_only)
+                self.assertFalse(policy.enabled)
 
     def test_ttl_days_bounds(self):
         self.assertEqual(self.parse('--retention-ttl-days', '365').retention_ttl_days, 365.0)

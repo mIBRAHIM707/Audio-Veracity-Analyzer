@@ -55,8 +55,11 @@ Alert snippets (17 Nov; PRD FR-O5): off by default, so no raw audio is stored.
 keeps a 30 s ring of each admitted call's tapped audio and writes one AES-256-GCM
 snippet per `alert.raised` (`services/live/retention.py`; writing and TTL cleanup run
 on their own `retention` pump thread). The key file holds 32 raw bytes, outside the
-repository (provisioning and rotation are the operator's). `--retention off` with
-`--retention-dir` purges that folder's snippets (FR-O5 "switching off purges"). A bad
+repository (provisioning and rotation are the operator's; the Compose and k3s stacks
+create it once with `services/retention/keygen.py`). `--retention off` with
+`--retention-dir` purges that folder's snippets (FR-O5 "switching off purges"); a
+`--retention-key-file` given with an explicit `--retention off` is not opened (22 Nov),
+and without `--retention` it is refused. A bad
 key, a folder inside the repository or a missing cryptography package refuses the
 start; the start record says `retention: off` or its mode and TTL, never a path or key.
 """
@@ -179,12 +182,13 @@ def build_parser():
                         help='local IPv4 address for the health endpoint (default 127.0.0.1; no authentication)')
     parser.add_argument('--drain-timeout', type=_drain_seconds, default=5.0,
                         help='seconds the storage/publish pumps may drain on stop (above 0, at most 300; default 5)')
-    parser.add_argument('--retention', choices=('off', 'on'), default='off',
+    # default None (= off) so a key file without an explicit --retention can be refused.
+    parser.add_argument('--retention', choices=('off', 'on'), default=None,
                         help='alert audio snippets (FR-O5); default off: no raw audio is stored')
     parser.add_argument('--retention-dir', help='snippet folder outside the repository; with --retention off, '
                                                 'existing snippets there are purged')
     parser.add_argument('--retention-key-file', help='raw 32-byte AES-256-GCM key file outside the repository '
-                                                     '(needed with --retention on)')
+                                                     '(needed with --retention on; not opened with off)')
     parser.add_argument('--retention-ttl-days', type=_ttl_days, default=7.0,
                         help='days a snippet is kept (above 0, at most 365; default 7)')
     parser.add_argument('--event-log', choices=('stderr', 'off'), default='stderr',
@@ -541,16 +545,22 @@ def _retention(args):
     """(SnippetStore, RetentionPolicy), None when retention is off and no folder is
     given (nothing stored, nothing to purge), or a refusal message. Paths and key bytes
     are never printed."""
-    if args.retention == 'off' and args.retention_key_file:
-        return '--retention-key-file is only used with --retention on'
-    if args.retention == 'on' and not (args.retention_dir and args.retention_key_file):
+    # 22 Nov (backlog 11.1): an EXPLICIT `--retention off` accepts a key file and never
+    # opens it, so a deployment passes the same flags either way and flips only
+    # --retention (Compose and k3s cannot drop an argument by setting). Without
+    # --retention, a key file is still refused (review L1): it suggests `on` was meant,
+    # and the start would otherwise purge the folder silently.
+    if args.retention is None and args.retention_key_file:
+        return '--retention-key-file needs an explicit --retention on (or off)'
+    mode = args.retention or 'off'
+    if mode == 'on' and not (args.retention_dir and args.retention_key_file):
         return '--retention on needs --retention-dir and --retention-key-file'
     if not args.retention_dir:
         return None
     try:
         from services.retention.snippets import AesGcmSealer, RetentionPolicy, SnippetStore
-        policy = RetentionPolicy(args.retention == 'on', ttl_s=args.retention_ttl_days * 86400.0)
-        if args.retention == 'off':  # FR-O5: switching off purges existing snippets
+        policy = RetentionPolicy(mode == 'on', ttl_s=args.retention_ttl_days * 86400.0)
+        if mode == 'off':  # FR-O5: switching off purges existing snippets
             return SnippetStore.for_cleanup(args.retention_dir, clock=time.time), policy
         sealer = AesGcmSealer.from_key_file(args.retention_key_file)
         return SnippetStore(args.retention_dir, sealer, clock=time.time), policy

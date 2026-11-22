@@ -12,6 +12,7 @@ resources:
   - models.yaml
   - postgres.yaml
   - redis.yaml
+  - retention.yaml
   - live.yaml
   - api.yaml
   - networkpolicy.yaml

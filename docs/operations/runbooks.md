@@ -152,7 +152,16 @@ If a model change preceded it, roll back (deployment guide, "Upgrade and rollbac
   database holds a migration this image does not know (deployment guide, "Upgrade and
   rollback"); the Redis URL is missing or invalid;
 - the host: the health port is already in use; an invalid host, extension or setting;
-- retention (only with `--retention on`): the key file or folder is unusable.
+- retention (only with `--retention on`): the key file or folder is unusable; and
+  (by hand only) a `--retention-key-file` without an explicit `--retention`.
+
+In Compose and k3s with `AVA_RETENTION=on` (with `off` the job does nothing), a broken
+key file stops live one step earlier: the `retention-key` job
+refuses (exit 2, one `refused` record, `services/retention/keygen.py`), so live is not
+started at all: `up` reports that `retention-key` did not complete, and in k3s the pod
+stays in `Init:CrashLoopBackOff` (`kubectl -n ava logs deploy/live -c retention-key`). Its reason names
+the rule (size, symlink, group-readable, folder missing). Do not delete the key to get
+past this while snippets exist.
 
 **Act.** Correct the cause: bring PostgreSQL back (R8), or correct the setting, or put
 the previous env file back (deployment guide, "Upgrade and rollback"), then `docker
@@ -384,8 +393,8 @@ misconfigurations themselves have not been tested.
 
 ## R15. Retained snippets not written
 
-Only when retention is turned on (`--retention on`); it is off by default and not wired
-into Compose or k3s.
+Only when retention is turned on (`--retention on`; in Compose and k3s `AVA_RETENTION=on`,
+22 Nov). It is off by default.
 
 **Signal.** `ava_live_snippets_total{outcome="write_failed"}` rising (a failed write has
 no log line of its own); `ava_live_snippets_total{outcome="queue_full"}` rising
@@ -399,9 +408,10 @@ no log line of its own); `ava_live_snippets_total{outcome="queue_full"}` rising
 **Act.** Free space or fix the key file. Do not replace the key while snippets exist:
 older snippets can only be read with the key that sealed them.
 
-**Tested.** Unit tests (`tests/unit/test_live_retention.py`) and
+**Tested.** Unit tests (`tests/unit/test_live_retention.py`),
 `test_an_alert_on_a_real_call_stores_its_encrypted_caller_audio` (lab, the working
-case). A full disk has not been tested.
+case) and `test_retention_on_stores_one_sealed_snippet_per_alert_and_off_purges_them`
+(Compose lab: written, then purged when switched off). A full disk has not been tested.
 
 ## R16. Operations log lines lost
 

@@ -60,6 +60,26 @@ spec:
             allowPrivilegeEscalation: false
             readOnlyRootFilesystem: true
             capabilities: {drop: [ALL]}
+        # 22 Nov (PRD FR-O5): with AVA_RETENTION "on", create the snippet key once if
+        # it is missing, else check and keep it; never replaced. With "off" it does
+        # nothing (services/retention/keygen.py, retention.yaml).
+        - name: retention-key
+          image: ava-live:dev
+          imagePullPolicy: Never
+          env:
+            - name: AVA_RETENTION
+              valueFrom: {configMapKeyRef: {name: ava-config, key: AVA_RETENTION}}
+          command: [python, -m, services.retention.keygen]
+          args: [--retention, $(AVA_RETENTION), --key-file, /var/lib/ava/retention-key/snippet.key]
+          resources:
+            requests: {cpu: 10m, memory: 32Mi}
+            limits: {cpu: 100m, memory: 64Mi}
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: {drop: [ALL]}
+          volumeMounts:
+            - {name: retention-key, mountPath: /var/lib/ava/retention-key}
       containers:
         - name: live
           # Built locally (deploy/live/Dockerfile) and imported into the node's image
@@ -107,6 +127,17 @@ spec:
             - /config/scoring/scoring.json
             - --scoring-config-watch-s
             - $(AVA_SCORING_CONFIG_WATCH_S)
+            # PRD FR-O5 alert snippets, "off" by default in `ava-config` (no audio
+            # stored; a start with "off" purges earlier snippets; the key is then not
+            # opened). Same flags either way, so only AVA_RETENTION changes.
+            - --retention
+            - $(AVA_RETENTION)
+            - --retention-dir
+            - /var/lib/ava/snippets
+            - --retention-key-file
+            - /var/lib/ava/retention-key/snippet.key
+            - --retention-ttl-days
+            - $(AVA_RETENTION_TTL_DAYS)
           ports:
             - {name: health, containerPort: 9100, protocol: TCP}
           startupProbe:  # model check, load and warm-up before the first ARI connect
@@ -138,10 +169,16 @@ spec:
             # edit would reach the pod only after a restart.
             - {name: scoring, mountPath: /config/scoring, readOnly: true}
             - {name: tmp, mountPath: /tmp}
+            - {name: snippets, mountPath: /var/lib/ava/snippets}
+            - {name: retention-key, mountPath: /var/lib/ava/retention-key, readOnly: true}
       volumes:
         - name: models
           persistentVolumeClaim: {claimName: ava-models, readOnly: true}
         - name: scoring
           configMap: {name: ava-scoring}
+        - name: snippets
+          persistentVolumeClaim: {claimName: ava-snippets}
+        - name: retention-key
+          persistentVolumeClaim: {claimName: ava-retention-key}
         - name: tmp
           emptyDir: {medium: Memory, sizeLimit: 64Mi}

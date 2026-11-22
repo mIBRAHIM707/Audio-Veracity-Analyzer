@@ -735,6 +735,16 @@ items needing that data are listed at the end and stay out of the queue.
 
 ## 11 — Final software integration
 - [ ] 11.1 Recovery/load/soak, retention/deletion and end-to-end integration tests.
+  Progress (22 Nov, attempt 7): FR-O5 retention in the deployments. `AVA_RETENTION`
+  (default off) and `AVA_RETENTION_TTL_DAYS` in the Compose env file and k3s
+  `ava-config`; live always gets the fixed snippet folder, so `off` purges at start. Key
+  job `services/retention/keygen.py` (Compose `retention-key`, k3s init container):
+  with `on` it creates a 32-byte 0400 key once and never replaces it; with `off` it does
+  nothing. Snippet and key volumes/claims; key read-only in live. Claude-authored unit,
+  static and lab tests (Compose and k3s: default, on, off; one alert gave one sealed
+  snippet, purged after off). Review M1 (off depended on the key volume) and L1-L7 fixed.
+  Remaining: a switch without a live restart, key rotation, snippet backup test,
+  FR-U5 playback in the stacks (needs `--auth on`), recovery/load/soak.
 - [ ] 11.2 Requirements/evidence audit, runbooks and reproducible demo instructions.
   Progress (22 Nov, attempt 3): `docs/qa/requirements-evidence-audit.md`, one row per PRD
   functional requirement (83) with status, code, tests and gap; checked in CI by

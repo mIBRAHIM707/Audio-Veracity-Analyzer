@@ -32,7 +32,21 @@ metadata, header/TTL timestamp or nonce, a wrong key, or a file copied under ano
 alert's name fails authentication. Store-logic tests still use an explicitly insecure
 XOR sealer through the private `_insecure_test_sealer` keyword.
 
-Open: key provisioning, storage protection and rotation (an operator decision; a
+**Key job (22 Nov 2026; backlog 11.1).** `keygen.py` (`python -m
+services.retention.keygen --retention on|off --key-file PATH`, standard library only)
+does nothing with `off` (the default), so a key volume cannot stop live while retention
+is off. With `on` it removes its own temporary files older than 60 s and creates the key
+if it is missing: 32 bytes from `os.urandom`, owner read only (0400 on POSIX), written to a
+temporary file, fsynced and hard-linked to the name, so two jobs at once create one key.
+An existing file that passes the loader's rules is kept as it is. One that breaks them
+(size, symlink, not a regular file, group/other bits) is refused with exit 2 and left in
+place, never replaced. A missing folder is refused too, as a mount mistake. It prints one
+JSON line with no key or path. The Compose `retention-key` service and the k3s
+`retention-key` init container run it before live
+(`deploy/compose/README.md`, "Alert snippets"). Claude-authored tests:
+`tests/unit/test_retention_keygen.py`.
+
+Open: storage protection and rotation (an operator decision; a
 rotated key makes older snippets unreadable, and unreadable snippets are only purged
 by TTL or switch-off). On POSIX the key file must not be group/world readable; on
 Windows file ACLs are not checked. File names are a plain SHA-256 of the alert ID, so
@@ -65,8 +79,9 @@ file access. Served by the API's `GET /v1/alerts/{id}/snippet` (`services/api/RE
 Claude-authored tests: `tests/unit/test_snippet_playback.py`.
 
 Since 17 Nov the live service wires the store to the tap audio, `alert.raised` and a
-cleanup thread (`services/live/README.md`, "Alert snippets"). Still not done: the
-retention setting in shared configuration and secure deletion (deleted
+cleanup thread (`services/live/README.md`, "Alert snippets"). Since 22 Nov the setting
+is in the Compose env file and the k3s ConfigMap (`AVA_RETENTION`, default off). Still
+not done: a setting that applies without a restart, and secure deletion (deleted
 files are unlinked, not overwritten; on Windows a file being scanned can briefly
 appear as `<NAME>.tmp` during deletion, removed by the next cleanup).
 

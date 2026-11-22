@@ -9,7 +9,8 @@ development stack; these manifests are the deployment form the PRD asks for.
 
 - `base/`: namespace `ava` (Pod Security `restricted` enforced), ConfigMap
   `ava-config`, ConfigMap `ava-scoring` (generated from `scoring.json`), the model volume, PostgreSQL 16 and Redis 7 StatefulSets with their
-  claims, the `live` scorer and the `api` Deployments, and the NetworkPolicies.
+  claims, the FR-O5 snippet and key claims (`retention.yaml`), the `live` scorer and the
+  `api` Deployments, and the NetworkPolicies.
 - `lab/`: overlay for the laboratory. Adds the Asterisk lab PBX in namespace
   `ava-lab-pbx` and points live's ARI URL and its PBX policy at it.
 
@@ -112,6 +113,51 @@ The kubelet updates the mounted file within its sync period plus its cache TTL, 
 `behavior: replace`, your own file and `options: {disableNameSuffixHash: true}` on that
 generator. Without that option a hash suffix may come back, and with it the rollout
 that ends calls. A `kubectl edit` works too, but the next `apply -k` overwrites it.
+
+## Alert snippets (22 Nov 2026; backlog 11.1; PRD FR-O5)
+
+`AVA_RETENTION` in `ava-config` is `"off"` by default: live stores no audio. With
+`"on"`, it writes one AES-256-GCM snippet per alert to the claim `ava-snippets`, kept
+`AVA_RETENTION_TTL_DAYS` (default 7). The flags and folders match the Compose stack
+(`deploy/compose/README.md`, "Alert snippets"); `base/retention.yaml` holds the claims.
+- Key: live's init container `retention-key` (`services/retention/keygen.py`) gets
+  `AVA_RETENTION`. With `"off"` it does nothing. With `"on"` it creates `snippet.key` in
+  the claim `ava-retention-key` once (32 random bytes, 0400, uid 10001), then checks and
+  keeps it at every pod start. It never replaces a key. Live mounts that claim read only.
+  With `"on"`, a broken key file leaves the pod in `Init:Error`/`Init:CrashLoopBackOff`,
+  with one JSON line in `kubectl -n ava logs deploy/live -c retention-key`.
+- Both claims must bind even while retention is off, because the pod mounts them. On a
+  cluster with no default storage class, or k3s without local-storage, live stays
+  Pending.
+- Both claims are mounted whole: the kubelet would create a `subPath` folder as root,
+  which uid 10001 cannot write. They come from the default storage class. Live sets no
+  `fsGroup`, on purpose: an fsGroup change adds group read to the key file, and live
+  refuses a group-readable key. With another provisioner, check that uid 10001 can write
+  the claims.
+- k3s local-path creates the claim folders world-writable (0777) on the node. The key
+  and snippets stay unreadable to others (0400/0600), but a node user or a hostPath pod
+  could delete or replace them.
+- Changing the setting: patch `ava-config` in the site overlay, `kubectl apply -k
+  site/`, then `kubectl -n ava rollout restart deployment/live`. A ConfigMap change does
+  not restart the pod, and live reads the setting only at start. The restart ends open
+  calls `monitor_lost`, and only calls created after it are buffered. A start with
+  `"off"` purges every snippet in its first cleanup run.
+- Always restart after patching `AVA_RETENTION`. A live container restart of its own
+  (crash, liveness failure) rereads the ConfigMap but does not rerun the init container.
+  So `"off"` → `"on"` without a rollout restart can leave live refusing to start (no key
+  yet), crash-looping until `kubectl -n ava rollout restart deployment/live`. And
+  `"on"` → `"off"` purges the snippets at that unplanned restart.
+- Deleting `ava-retention-key` makes every stored snippet unreadable. Back up both
+  claims together. Rotation is not built (Compose README).
+- Lab evidence (Claude-authored, 22 Nov): `check_retention` in
+  `tests/lab/test_k3s_stack_lab.py`, on a real k3s v1.34.2 node with local-path. Off by
+  default: the job skipped, no key, live in purge mode, and live could not write the key
+  claim. Switched on through `ava-config` and a rollout restart, the init container
+  created a 0400 key owned by uid 10001 without fsGroup. One alert on a real call gave
+  one snippet in the claim, which decrypted to 6.9 s of caller audio. Switched off
+  again, the snippet was purged and the key kept. Static checks:
+  `tests/unit/test_deploy_retention.py`. Playback (FR-U5) is not wired: the API runs
+  without `--auth on`.
 
 ## Security controls
 

@@ -142,6 +142,9 @@ loopback-only Compose `demo` profile; an automated rehearsal on the real stack p
 Human: record the BO-4 demo video from the script, using public clips only.
 22 Nov (attempt 6): no data change. Operations runbooks `docs/operations/runbooks.md`
 (16 signal-to-action procedures), kept true to the code by a CI check.
+22 Nov (attempt 7): no data change. FR-O5 alert snippets can now be switched on in
+Compose and k3s (`AVA_RETENTION`, default off); a key job creates the key once.
+Human: whether the key may sit on the same host as the snippets, and a rotation policy.
 
 Human decisions:
 - Should reloads be written to the audit log?

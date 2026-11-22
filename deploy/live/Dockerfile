@@ -25,7 +25,11 @@ COPY requirements-*.txt deploy/live/requirements-live.txt /tmp/requirements/
 RUN pip install --no-cache-dir --no-deps --only-binary=:all: -r /tmp/requirements/requirements-live.txt \
  && pip check \
  && rm -rf /tmp/requirements \
- && useradd --system --uid 10001 --home-dir /app --shell /usr/sbin/nologin ava
+ && useradd --system --uid 10001 --home-dir /app --shell /usr/sbin/nologin ava \
+ && install -d -o ava -g ava -m 0700 /var/lib/ava/snippets /var/lib/ava/retention-key
+# 22 Nov (PRD FR-O5): mount points of the snippet and key volumes. An empty Docker named
+# volume takes this owner and mode on first use, so uid 10001 can write it and nobody
+# else can read it. Both stay empty unless a stack mounts a volume here.
 
 WORKDIR /app
 COPY services/ /app/services/

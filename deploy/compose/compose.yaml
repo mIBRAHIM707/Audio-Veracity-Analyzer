@@ -57,12 +57,34 @@ services:
       - labio:/lab/io
     networks: [backend]
 
+  retention-key:
+    # 22 Nov (backlog 11.1; PRD FR-O5): a one-shot job, run at every `up`. With
+    # AVA_RETENTION=on it creates the AES-256-GCM snippet key in the `retentionkey`
+    # volume if it is missing (32 random bytes, mode 0400, uid 10001) and otherwise
+    # checks and keeps it; it never replaces a key (services/retention/keygen.py). With
+    # off (the default) it does nothing, so the key volume can never stop live from
+    # starting (review M1). No network at all. Backup, rotation and deletion:
+    # deploy/compose/README.md, "Alert snippets".
+    image: ava-live:dev
+    pull_policy: never
+    entrypoint: ["python", "-m", "services.retention.keygen"]
+    command: ["--retention", "${AVA_RETENTION:-off}", "--key-file", "/var/lib/ava/retention-key/snippet.key"]
+    volumes:
+      - retentionkey:/var/lib/ava/retention-key
+    network_mode: none
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    pids_limit: 16
+    restart: "no"
+
   live:
     image: ava-live:dev
     pull_policy: never
     depends_on:
       postgres: {condition: service_healthy}
       redis: {condition: service_healthy}
+      retention-key: {condition: service_completed_successfully}
     environment:
       AVA_ARI_PASSWORD: ${AVA_ARI_PASSWORD:?set AVA_ARI_PASSWORD in the env file}
       # Review M1: the password travels in PGPASSWORD (libpq), never inside the URL, so
@@ -105,7 +127,23 @@ services:
       - /config/scoring/${AVA_SCORING_CONFIG_FILE:-scoring.json}
       - --scoring-config-watch-s
       - "${AVA_SCORING_CONFIG_WATCH_S:-10}"
+      # 22 Nov (PRD FR-O5): alert snippets, OFF unless AVA_RETENTION=on. With `on`, one
+      # AES-256-GCM snippet per alert goes to the `snippets` volume and is deleted after
+      # AVA_RETENTION_TTL_DAYS. With `off` live stores no audio, and every start purges
+      # the snippets an earlier `on` left (one cleanup run at start-up); the key file is
+      # then not opened. A change applies at the next `up -d live`, i.e. to calls placed
+      # after that restart.
+      - --retention
+      - ${AVA_RETENTION:-off}
+      - --retention-dir
+      - /var/lib/ava/snippets
+      - --retention-key-file
+      - /var/lib/ava/retention-key/snippet.key
+      - --retention-ttl-days
+      - "${AVA_RETENTION_TTL_DAYS:-7}"
     volumes:
+      - snippets:/var/lib/ava/snippets
+      - retentionkey:/var/lib/ava/retention-key:ro
       - ${AVA_ONNX_DIR:?set AVA_ONNX_DIR}:/models/onnx:ro
       - ${AVA_CARD_DIR:?set AVA_CARD_DIR}:/models/card:ro
       - ${AVA_VAD_DIR:?set AVA_VAD_DIR}:/models/vad:ro
@@ -397,3 +435,5 @@ volumes:
   labio:
   promdata:
   grafanadata:
+  snippets:      # FR-O5 sealed alert snippets (empty while retention is off)
+  retentionkey:  # FR-O5 snippet key, written once by `retention-key`
