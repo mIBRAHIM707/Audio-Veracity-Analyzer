@@ -719,6 +719,19 @@ items needing that data are listed at the end and stay out of the queue.
   findings fixed. Remaining: a CI job that runs it (human: workflow edit), hashed locks
   (human: `uv pip compile` is outside the allowlist), the rest above.
 - [ ] 10.QA Reproducible startup, CPU parity where measurable, rollback/readiness.
+  Progress (22 Nov, attempt 2): FR-O4 refusal and model rollback in the Compose lab
+  (`test_a_refused_model_change_never_stops_calls_and_a_rollback_restores_scoring`,
+  Claude-authored). Three bad changes made through the env file are each refused on every
+  restart attempt with the exact reason: a card for another export, a missing model
+  file, and a 2 s config window against a 4 s card. Live writes no `starting` line, is
+  never healthy, and logs no host path or password. A real call completes while live
+  refuses, with nothing stored. Restoring the env file brings live back healthy in about
+  7 s with the same model and hash; no migration is re-applied, the earlier row is kept,
+  and a new call is stored to `bye`. The README now has a model change and rollback
+  procedure; an older image refuses a database that a newer image migrated (back up first;
+  untested). Review conditional pass, fixed. Remaining: CPU parity where measurable
+  (needs the trained head), an image upgrade/rollback with a database restore, and the same
+  on k3s.
 
 ## 11 — Final software integration
 - [ ] 11.1 Recovery/load/soak, retention/deletion and end-to-end integration tests.

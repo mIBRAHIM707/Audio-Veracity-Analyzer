@@ -37,6 +37,10 @@ inside the stack, and checks:
 - (20 Nov, backlog 5.1) the API reads stored history as the read-only `ava_reader`
   created by the one-shot `db-setup`, cannot write or read account tables, and a new
   reader password rotates on the next `up`; the full-stack call is in the history too.
+- (22 Nov, backlog 10.QA, PRD FR-O4) a model change that does not match is refused at
+  start-up in the container while a real call still completes, and putting the previous
+  env file back restores scoring with the same model, stored rows kept and no migration
+  re-applied.
 The project and its volumes are removed afterwards.
 """
 import base64
@@ -701,6 +705,159 @@ class ComposeStackLabTests(unittest.TestCase):
         self.assertNotIn('/config/scoring', logs, 'no container path in the log')
         print(f'\nobserved: version {version:g} -> {version + 1:g} on a host-side rename through the folder '
               'bind mount; hop edit refused; removal reported, restore unchanged; no restart')
+
+    def set_env(self, **values):
+        """Rewrite the env file with these keys replaced (or added), keeping the others."""
+        lines = [line for line in self.env_file.read_text(encoding='utf-8').splitlines()
+                 if line.partition('=')[0] not in values]
+        lines += [f'{key}={value}' for key, value in values.items()]
+        self.env_file.write_text('\n'.join(lines) + '\n', encoding='utf-8')
+
+    def place_call(self, prefix):
+        """One SIPp call with three public clips (about 15 s) into extension 700, waited
+        for; returns (SIPp exit code, its output)."""
+        clips = json.loads(QA_CONFIG.read_text(encoding='utf-8'))['genuine'][:3]
+        payloads = rtp_pcap.rtp_payloads(b''.join(rtp_pcap.wav_to_pcm8k(path) for path in clips), 'ulaw')
+        pcap = self.folder / 'inject.pcap'
+        rtp_pcap.write_pcap(payloads, 0, pcap)
+        self.compose('cp', str(pcap), 'asterisk:/lab/io/inject.pcap')
+        done = self.compose('exec', '-T', 'asterisk', 'sipp', '127.0.0.1:5060', '-sf', '/lab/sipp/uac_inject.xml',
+                            '-s', '700', '-key', 'caller', f'{prefix}{secrets.token_hex(4)}', '-key', 'pt', '0',
+                            '-key', 'codec', 'PCMU', '-m', '1', '-d', str(len(payloads) * 20 + 1500),
+                            '-i', '127.0.0.1', '-mi', '127.0.0.1', '-min_rtp_port', '16000', '-max_rtp_port', '16100',
+                            '-timeout', '60s', '-timeout_error', '-nostdin', check=False, timeout=180)
+        return done.returncode, done.stdout[-1500:] + done.stderr[-1500:]
+
+    def live_state(self):
+        text = self.compose('ps', '--all', '--format', 'json', 'live', check=False).stdout.strip()
+        try:
+            states = json.loads(text) if text.startswith('[') else \
+                [json.loads(line) for line in text.splitlines() if line.strip()]
+        except ValueError:
+            states = []
+        return states[0] if states else {}
+
+    def test_a_refused_model_change_never_stops_calls_and_a_rollback_restores_scoring(self):
+        """10.QA start-up refusal and rollback (Claude-authored, 22 Nov 2026; PRD FR-O4
+        "startup fails loudly if a model or its card is missing or disagrees with config",
+        "AVA failure must not stop a call"; architecture §2.7). Live starts with the
+        working model and scores a call. Then three bad changes are deployed the way an
+        operator would, by editing the env file and running `up` for live:
+        - a card for another export (same file name, different SHA-256);
+        - a model file name that is not in the model folder;
+        - a scoring file whose window (2 s) disagrees with the card's (4 s).
+        Each time the recreated container must refuse with one `refused` JSON line per
+        attempt naming the problem (no host path), never write `starting`, never become
+        healthy, and keep restarting (restart policy). During the first refusal a real call
+        must still complete; it is not monitored, so no row is stored for it. Putting the
+        first env file back (the rollback) must bring live back healthy with the same model
+        version and ONNX hash, no migration applied again, the earlier row kept, and a new
+        call scored and stored to `bye`. Live alone (with PostgreSQL, Redis, Asterisk);
+        the API is not needed."""
+        good = {'AVA_CARD_DIR': (self.folder / 'card').as_posix(), 'AVA_ONNX_FILE': ONNX.name,
+                'AVA_SCORING_CONFIG_DIR': (ROOT / 'deploy' / 'compose' / 'config').as_posix()}
+        self.set_env(**good)
+        self.compose('up', '-d', '--wait', '--wait-timeout', '300', 'live', 'asterisk', timeout=600)
+        self.wait_healthy('live', 120)
+        [first] = [r for r in self.live_records() if r.get('event') == 'starting']
+        self.assertEqual(first['model_version'], 'compose-l8-int8-static-untrained', first)
+        self.assertEqual(sorted(first['database_migrations_applied']), [m.version for m in load_migrations()])
+
+        def stored_rows(count, seconds=60):
+            rows, deadline = [], time.monotonic() + seconds
+            while time.monotonic() < deadline:
+                rows = self.call_rows()
+                if len(rows) >= count and all(r.split('|')[1] for r in rows):
+                    break
+                time.sleep(1)
+            return rows
+
+        code, output = self.place_call('ok1')
+        self.assertEqual(code, 0, f'sipp: {output}')
+        before = stored_rows(1)
+        self.assertEqual(len(before), 1, before)
+        self.assertEqual(before[0].split('|')[1], 'bye', before)
+        self.assertGreaterEqual(int(before[0].split('|')[2]), 1, before)
+
+        # The bad changes. A card from "another export": valid, same file name, other hash.
+        other = self.folder / 'card-other'
+        other.mkdir()
+        card = mc.build_card(
+            ONNX, version='compose-other-export', backbone='AntiDeepfake MMS-300M, truncated', kept_layers=8,
+            metrics={'dev_eer': mc.NOT_MEASURED}, training_data={'status': 'not this file'},
+            failure_modes=['does not match the served file'], licence_restriction='Research and non-commercial use only.')
+        card['onnx']['sha256'] = format(int(card['onnx']['sha256'], 16) ^ 1, '064x')
+        mc.write_card(card, other / 'model_card.json')
+        window = self.folder / 'scoring-2s'
+        window.mkdir()
+        document = json.loads((ROOT / 'deploy' / 'compose' / 'config' / 'scoring.json').read_text(encoding='utf-8'))
+        document['audio']['window_s'] = 2.0
+        (window / 'scoring.json').write_text(json.dumps(document, indent=2), encoding='utf-8')
+        changes = [
+            ('card for another export', {'AVA_CARD_DIR': other.as_posix()},
+             'ONNX file does not match the card (hash or size)'),
+            ('model file missing', {'AVA_ONNX_FILE': 'ava-v3-missing.onnx'}, 'ONNX model not found: ava-v3-missing.onnx'),
+            ('config disagrees with the card', {'AVA_SCORING_CONFIG_DIR': window.as_posix()},
+             'scoring config disagrees with the card: invalid scoring configuration: '
+             'audio.window_s 2.0 differs from the model card window 4.0'),
+        ]
+        observed = []
+        for index, (label, change, reason) in enumerate(changes):
+            self.set_env(**{**good, **change})
+            self.compose('up', '-d', 'live', timeout=300)  # recreates live with the new settings
+            refusals, deadline = [], time.monotonic() + 90
+            while time.monotonic() < deadline:
+                records = self.live_records()
+                refusals = [r for r in records if r.get('event') == 'refused']
+                if len(refusals) >= 2:
+                    break
+                time.sleep(1)
+            self.assertGreaterEqual(len(refusals), 2, f'{label}: not refused on every restart: {records[-5:]}')
+            self.assertEqual({r['reason'] for r in refusals}, {f'refusing to start: {reason}'}, label)
+            self.assertNotIn('starting', [r.get('event') for r in records], f'{label}: live started anyway')
+            logs = self.compose('logs', '--no-color', '--no-log-prefix', 'live').stdout
+            self.assertNotIn(self.folder.as_posix(), logs, f'{label}: no host path in the log')
+            for secret in (self.db_password, self.ari_password):  # review L4
+                self.assertNotIn(secret, logs, f'{label}: no password in the log')
+            state = self.live_state()
+            self.assertNotEqual(state.get('Health'), 'healthy', f'{label}: {state}')
+            # Review L2: under `unless-stopped` a refused exit goes straight to restarting.
+            self.assertIn(state.get('State'), ('restarting', 'running'), f'{label}: {state}')
+            if index == 0:
+                # The call path does not depend on live: a real call still completes.
+                code, output = self.place_call('ref')
+                self.assertEqual(code, 0, f'{label}: the call did not complete while live refused: {output}')
+                self.assertEqual(self.call_rows(), before, f'{label}: nothing stored while live is down')
+                state = self.live_state()
+                self.assertNotEqual(state.get('Health'), 'healthy', f'{label}: became healthy: {state}')
+                records = self.live_records()  # review L3: it never came up during the call either
+                self.assertNotIn('starting', [r.get('event') for r in records], f'{label}: started during the call')
+                refusals = [r for r in records if r.get('event') == 'refused']
+            observed.append((label, len(refusals)))
+
+        # The rollback: the previous env file, `up` again.
+        self.set_env(**good)
+        rolled_at = time.monotonic()
+        self.compose('up', '-d', '--wait', '--wait-timeout', '300', 'live', timeout=600)
+        self.wait_healthy('live', 120)
+        back_s = time.monotonic() - rolled_at
+        records = self.live_records()
+        self.assertNotIn('refused', [r.get('event') for r in records], 'the rolled-back container never refused')
+        [again] = [r for r in records if r.get('event') == 'starting']
+        self.assertEqual((again['model_version'], again['onnx_sha256']), (first['model_version'], first['onnx_sha256']))
+        self.assertEqual(again['database_migrations_applied'], [], 'no migration applied again')
+        count = self.compose('exec', '-T', 'postgres', 'psql', '-U', 'ava', '-d', 'ava', '-tAc',
+                             'SELECT count(*) FROM schema_migrations').stdout.strip()
+        self.assertEqual(count, str(len(load_migrations())))
+        code, output = self.place_call('ok2')
+        self.assertEqual(code, 0, f'sipp: {output}')
+        after = stored_rows(2)
+        self.assertEqual(len(after), 2, after)
+        self.assertEqual(after[0], before[0], 'the earlier row is kept')
+        self.assertEqual(after[1].split('|')[1], 'bye', after)
+        self.assertGreaterEqual(int(after[1].split('|')[2]), 1, 'the new call is scored again')
+        print(f'\nobserved: refusals per bad change {observed}; a call completed while live refused; '
+              f'rollback healthy in {back_s:.1f} s with {first["model_version"]}; second call stored {after[1]}')
 
     def test_a_live_restart_mid_call_never_stops_the_call(self):
         """5.QA process restart (Claude-authored, 18 Nov 2026; PRD "AVA failure must not

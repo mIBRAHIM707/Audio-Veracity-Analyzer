@@ -394,6 +394,64 @@ checkpoint and checks:
 - `api` cannot reach 1.1.1.1:443 and runs as uid 10001.
 Run time was 69 s with the images built.
 
+## Model change and rollback (22 Nov 2026; backlog 10.QA; PRD FR-O4)
+
+A model change is an env-file change (`AVA_ONNX_DIR`, `AVA_ONNX_FILE`, `AVA_CARD_DIR`,
+and `AVA_SCORING_CONFIG_DIR` if the settings change too), followed by `up -d live`.
+Keep the previous env file. Put each model version in its own folders and never
+overwrite files in place (`write_card` already refuses to overwrite a card); otherwise
+the previous env file no longer points at the previous model.
+
+Live refuses before it opens anything if the new files do not agree with each other or
+with the settings, and also if the model fails to load or warm up. It writes one
+`refused` JSON line per restart attempt naming the problem, keeps restarting and never
+becomes healthy. A model that agrees with its card but performs worse is NOT caught;
+rolling back is the remedy there too.
+
+Calls never stop, because the tap is passive. Calls that start while live refuses are
+not monitored, and nothing is stored for them. `up -d live` stops the running container,
+so a call in progress at that moment gets a stored `monitor_lost` end and may be
+re-tapped as a second session once a working live is back (see the live-restart case in
+the evidence above). Make model changes when no calls are active.
+
+To roll back, put the previous env file back and run `up -d live` again. The stored rows
+stay, and migrations already applied are not applied again.
+
+Check after every change:
+
+```text
+docker compose ... ps live                  # healthy, not restarting
+docker compose ... logs --no-log-prefix live   # the latest "starting" line shows model_version and onnx_sha256
+```
+
+Lab evidence (Claude-authored, 22 Nov):
+`test_a_refused_model_change_never_stops_calls_and_a_rollback_restores_scoring`.
+Live started with the 14 Nov static-INT8 export (untrained head) and stored a real call.
+Three bad changes were then deployed through the env file:
+- a card for "another export" (same file name, other SHA-256): refused with "ONNX file
+  does not match the card (hash or size)", 7 attempts while a real call ran and
+  completed. Nothing was stored for that call, and live never started during it;
+- a model file name missing from the folder: refused with "ONNX model not found";
+- a scoring file with a 2 s window: refused with "scoring config disagrees with the card
+  ... differs from the model card window 4.0".
+In each case live wrote no `starting` line, was never healthy, and put no host path in
+the log, and no password appeared there. After the rollback, live was healthy in 7.2 s
+and 6.9 s (two runs) with the same model version and ONNX hash. It applied no migration
+(`schema_migrations` unchanged), kept the earlier row, and stored a new call to `bye`
+with 5 windows. Run time was 92 s on this host, with the images already built.
+Independent review: conditional pass, no High. M1 (calls in progress get `monitor_lost`)
+and the Lows were fixed, and the case was run again. Two Nits about duplicated helper
+code were not changed.
+
+This covers the files on the model volume. It does not cover a new image version: roll
+back an image by its previous tag (the images are tagged, not pinned by digest, see
+above). There are no down migrations. If the newer image applied a migration, the older
+image refuses to start against that database ("database has migration N ... that this
+checkout does not know", `services/store/migrate.py`). So does an older `db-setup` (the
+`api` image also migrates), and then `api` does not start. Rolling back such an upgrade
+therefore also needs the database as it was before it, so back up PostgreSQL before an
+image upgrade. Neither this nor a backup procedure is tested here.
+
 ## Not done
 
 Publishing the dashboard to the host (see above), Kubernetes manifests and the

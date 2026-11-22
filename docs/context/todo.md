@@ -125,6 +125,10 @@ alert that was never cleared could show as "Cleared" on the live board.
 22 Nov: no data change. Browser tests now restart the real API under signed-in pages
 (sign-in, feedback, snippet playback). They found a defect, now fixed: after the API came
 back, the "session could not be verified" warning stayed until the tab got focus.
+22 Nov (attempt 2): no data change. A Compose lab test shows that a mismatched or
+missing model is refused at start-up while calls continue, and that restoring the
+previous env file rolls back. Human: back up PostgreSQL before any image upgrade, since
+an older image refuses a database that a newer one migrated.
 
 Human decisions:
 - Should reloads be written to the audit log?

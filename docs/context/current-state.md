@@ -456,6 +456,19 @@ and about 50,000 original clips, excluding codec copies.
     30-min idle check). While it shows, the gate now re-checks on the next 2xx answer
     any page gets (`SERVICE_ANSWERED_EVENT`, `dashboard/src/AuthGate.tsx`).
   - **Not done:** the `dashboard` project is still not in CI (human workflow edit).
+- **22 Nov (attempt 2), 10.QA model refusal and rollback in the Compose lab (partial).**
+  - **What:** Claude-authored
+    `test_a_refused_model_change_never_stops_calls_and_a_rollback_restores_scoring`. A
+    card for another export, a missing model file and a scoring window that disagrees
+    with the card are each deployed through the env file. Each one is refused on every
+    restart attempt with the exact reason (FR-O4), and live never becomes healthy. A real
+    call completes meanwhile, unmonitored. Restoring the env file brings live back in
+    about 7 s with the same model, no migration re-applied and stored rows kept.
+  - **Documented:** the rollback procedure in `deploy/compose/README.md`. A change made
+    mid-call ends that call's session `monitor_lost`. An older image refuses a database
+    that a newer image migrated, so back up before an image upgrade (not tested).
+  - **Not done:** CPU parity (needs the trained head), image rollback with a database
+    restore, and the same procedure on k3s.
 - **17 Nov daily run (details in `daily-runs/2026-11-17.md`).** FR-O6 per-stage latency
   for the live loop (7.2/8.1): `ava_live_stage_seconds{stage}` with `queue_wait`,
   `batch_wait`, `apply` (scorer and hub publish) and `window_to_result` (offer to
